@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Parley — Player View</title>
+<link rel="stylesheet" href="/client/chrome.css">
+</head>
+<body>
+<div id="layout">
+  <div id="stage">
+    <div id="topband">
+      <div id="wordmark">PAR<span>LEY</span></div>
+      <div id="clock">TURN 0</div>
+      <div id="statuschip">connecting…</div>
+    </div>
+    <div id="board-wrap">
+      <canvas id="table" width="960" height="640"></canvas>
+      <div id="lightpool"></div>
+      <div id="grain"></div>
+    </div>
+  </div>
+  <div id="feed"></div>
+</div>
+<script src="/client/renderer.js"></script>
+<script>
+  var canvas = document.getElementById("table");
+  function fit() {
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+  }
+  window.addEventListener("resize", fit);
+  fit();
+  var params = new URLSearchParams(location.search);
+  ParleyRenderer.attachLive({
+    canvas: canvas,
+    feed: document.getElementById("feed"),
+    status: document.getElementById("statuschip"),
+    clock: document.getElementById("clock"),
+    assetBase: "/client/assets",
+    wsPath: "/player?slot=" + encodeURIComponent(params.get("slot") || "0") +
+      "&token=" + encodeURIComponent(params.get("token") || ""),
+    onFrame: function (data) {
+      if (data.type === "welcome") {
+        document.getElementById("wordmark").innerHTML =
+          "PAR<span>LEY</span> — " + data.name;
+      }
+    }
+  });
+</script>
+</body>
+</html>

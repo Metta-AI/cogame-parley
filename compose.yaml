@@ -1,0 +1,7 @@
+services:
+  parley:
+    image: coworld-parley:latest
+    platform: linux/amd64
+    build:
+      context: .
+      network: host

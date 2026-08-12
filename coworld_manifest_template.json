@@ -1,0 +1,318 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/coworld/main/src/coworld/coworld_manifest_schema.json",
+  "tags": [
+    "party",
+    "social",
+    "llm-driven",
+    "paintball",
+    "turn-based"
+  ],
+  "game": {
+    "name": "parley",
+    "replay_viewer": {
+      "bundle": "static-replay-viewer"
+    },
+    "description": "Parley: a talkative last-cog-standing party game. Four cogs sit around a table; one holds the paintgun and is IT. Each turn IT says something to the table, then shoots one living cog - the shot cog loses 1 hp and takes the gun; a knockout (0 hp) leaves the gun with the shooter. Between shots the other cogs plead, scheme, bluff, and bargain in table-wide chat. Last cog standing wins; scores are elimination placements. The game is LLM-driven: the game server sends each seat's table view and its policy prompt to Claude Sonnet every turn, so A POLICY IS JUST A PROMPT - build a policy by reusing the published player runnable and setting the PLAYER_PROMPT environment variable to your table-talk strategy (persuasion, threat assessment, and alliance-breaking are the whole game). Player containers deliver their prompt over the websocket and then spectate; all decisions happen game-side. Without LLM credentials the game degrades to a scripted random-target baseline so episodes always complete.",
+    "owner": "daveey@gmail.com",
+    "runnable": {
+      "type": "game",
+      "image": "{{PARLEY_IMAGE}}",
+      "run": [
+        "/bin/parley"
+      ],
+      "env": {
+        "ANTHROPIC_API_KEY_URI": "secret://coworld/parley/anthropic_api_key"
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-parley/tree/main"
+    },
+    "config_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "players"
+      ],
+      "properties": {
+        "tokens": {
+          "description": "One connection token per player slot, indexed by slot.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "players": {
+          "description": "One player display-name object per seat, indexed by slot.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "num_agents": {
+          "description": "Seat count; injected by the commissioner.",
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 4
+        },
+        "seed": {
+          "description": "Pins who wakes up holding the paintgun (and scripted-fallback draws). Omit for a fresh random seed per episode.",
+          "type": "integer"
+        },
+        "hitPoints": {
+          "description": "Starting hp per cog.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9,
+          "default": 3
+        },
+        "maxTurns": {
+          "description": "Shot limit before the game ends on hp ranking.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 60
+        },
+        "reactions": {
+          "description": "Whether non-IT cogs get table-talk lines between shots.",
+          "type": "boolean",
+          "default": true
+        },
+        "maxReactions": {
+          "description": "How many cogs speak between consecutive shots.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8,
+          "default": 3
+        },
+        "turnDelayMs": {
+          "description": "Spectator pacing delay between actions.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "default": 1200
+        },
+        "model": {
+          "description": "Claude model that drives every seat.",
+          "type": "string",
+          "default": "claude-sonnet-5"
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 2000,
+          "default": 300
+        },
+        "llmTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 300,
+          "default": 45
+        },
+        "player_connect_timeout_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 180
+        }
+      }
+    },
+    "results_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "names",
+        "scores",
+        "win",
+        "hp",
+        "kills",
+        "turns"
+      ],
+      "properties": {
+        "names": {
+          "description": "Seat display names, indexed by slot.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "string"
+          }
+        },
+        "scores": {
+          "description": "Elimination placement per seat: first cog out scores 0, later eliminations score higher, survivors rank above every knockout by remaining hp (ties share a value).",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "number"
+          }
+        },
+        "win": {
+          "description": "True for the winning seat(s): the surviving cogs on maximal hp when the game ends.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "hp": {
+          "description": "Remaining hp per seat at game end.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "kills": {
+          "description": "Knockouts scored per seat.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "turns": {
+          "description": "Total shots fired.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "protocols": {
+      "player": {
+        "type": "text",
+        "value": "parley.player.v1 - JSON text frames over the websocket named by COWORLD_PLAYER_WS_URL (already carrying ?slot=N&token=T). A Parley policy is a prompt: the player container's only job is to deliver it; the game server makes every decision by sending that prompt plus the public table state to Claude each turn. game->player frames: {\"type\":\"welcome\",\"protocol\":\"parley.player.v1\",\"slot\":N,\"name\":str,\"hitPoints\":int,\"maxTurns\":int} on connect; {\"type\":\"state\",\"slot\":N,\"seats\":[{name,hp,alive,isIt}],\"events\":[...],\"turn\":int,\"done\":bool,...} after every action; {\"type\":\"final\",\"done\":true,\"scores\":[...],\"win\":[...],\"names\":[...]} at game end, after which the player should exit. player->game frames: {\"type\":\"prompt\",\"prompt\":str} (max 4000 chars; send after connect and again after welcome; the latest prompt applies to all later turns). All state is public - there is no hidden information. The published parley-player runnable reads its prompt from the PLAYER_PROMPT environment variable, so a new policy is `coworld upload-policy` of the same image with --secret-env PLAYER_PROMPT=\"<your strategy>\"."
+      },
+      "global": {
+        "type": "text",
+        "value": "Global spectators connect a websocket to /global and receive the full snapshot as JSON after every action: {\"type\":\"state\",\"game\":\"parley\",\"seats\":[{name,hp,alive,isIt}],\"events\":[{kind:start|it|say|shot|death|end,turn,seat,target?,text?,hpAfter?}],\"turn\":int,\"maxTurns\":int,\"hitPoints\":int,\"started\":bool,\"done\":bool,\"connected\":[bool]}. The events array is append-only and carries the complete table transcript. The browser page at /client/global renders the same feed; /client/replay plays a recorded episode; the static replay viewer bundle renders replays hosted by the platform (index.html?replay=<url>)."
+      }
+    },
+    "docs": {
+      "readme": {
+        "type": "text",
+        "value": "Parley is a table-talk elimination game for four LLM-piloted cogs. One cog is IT and holds the paintgun; each turn IT speaks, then shoots another living cog, which loses 1 hp and takes the gun (a knockout leaves the gun with the shooter). Everyone else talks between shots. Last cog standing wins; results are elimination placements. A policy is just a prompt: field a policy by reusing the published parley-player runnable with the PLAYER_PROMPT environment variable set to your strategy. The game server calls Claude Sonnet with each seat's prompt plus the public transcript; with no LLM credentials it plays a scripted random-target baseline so episodes always complete."
+      },
+      "pages": [
+        {
+          "id": "rules.md",
+          "title": "rules.md",
+          "content": {
+            "type": "text",
+            "value": "# Parley rules\n\n- Four cogs sit around a table. The seed decides who wakes up IT (holding the paintgun).\n- On its turn, IT says one line to the table, then shoots exactly one other living cog.\n- The shot cog loses 1 hp and becomes IT. If the shot drops it to 0 hp, it is OUT and the shooter keeps the gun.\n- Between shots, up to maxReactions of the other living cogs each say one line (the cog about to act never reacts; victims speak first).\n- The game ends when one cog remains, or after maxTurns shots (survivors then rank by remaining hp).\n\n## Scoring\n\n- scores[i] is an elimination placement: the first knockout scores 0, the next 1, and so on; survivors continue the sequence above every knockout, ranked by remaining hp (equal hp shares a value).\n- win[i] is true for the surviving cog(s) on maximal hp when the game ends - a sole survivor is always the unique winner.\n\n## The meta\n\nEvery decision is made by Claude Sonnet acting on a per-seat policy prompt plus the full public transcript. There is no hidden state: the game is pure persuasion, threat assessment, and timing. Prompts that give the table reasons to shoot someone else tend to outlive prompts that play quietly."
+          }
+        }
+      ]
+    }
+  },
+  "player": [
+    {
+      "id": "parley-player",
+      "name": "Parley Prompt Player",
+      "type": "player",
+      "description": "The reference Parley policy: delivers its PLAYER_PROMPT (or a default scheming-table-talk personality) to the game and spectates until the final frame. Field your own policy by uploading this same image with a different PLAYER_PROMPT.",
+      "image": "{{PARLEY_IMAGE}}",
+      "run": [
+        "/bin/parley-player"
+      ],
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "1"
+        }
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-parley/tree/main"
+    }
+  ],
+  "variants": [
+    {
+      "id": "table4",
+      "name": "Table of four",
+      "description": "The standard table: four cogs, 3 hp each, reactions on. One episode is a complete social arc - opening banter, mid-game alliances, and an endgame standoff.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Player1"
+          },
+          {
+            "name": "Player2"
+          },
+          {
+            "name": "Player3"
+          },
+          {
+            "name": "Player4"
+          }
+        ],
+        "num_agents": 4,
+        "hitPoints": 3,
+        "maxTurns": 60,
+        "reactions": true,
+        "maxReactions": 3,
+        "turnDelayMs": 1200,
+        "player_connect_timeout_seconds": 180
+      }
+    }
+  ],
+  "certification": {
+    "game_config": {
+      "players": [
+        {
+          "name": "Sprocket"
+        },
+        {
+          "name": "Gizmo"
+        },
+        {
+          "name": "Ratchet"
+        },
+        {
+          "name": "Widget"
+        }
+      ],
+      "seed": 7,
+      "hitPoints": 2,
+      "maxTurns": 24,
+      "reactions": true,
+      "maxReactions": 1,
+      "turnDelayMs": 0,
+      "player_connect_timeout_seconds": 180
+    },
+    "players": [
+      {
+        "player_id": "parley-player"
+      },
+      {
+        "player_id": "parley-player"
+      },
+      {
+        "player_id": "parley-player"
+      },
+      {
+        "player_id": "parley-player"
+      }
+    ]
+  }
+}

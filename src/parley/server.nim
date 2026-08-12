@@ -1,0 +1,454 @@
+## Parley game server: implements the Coworld game contract.
+##
+## Endpoints:
+##   GET /healthz                    - liveness
+##   GET /client/global              - spectator page
+##   GET /client/player              - player page (view-only; policies are prompts)
+##   GET /client/replay              - replay page (replay mode)
+##   GET /client/renderer.js         - shared table renderer
+##   GET /client/assets/<name>       - sprites and fonts
+##   WS  /player?slot=N&token=T      - player protocol (prompt delivery)
+##   WS  /global                     - spectator snapshots
+##   WS  /replay                     - replay payload (replay mode)
+##
+## Player protocol (parley.player.v1), all JSON text frames:
+##   game -> player: {"type":"welcome","slot":N,"name":...}
+##                   {"type":"state",...} after every event batch
+##                   {"type":"final","scores":[...],"win":[...]}
+##   player -> game: {"type":"prompt","prompt":"..."} (max 4000 chars)
+
+import
+  std/[json, locks, os, sets, strutils, tables, times],
+  bitworld/runtime,
+  curly,
+  mummy,
+  mummy/routers,
+  llm,
+  sim
+
+const
+  MaxPromptLen = 4000
+  ReplayVersion = 1
+
+type
+  GameState = object
+    config: GameConfig
+    sim: Sim
+    prompts: seq[string]
+    promptSet: seq[bool]
+    playerSockets: Table[int, WebSocket]
+    socketSlots: Table[WebSocket, int]
+    globalSockets: HashSet[WebSocket]
+    started: bool
+    finished: bool
+
+var
+  stateLock: Lock
+  state: GameState
+  gameServer: Server
+  runtimeConfigGlobal: RuntimeConfig
+  replayPayloadGlobal: string
+
+initLock(stateLock)
+
+proc clientDir(): string =
+  let appDir = getAppDir()
+  for candidate in [appDir / "client", appDir / ".." / "client", "client"]:
+    if dirExists(candidate):
+      return candidate
+  "client"
+
+proc dataDir(): string =
+  let appDir = getAppDir()
+  for candidate in [appDir / "data", appDir / ".." / "data", "data"]:
+    if dirExists(candidate):
+      return candidate
+  "data"
+
+proc snapshotJson(gs: GameState): JsonNode =
+  var events = newJArray()
+  for event in gs.sim.events:
+    events.add(event.eventToJson())
+  var connected = newJArray()
+  for slot in 0 ..< gs.config.tokens.len:
+    connected.add(%gs.playerSockets.hasKey(slot))
+  %*{
+    "type": "state",
+    "game": "parley",
+    "seats": gs.sim.seatStates(),
+    "events": events,
+    "turn": gs.sim.turn,
+    "maxTurns": gs.config.maxTurns,
+    "hitPoints": gs.config.hitPoints,
+    "started": gs.started,
+    "done": gs.sim.done,
+    "connected": connected
+  }
+
+proc broadcastLocked(gs: GameState) =
+  ## Callers hold stateLock.
+  let payload = $gs.snapshotJson()
+  for socket in gs.globalSockets:
+    socket.send(payload)
+  for slot, socket in gs.playerSockets:
+    var observation = gs.snapshotJson()
+    observation["type"] = %"state"
+    observation["slot"] = %slot
+    socket.send($observation)
+
+proc broadcast() =
+  withLock stateLock:
+    state.broadcastLocked()
+
+proc writeArtifact(uri, data, contentType, methodEnv: string) =
+  ## Writes a Coworld artifact, honoring the platform's PUT/POST method hint.
+  if uri.len == 0:
+    return
+  let httpMethod = getEnv(methodEnv, "PUT").toUpperAscii()
+  if uri.isHttpCogameUri() and httpMethod == "POST":
+    let curl = newCurly()
+    var headers: HttpHeaders
+    headers["content-type"] = contentType
+    let response = curl.post(uri, headers, data, 60)
+    if response.code < 200 or response.code >= 300:
+      raise newException(IOError,
+        "artifact POST failed: " & $response.code)
+  else:
+    writeCogameUri(uri, data, contentType, methodEnv)
+
+proc replayPayload(gs: GameState, results: JsonNode): string =
+  var names = newJArray()
+  for seat in gs.sim.seats:
+    names.add(%seat.name)
+  var events = newJArray()
+  for event in gs.sim.events:
+    events.add(event.eventToJson())
+  $ %*{
+    "protocol": "parley.replay.v" & $ReplayVersion,
+    "names": names,
+    "config": {
+      "hitPoints": gs.config.hitPoints,
+      "maxTurns": gs.config.maxTurns,
+      "seed": gs.config.seed
+    },
+    "events": events,
+    "results": results
+  }
+
+proc statesFromEvents(config: GameConfig, events: seq[GameEvent]): JsonNode =
+  ## One seat-state array per event prefix, for scrubbing replays.
+  result = newJArray()
+  for snapshot in replaySim(config, events):
+    result.add(snapshot.seatStates())
+
+proc finishEpisode(runtimeConfig: RuntimeConfig) =
+  var results: JsonNode
+  var replayData: string
+  withLock stateLock:
+    if state.finished:
+      return
+    state.finished = true
+    results = state.sim.resultsJson()
+    replayData = state.replayPayload(results)
+
+    ## Send final frames to players BEFORE writing artifacts: the hosted
+    ## worker tears player pods down as soon as results.json exists, and
+    ## writing first would race player log collection.
+    var final = %*{
+      "type": "final",
+      "done": true,
+      "scores": results["scores"],
+      "win": results["win"],
+      "names": results["names"]
+    }
+    for slot, socket in state.playerSockets:
+      final["slot"] = %slot
+      socket.send($final)
+    state.broadcastLocked()
+
+  sleep(500)
+  echo "parley: writing results and replay"
+  writeArtifact(
+    runtimeConfig.resultsUri, $results, "application/json",
+    "COGAME_RESULTS_METHOD"
+  )
+  writeArtifact(
+    runtimeConfig.replayUri, replayData, "application/octet-stream",
+    "COGAME_SAVE_REPLAY_METHOD"
+  )
+  sleep(500)
+  echo "parley: episode complete, shutting down"
+  quit(0)
+
+proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
+  {.gcsafe.}:
+    let config = state.config
+    let deadline = epochTime() + config.playerConnectTimeoutSeconds
+
+    while epochTime() < deadline:
+      var allConnected = false
+      withLock stateLock:
+        allConnected = state.playerSockets.len >= config.tokens.len
+      if allConnected:
+        break
+      sleep(200)
+
+    withLock stateLock:
+      state.started = true
+      echo "parley: starting with ", state.playerSockets.len, "/",
+        config.tokens.len, " players connected"
+      state.broadcastLocked()
+
+    let client = newLlmClient(config)
+
+    while true:
+      var simCopy: Sim
+      var itSeat: int
+      var itPrompt: string
+      withLock stateLock:
+        if state.sim.done:
+          break
+        simCopy = state.sim
+        itSeat = state.sim.itSeat
+        itPrompt = state.prompts[itSeat]
+
+      ## The slow part (Sonnet) runs outside the lock on a snapshot; only
+      ## this thread mutates the sim, so the snapshot cannot go stale.
+      let shot = client.decide(simCopy, itSeat, itPrompt, wantShot = true)
+
+      withLock stateLock:
+        state.sim.recordSay(itSeat, shot.say)
+        try:
+          state.sim.applyShot(itSeat, shot.target)
+        except ParleyError as error:
+          echo "parley: llm shot rejected (", error.msg, "); using fallback"
+          let fallback = client.scriptedShot(state.sim, itSeat)
+          state.sim.applyShot(itSeat, fallback.target)
+        state.broadcastLocked()
+
+      if config.turnDelayMs > 0:
+        sleep(config.turnDelayMs)
+
+      var done = false
+      withLock stateLock:
+        done = state.sim.done
+      if done:
+        break
+
+      if config.reactions:
+        ## Table talk between shots: the new "it" acts next turn, so let a
+        ## few of the other cogs get a word in - victims first.
+        var speakers: seq[int]
+        withLock stateLock:
+          let nextIt = state.sim.itSeat
+          for offset in 1 ..< state.sim.seats.len:
+            let seat = (nextIt + offset) mod state.sim.seats.len
+            if state.sim.seats[seat].alive and seat != nextIt:
+              speakers.add(seat)
+        if speakers.len > config.maxReactions:
+          speakers.setLen(config.maxReactions)
+        for seat in speakers:
+          var reactionCopy: Sim
+          var reactionPrompt: string
+          withLock stateLock:
+            reactionCopy = state.sim
+            reactionPrompt = state.prompts[seat]
+          let reaction = client.decide(
+            reactionCopy, seat, reactionPrompt, wantShot = false
+          )
+          if reaction.say.len > 0:
+            withLock stateLock:
+              state.sim.recordSay(seat, reaction.say)
+              state.broadcastLocked()
+          if config.turnDelayMs > 0:
+            sleep(config.turnDelayMs div 2)
+
+    finishEpisode(runtimeConfig)
+
+var gameThread: Thread[RuntimeConfig]
+
+proc serveFile(request: Request, path, contentType: string) =
+  if fileExists(path):
+    var headers: HttpHeaders
+    headers["Content-Type"] = contentType
+    request.respond(200, headers, readFile(path))
+  else:
+    request.respond(404)
+
+proc htmlHandler(name: string): RequestHandler =
+  proc handler(request: Request) {.gcsafe.} =
+    {.gcsafe.}:
+      serveFile(request, clientDir() / name, "text/html; charset=utf-8")
+  handler
+
+proc assetHandler(request: Request) {.gcsafe.} =
+  {.gcsafe.}:
+    let name = request.pathParams["name"]
+    if "/" in name or "\\" in name or name.startsWith("."):
+      request.respond(404)
+      return
+    let contentType =
+      if name.endsWith(".png"): "image/png"
+      elif name.endsWith(".ttf"): "font/ttf"
+      else: "application/octet-stream"
+    serveFile(request, dataDir() / name, contentType)
+
+proc rendererHandler(request: Request) {.gcsafe.} =
+  {.gcsafe.}:
+    serveFile(
+      request, clientDir() / "renderer.js",
+      "application/javascript; charset=utf-8"
+    )
+
+proc chromeCssHandler(request: Request) {.gcsafe.} =
+  {.gcsafe.}:
+    serveFile(
+      request, clientDir() / "chrome.css",
+      "text/css; charset=utf-8"
+    )
+
+proc healthzHandler(request: Request) {.gcsafe.} =
+  var headers: HttpHeaders
+  headers["Content-Type"] = "application/json"
+  request.respond(200, headers, """{"ok": true}""")
+
+proc playerUpgradeHandler(request: Request) {.gcsafe.} =
+  {.gcsafe.}:
+    let slotText = request.queryParams["slot"]
+    let token = request.queryParams["token"]
+    var slot = -1
+    try:
+      slot = parseInt(slotText)
+    except ValueError:
+      discard
+    var authorized = false
+    withLock stateLock:
+      authorized = slot >= 0 and slot < state.config.tokens.len and
+        state.config.tokens[slot] == token
+    if not authorized:
+      request.respond(401)
+      return
+    let websocket = request.upgradeToWebSocket()
+    withLock stateLock:
+      state.playerSockets[slot] = websocket
+      state.socketSlots[websocket] = slot
+      echo "parley: player slot ", slot, " connected (",
+        state.playerSockets.len, "/", state.config.tokens.len, ")"
+      websocket.send($ %*{
+        "type": "welcome",
+        "protocol": "parley.player.v1",
+        "slot": slot,
+        "name": state.sim.seats[slot].name,
+        "hitPoints": state.config.hitPoints,
+        "maxTurns": state.config.maxTurns
+      })
+
+proc globalUpgradeHandler(request: Request) {.gcsafe.} =
+  {.gcsafe.}:
+    let websocket = request.upgradeToWebSocket()
+    withLock stateLock:
+      state.globalSockets.incl(websocket)
+      websocket.send($state.snapshotJson())
+
+proc replayUpgradeHandler(request: Request) {.gcsafe.} =
+  {.gcsafe.}:
+    let websocket = request.upgradeToWebSocket()
+    if replayPayloadGlobal.len > 0:
+      websocket.send(replayPayloadGlobal)
+
+proc websocketHandler(
+  websocket: WebSocket,
+  event: WebSocketEvent,
+  message: Message
+) {.gcsafe.} =
+  {.gcsafe.}:
+    case event
+    of OpenEvent:
+      discard
+    of MessageEvent:
+      if message.kind != TextMessage:
+        return
+      var slot = -1
+      withLock stateLock:
+        slot = state.socketSlots.getOrDefault(websocket, -1)
+      if slot < 0:
+        return
+      try:
+        let payload = parseJson(message.data)
+        if payload{"type"}.getStr() == "prompt":
+          var prompt = payload{"prompt"}.getStr()
+          if prompt.len > MaxPromptLen:
+            prompt = prompt[0 ..< MaxPromptLen]
+          withLock stateLock:
+            state.prompts[slot] = prompt
+            state.promptSet[slot] = true
+          echo "parley: slot ", slot, " delivered a prompt (",
+            prompt.len, " chars)"
+      except CatchableError as error:
+        echo "parley: ignoring bad player frame: ", error.msg
+    of ErrorEvent:
+      discard
+    of CloseEvent:
+      withLock stateLock:
+        if websocket in state.socketSlots:
+          let slot = state.socketSlots[websocket]
+          state.socketSlots.del(websocket)
+          if state.playerSockets.getOrDefault(slot) == websocket:
+            state.playerSockets.del(slot)
+        state.globalSockets.excl(websocket)
+
+proc buildRouter(replayMode: bool): Router =
+  result.get("/healthz", healthzHandler)
+  result.get("/client/global", htmlHandler("global.html"))
+  result.get("/client/player", htmlHandler("player.html"))
+  result.get("/client/replay", htmlHandler("replay.html"))
+  result.get("/client/renderer.js", rendererHandler)
+  result.get("/client/chrome.css", chromeCssHandler)
+  result.get("/client/assets/@name", assetHandler)
+  result.get("/global", globalUpgradeHandler)
+  result.get("/replay", replayUpgradeHandler)
+  if not replayMode:
+    result.get("/player", playerUpgradeHandler)
+
+proc runReplayServer*(runtimeConfig: RuntimeConfig) =
+  ## Replay mode: parse the recorded replay, precompute the scrub states,
+  ## and serve the viewer until the platform tears the container down.
+  let payload = parseJson(runtimeConfig.replay)
+  var config = defaultGameConfig()
+  config.hitPoints = payload["config"]{"hitPoints"}.getInt(3)
+  config.maxTurns = payload["config"]{"maxTurns"}.getInt(60)
+  for name in payload["names"]:
+    config.players.add(PlayerConfig(name: name.getStr()))
+  var events: seq[GameEvent]
+  for node in payload["events"]:
+    events.add(eventFromJson(node))
+  var enriched = %*{
+    "type": "replay",
+    "protocol": payload{"protocol"}.getStr("parley.replay.v1"),
+    "names": payload["names"],
+    "config": payload["config"],
+    "events": payload["events"],
+    "results": payload{"results"},
+    "states": statesFromEvents(config, events)
+  }
+  replayPayloadGlobal = $enriched
+
+  let router = buildRouter(replayMode = true)
+  gameServer = newServer(router, websocketHandler)
+  echo "parley: replay mode on ", runtimeConfig.host, ":", runtimeConfig.port
+  gameServer.serve(Port(runtimeConfig.port), runtimeConfig.host)
+
+proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
+  if config.tokens.len != config.players.len:
+    raise newException(ParleyError, "tokens and players must align")
+  state.config = config
+  state.sim = initSim(config)
+  state.prompts = newSeq[string](config.players.len)
+  state.promptSet = newSeq[bool](config.players.len)
+  runtimeConfigGlobal = runtimeConfig
+
+  let router = buildRouter(replayMode = false)
+  gameServer = newServer(router, websocketHandler)
+  createThread(gameThread, runGame, runtimeConfig)
+  echo "parley: serving on ", runtimeConfig.host, ":", runtimeConfig.port
+  gameServer.serve(Port(runtimeConfig.port), runtimeConfig.host)

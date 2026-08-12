@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Parley — Replay</title>
+<link rel="stylesheet" href="./chrome.css">
+</head>
+<body>
+<div id="layout">
+  <div id="stage">
+    <div id="topband">
+      <div id="wordmark">PAR<span>LEY</span></div>
+      <div id="clock">TURN 0</div>
+      <div id="statuschip">replay</div>
+    </div>
+    <div id="board-wrap">
+      <canvas id="table" width="960" height="640"></canvas>
+      <div id="lightpool"></div>
+      <div id="grain"></div>
+    </div>
+    <div id="transport">
+      <div class="scrub" id="scrub"></div>
+      <div class="tbar">
+        <button class="tbtn" id="play">❚❚</button>
+        <span class="tpos" id="pos">0 / 0</span>
+      </div>
+    </div>
+  </div>
+  <div id="feed"></div>
+</div>
+<div id="loading">LOADING REPLAY…</div>
+<script>
+  var parleyCanvas = document.getElementById("table");
+  function parleyFit() {
+    parleyCanvas.width = parleyCanvas.clientWidth;
+    parleyCanvas.height = parleyCanvas.clientHeight;
+  }
+  window.addEventListener("resize", parleyFit);
+  window.addEventListener("load", parleyFit);
+</script>
+<script src="./renderer.js"></script>
+<script src="./parley_replay.js"></script>
+<script src="./static_replay.js"></script>
+</body>
+</html>

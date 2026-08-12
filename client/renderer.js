@@ -98,16 +98,66 @@
     return cut + "…";
   }
 
-  function seatPosition(index, count, width, height) {
+  // Nominal cog size; everything below a cog (name, hearts, cards) is measured
+  // as a multiple of it so the whole seat scales as one block.
+  var SEAT_BASE = 84;
+  var CARD_W = 34, CARD_H = 46, CARD_GAP = 21, CARD_DROP = 60;
+
+  function seatExtent(size) {
+    // How far one seat reaches above and below its cog's centre. The stack is
+    // lopsided — nothing above the sprite, four stacked rows below it — which
+    // is why the ring has to be centred on the extent rather than on the
+    // canvas.
+    var scale = size / SEAT_BASE;
+    return {
+      above: size / 2,
+      below: size * 0.62 + (CARD_DROP + CARD_H / 2 + 8) * scale,
+      half: Math.max(size / 2, (CARD_GAP + CARD_W / 2 + 2) * scale)
+    };
+  }
+
+  function computeLayout(width, height, count) {
+    // Shrink the cogs until every seat's FULL stack fits the canvas and the
+    // ring is still wide enough to keep neighbours from overlapping. Callers
+    // embed this viewer at wildly different sizes (a league page's featured
+    // panel is far shorter than a standalone tab), so the fit is solved per
+    // frame rather than assumed.
+    var margin = 10;
+    var size = Math.min(SEAT_BASE, (width / count) * 0.9);
+    var ext, rx, ry;
+    for (var attempt = 0; attempt < 40; attempt++) {
+      ext = seatExtent(size);
+      ry = (height - 2 * margin - ext.above - ext.below) / 2;
+      rx = (width - 2 * margin - 2 * ext.half) / 2;
+      // Neighbouring seats sit 2*r*sin(pi/count) apart on the ring; require
+      // that gap to clear a seat's own width.
+      var spread = 2 * Math.min(rx, ry) * Math.sin(Math.PI / count);
+      if (ry > 0 && rx > 0 && spread >= ext.half * 2) break;
+      size *= 0.92;
+    }
+    // The fit above yields the LARGEST ring the box allows, which on a wide
+    // panel stretches the seats to the far edges and leaves a dead middle.
+    // Cap the eccentricity so the arrangement still reads as cogs around a
+    // table, then centre what's left over.
+    rx = Math.max(Math.min(rx, ry * 1.7), 0);
+    ry = Math.max(Math.min(ry, rx * 1.7), 0);
+    var stack = ext.above + ext.below;
+    return {
+      size: size,
+      scale: size / SEAT_BASE,
+      cx: width / 2,
+      cy: (height - (2 * ry + stack)) / 2 + ext.above + ry,
+      rx: rx,
+      ry: ry
+    };
+  }
+
+  function seatPosition(index, count, layout) {
     // Seat 0 at the bottom, going clockwise around the table.
     var angle = Math.PI / 2 + (index * 2 * Math.PI) / count;
-    var cx = width / 2;
-    var cy = height / 2 - 12;
-    var rx = width * 0.36;
-    var ry = height * 0.33;
     return {
-      x: cx + rx * Math.cos(angle),
-      y: cy + ry * Math.sin(angle)
+      x: layout.cx + layout.rx * Math.cos(angle),
+      y: layout.cy + layout.ry * Math.sin(angle)
     };
   }
 
@@ -137,6 +187,7 @@
     var seats = view.seats || [];
     var count = Math.max(seats.length, 2);
     var now = view.now || Date.now();
+    var layout = computeLayout(w, h, count);
 
     // Floor.
     var floor = images["arena_floor.png"];
@@ -152,13 +203,13 @@
 
     // No table is drawn: the cogs and their cards are the composition.
     // cx/cy stay the center the paint splats and seat ring reference.
-    var cx = w / 2, cy = h / 2 - 12;
+    var cx = layout.cx, cy = layout.cy;
 
     // Old paint splats on the table (from shot history).
     (view.splats || []).forEach(function (splat) {
       var age = now - splat.at;
       if (age > SPLAT_MS) return;
-      var pos = seatPosition(splat.seat, count, w, h);
+      var pos = seatPosition(splat.seat, count, layout);
       var toward = { x: cx + (pos.x - cx) * 0.55, y: cy + (pos.y - cy) * 0.55 };
       var alpha = Math.max(0, 1 - age / SPLAT_MS) * 0.85;
       ctx.save();
@@ -175,8 +226,8 @@
     // Paintball in flight.
     if (view.shot && now - view.shot.at < SHOT_MS) {
       var t = (now - view.shot.at) / SHOT_MS;
-      var from = seatPosition(view.shot.from, count, w, h);
-      var to = seatPosition(view.shot.to, count, w, h);
+      var from = seatPosition(view.shot.from, count, layout);
+      var to = seatPosition(view.shot.to, count, layout);
       var bx = from.x + (to.x - from.x) * t;
       var by = from.y + (to.y - from.y) * t - Math.sin(Math.PI * t) * 40;
       ctx.save();
@@ -193,11 +244,12 @@
 
     // Cogs.
     seats.forEach(function (seat, index) {
-      var pos = seatPosition(index, count, w, h);
+      var pos = seatPosition(index, count, layout);
       var color = seatColor(index);
       var spriteName = "soldier_" + color + "_front" + (seat.isIt ? "_gun" : "") + ".png";
       var sprite = images[spriteName];
-      var size = Math.min(84, w / count * 0.9);
+      var size = layout.size;
+      var scale = layout.scale;
 
       ctx.save();
       ctx.translate(pos.x, pos.y);
@@ -228,7 +280,7 @@
 
       // Name.
       ctx.save();
-      ctx.font = "600 13px 'rajdhani', system-ui, sans-serif";
+      ctx.font = "600 " + Math.round(13 * scale) + "px 'rajdhani', system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = seat.alive ? PAPER : GHOST;
       ctx.shadowColor = "rgba(0,0,0,0.8)";
@@ -243,17 +295,18 @@
       var heart = images["heart_red.png"];
       var hp = Math.max(seat.hp, 0);
       var maxHp = view.hitPoints || 3;
-      var hw = 14;
+      var hw = 14 * scale;
+      var hs = 12 * scale;
       var startX = pos.x - (maxHp * hw) / 2;
       for (var i = 0; i < maxHp; i++) {
         ctx.save();
         ctx.globalAlpha = i < hp ? 1 : 0.18;
         if (heart && heart.width) {
           ctx.imageSmoothingEnabled = false;
-          ctx.drawImage(heart, startX + i * hw, pos.y + size * 0.62 + 20, 12, 12);
+          ctx.drawImage(heart, startX + i * hw, pos.y + size * 0.62 + 20 * scale, hs, hs);
         } else {
           ctx.fillStyle = i < hp ? "#e0523a" : "#3a2f24";
-          ctx.fillRect(startX + i * hw, pos.y + size * 0.62 + 20, 10, 10);
+          ctx.fillRect(startX + i * hw, pos.y + size * 0.62 + 20 * scale, hs, hs);
         }
         ctx.restore();
       }
@@ -262,11 +315,11 @@
       // green-framed FRIEND card and a red-framed ENEMY card, each showing
       // the target cog's portrait.
       if (seat.friend >= 0 && seat.enemy >= 0 && seat.alive) {
-        var cardY = pos.y + size * 0.62 + 60;
-        drawCard(ctx, images, pos.x - 21, cardY,
-          seat.friend, "#45a85e", "\u2665", -0.05);
-        drawCard(ctx, images, pos.x + 21, cardY,
-          seat.enemy, "#e0523a", "\u2715", 0.05, seat.enemyDone);
+        var cardY = pos.y + size * 0.62 + CARD_DROP * scale;
+        drawCard(ctx, images, pos.x - CARD_GAP * scale, cardY,
+          seat.friend, "#45a85e", "\u2665", -0.05, false, scale);
+        drawCard(ctx, images, pos.x + CARD_GAP * scale, cardY,
+          seat.enemy, "#e0523a", "\u2715", 0.05, seat.enemyDone, scale);
       }
     });
 
@@ -274,18 +327,20 @@
     (view.bubbles || []).forEach(function (bubble) {
       var age = now - bubble.at;
       if (age > BUBBLE_MS) return;
-      var pos = seatPosition(bubble.seat, count, w, h);
+      var pos = seatPosition(bubble.seat, count, layout);
       var alpha = age > BUBBLE_MS - 600 ? (BUBBLE_MS - age) / 600 : 1;
-      drawBubble(ctx, w, pos.x, pos.y - 58, bubble.text, alpha);
+      drawBubble(ctx, w, pos.x, pos.y - layout.size * 0.69, bubble.text, alpha);
     });
 
   }
 
   function drawCard(ctx, images, x, y, targetSeat, frameColor, glyph, tilt,
-    checked) {
-    var cw = 34, chh = 46;
+    checked, scale) {
+    var s = scale || 1;
+    var cw = CARD_W, chh = CARD_H;
     ctx.save();
     ctx.translate(x, y);
+    ctx.scale(s, s);
     ctx.rotate(tilt);
     // Paper face with a thick friend-green / enemy-red frame.
     ctx.fillStyle = PAPER;
@@ -541,6 +596,13 @@
 
   // Per-cog plates for the top band: colored name, cumulative match score,
   // one amber pip per round win, and an IT chip on the armed cog.
+  // Policy display names are arbitrary strings; a long one blows out whatever
+  // row it lands in. One clamp, used by every place a name is shown as text.
+  function clampName(name) {
+    var n = name || "";
+    return n.length > 24 ? n.slice(0, 23) + "\u2026" : n;
+  }
+
   function updateScorebug(container, seats) {
     if (!container || !seats) return;
     var html = "";
@@ -551,7 +613,7 @@
       }
       html += '<div class="plate ' + seatColor(index) +
         (seat.alive ? "" : " dead") + '">' +
-        '<span class="plate-name">' + escapeHtml(seat.name) + "</span>" +
+        '<span class="plate-name">' + escapeHtml(clampName(seat.name)) + "</span>" +
         (seat.isIt ? '<span class="plate-it">IT</span>' : "") +
         '<span class="plate-score">' + (seat.score || 0) + "</span>" +
         '<span class="plate-label">pts</span>' +
@@ -616,8 +678,18 @@
     container.innerHTML = html;
   }
 
-  function bindFeedToggle(button) {
+  function bindFeedToggle(button, startCollapsed) {
     if (!button) return;
+    // Replays open on the table, not the transcript: the log is a click away
+    // and the arena gets the whole frame until someone asks for it.
+    if (startCollapsed) {
+      document.body.classList.add("feed-collapsed");
+      // The page sized its canvas before this ran; let the collapse reflow
+      // land, then tell it to re-measure against the now-full-width arena.
+      requestAnimationFrame(function () {
+        window.dispatchEvent(new Event("resize"));
+      });
+    }
     function refresh() {
       button.textContent =
         document.body.classList.contains("feed-collapsed") ? "\u00ab LOG" : "LOG \u00bb";

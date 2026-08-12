@@ -12,7 +12,7 @@
 ## A match is `rounds` rounds; the deal reshuffles every round and match
 ## scores are the round points summed.
 
-import std/[json, random, strutils], types
+import std/[json, random, sequtils, strutils, tables], types
 
 export types
 
@@ -75,36 +75,106 @@ proc addEvent(
     points: points
   ))
 
+proc derangement(rng: var Rand, n: int, avoid: seq[int] = @[]): seq[int] =
+  ## A permutation of 0..<n where no seat maps to itself, nor to the seat at the
+  ## same index in `avoid`. Rejection sampling: the constraints are loose enough
+  ## at n >= 3 that a valid shuffle turns up in a handful of tries.
+  for attempt in 0 .. 999:
+    result = toSeq(0 ..< n)
+    rng.shuffle(result)
+    var ok = true
+    for index in 0 ..< n:
+      if result[index] == index or (avoid.len == n and result[index] == avoid[index]):
+        ok = false
+        break
+    if ok:
+      return
+  ## Fall back to the rotation, which is a derangement by construction and
+  ## distinct from `avoid` whenever `avoid` is the other rotation.
+  result = newSeq[int](n)
+  let step = if avoid.len == n: 2 else: 1
+  for index in 0 ..< n:
+    result[index] = (index + step) mod n
+
 proc dealCards(sim: var Sim) =
   ## Deals every seat a friend and a distinct enemy (never itself),
   ## deterministically from the seed and round so replays and re-runs agree.
+  ##
+  ## Both hands are dealt as PERMUTATIONS of the table, not per-seat draws:
+  ## every cog is exactly one cog's friend and exactly one cog's enemy. Drawing
+  ## each seat's cards independently would let a cog be nobody's friend while
+  ## carrying two cogs' enemy cards, which reads as a bug at the table and
+  ## quietly skews the round's scoring toward whoever drew the popular target.
   let n = sim.seats.len
   if n < 3:
     ## A friend and a distinct enemy need at least two other cogs.
     return
   var rng = initRand(int64(sim.config.seed) * 7919 + int64(sim.round) * 104729 + 17)
+  let friends = derangement(rng, n)
+  let enemies = derangement(rng, n, friends)
   for index in 0 ..< n:
-    var others: seq[int]
-    for other in 0 ..< n:
-      if other != index:
-        others.add(other)
-    let friend = others[rng.rand(others.high)]
-    var enemies: seq[int]
-    for other in others:
-      if other != friend:
-        enemies.add(other)
-    let enemy = enemies[rng.rand(enemies.high)]
-    sim.seats[index].friend = friend
-    sim.seats[index].enemy = enemy
-    sim.addEvent(evDeal, index, friend = friend, enemy = enemy)
+    sim.seats[index].friend = friends[index]
+    sim.seats[index].enemy = enemies[index]
+    sim.addEvent(evDeal, index, friend = friends[index], enemy = enemies[index])
+
+const CogNames* = [
+  "Sprocket", "Gizmo", "Ratchet", "Widget", "Bolt",
+  "Piston", "Flywheel", "Rivet", "Tinker", "Gasket"
+]
+
+proc rosterBaseName(name: string): string =
+  ## Strips a trailing " (n)" — how the platform uniquifies seats that share a
+  ## policy, e.g. "Baseline (3)".
+  result = name
+  if result.len < 4 or result[^1] != ')':
+    return
+  let open = result.rfind(" (")
+  if open < 0:
+    return
+  for index in open + 2 .. result.high - 1:
+    if result[index] notin {'0' .. '9'}:
+      return
+  result = result[0 ..< open]
+
+proc tableNames*(players: seq[PlayerConfig], seed: int): seq[string] =
+  ## Seats filled from the same policy arrive as "Baseline", "Baseline (2)", …
+  ## — a wall of identical names nobody can follow at a table where the whole
+  ## game is talking about each other by name. Any group of seats sharing a
+  ## base name is anonymous by construction, so give each its own cog name.
+  ## Named entrants are never touched.
+  var occurrences = initCountTable[string]()
+  for player in players:
+    occurrences.inc(rosterBaseName(player.name))
+  var rng = initRand(int64(seed) * 6779 + 31)
+  var pool = @CogNames
+  rng.shuffle(pool)
+  ## Never hand a filler the name of a real entrant at the same table.
+  var taken: seq[string]
+  for player in players:
+    if occurrences[rosterBaseName(player.name)] == 1:
+      taken.add(player.name)
+  var next = 0
+  for player in players:
+    if occurrences[rosterBaseName(player.name)] == 1:
+      result.add(player.name)
+      continue
+    while next < pool.len and pool[next] in taken:
+      next.inc
+    if next < pool.len:
+      taken.add(pool[next])
+      result.add(pool[next])
+      next.inc
+    else:
+      result.add(player.name)
 
 proc initSim*(config: GameConfig, round = 0): Sim =
   if config.players.len < 2:
     raise newException(ParleyError, "parley needs at least 2 players")
   result = Sim(config: config, round: round)
-  for player in config.players:
+  let names = tableNames(config.players, config.seed)
+  for index, player in config.players:
     result.seats.add(Seat(
-      name: player.name,
+      name: names[index],
       hp: config.hitPoints,
       alive: true,
       deathIndex: -1,

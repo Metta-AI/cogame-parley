@@ -140,6 +140,52 @@ suite "parley sim":
         check again.seats[index].friend == sim.seats[index].friend
         check again.seats[index].enemy == sim.seats[index].enemy
 
+  test "every cog is exactly one friend card and one enemy card":
+    ## Both hands are permutations of the table, so no cog is dealt to two
+    ## seats as an enemy while being nobody's friend.
+    for seats in 3 .. 6:
+      let config = fixtureConfig(seats, rounds = 3)
+      for round in 0 .. 2:
+        let sim = initSim(config, round)
+        var friendCount = newSeq[int](seats)
+        var enemyCount = newSeq[int](seats)
+        for seat in sim.seats:
+          friendCount[seat.friend].inc
+          enemyCount[seat.enemy].inc
+        for index in 0 ..< seats:
+          check friendCount[index] == 1
+          check enemyCount[index] == 1
+
+  test "filler seats get distinct cog names, entrants keep theirs":
+    ## The shape a hosted league round actually delivers: one real entrant and
+    ## four seats sharing the baseline policy.
+    let roster = @[
+      PlayerConfig(name: "daveey"),
+      PlayerConfig(name: "Baseline"),
+      PlayerConfig(name: "Baseline (2)"),
+      PlayerConfig(name: "Baseline (3)"),
+      PlayerConfig(name: "Baseline (4)")
+    ]
+    let named = tableNames(roster, 42)
+    check named[0] == "daveey"
+    for index in 1 .. 4:
+      check named[index] != roster[index].name
+      check named[index] in CogNames
+    ## Every seat at the table is distinguishable.
+    for a in 0 ..< named.len:
+      for b in a + 1 ..< named.len:
+        check named[a] != named[b]
+    ## Stable for a given seed, so replays and the live table agree.
+    check tableNames(roster, 42) == named
+
+  test "a table of named entrants is left alone":
+    let roster = @[
+      PlayerConfig(name: "daveey"),
+      PlayerConfig(name: "rival"),
+      PlayerConfig(name: "third")
+    ]
+    check tableNames(roster, 7) == @["daveey", "rival", "third"]
+
   test "fatally shooting your enemy scores the bonus":
     var sim = initSim(fixtureConfig(4, hp = 1))
     ## Play the round out: each "it" shoots its enemy when alive, else the

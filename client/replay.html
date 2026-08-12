@@ -44,7 +44,7 @@
   window.addEventListener("resize", fit);
   window.addEventListener("load", fit);
   fit();
-  ParleyRenderer.bindFeedToggle(document.getElementById("feedtoggle"));
+  ParleyRenderer.bindFeedToggle(document.getElementById("feedtoggle"), true);
   var scheme = location.protocol === "https:" ? "wss://" : "ws://";
   var socket = new WebSocket(scheme + location.host + "/replay");
   socket.onmessage = function (frame) {

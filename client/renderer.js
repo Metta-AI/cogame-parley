@@ -8,12 +8,17 @@
   "use strict";
 
   // Ink & Print team palette, matching the coworld-ctf broadcast chrome.
-  var COLORS = ["red", "blue", "green", "yellow"];
+  // Four cog skins ship with the CTF art; the fifth seat is tinted from the
+  // red one at load (see tintedSprite) so no two cogs share an identity.
+  var COLORS = ["red", "blue", "green", "yellow", "violet"];
+  var TINTED_FROM = { violet: "red" };
+  var TINT_ROTATE = { violet: 265 };
   var COLOR_HEX = {
     red: "#e0523a",
     blue: "#3f7cc4",
     green: "#45a85e",
-    yellow: "#ddc531"
+    yellow: "#ddc531",
+    violet: "#a86fd6"
   };
   var PAPER = "#f2e8d8";
   var PAPER_DIM = "#b8ac98";
@@ -46,15 +51,38 @@
     return COLORS[index % COLORS.length];
   }
 
+  // Recolors a shipped sprite via an offscreen canvas, so a seat with no art
+  // of its own still reads as its own cog instead of a duplicate.
+  function tintedSprite(source, degrees) {
+    if (!source || !source.width) return source;
+    var off = document.createElement("canvas");
+    off.width = source.width;
+    off.height = source.height;
+    var octx = off.getContext("2d");
+    octx.filter = "hue-rotate(" + degrees + "deg) saturate(1.15)";
+    octx.imageSmoothingEnabled = false;
+    octx.drawImage(source, 0, 0);
+    return off;
+  }
+
   function makeRenderer(canvas, assetBase, onReady) {
     var ctx = canvas.getContext("2d");
     var names = [];
     COLORS.forEach(function (c) {
+      if (TINTED_FROM[c]) return;
       names.push("soldier_" + c + "_front.png");
       names.push("soldier_" + c + "_front_gun.png");
     });
     names.push("heart_red.png", "arena_floor.png", "paintgun.png");
     loadImages(assetBase, names, function (images) {
+      Object.keys(TINTED_FROM).forEach(function (color) {
+        var base = TINTED_FROM[color];
+        ["_front.png", "_front_gun.png"].forEach(function (suffix) {
+          images["soldier_" + color + suffix] = tintedSprite(
+            images["soldier_" + base + suffix], TINT_ROTATE[color]
+          );
+        });
+      });
       onReady({
         draw: function (view) { draw(ctx, canvas, images, view); }
       });
@@ -403,7 +431,7 @@
       }
       var cls = "feed-line feed-" + event.kind +
         (event.kind === "roundEnd" ? " feed-rwin" : "") +
-        (event.kind === "score" ? " feed-score seat" + (event.seat % 4) : "") +
+        (event.kind === "score" ? " feed-score seat" + (event.seat % COLORS.length) : "") +
         (i >= limit ? " feed-future" : "");
       html += '<div class="' + cls + '">' +
         escapeHtml(describeEvent(event, names)) + "</div>";
@@ -692,7 +720,7 @@
       var kind = event.kind;
       if (kind !== "shot" && kind !== "death" && kind !== "roundEnd") return;
       var marker = document.createElement("div");
-      marker.className = "beat-marker seat" + (event.seat % 4) +
+      marker.className = "beat-marker seat" + (event.seat % COLORS.length) +
         (kind === "death" ? " death" : "") +
         (kind === "roundEnd" ? " rwin" : "");
       if (kind === "roundEnd") {

@@ -33,8 +33,10 @@ type
     config*: GameConfig
     sim*: Sim                 ## the round in progress
     history: seq[GameEvent]   ## events of completed rounds
-    totals*: seq[float]       ## summed placement scores
-    roundWins*: seq[int]      ## rounds won per seat
+    totals*: seq[float]       ## summed round points
+    roundWins*: seq[int]      ## rounds won per seat (3 pts each)
+    friendPoints*: seq[int]   ## rounds where the seat's friend won (1 pt each)
+    foePoints*: seq[int]      ## rounds where the seat fatally shot its enemy
     killsTotal*: seq[int]
     turnsTotal*: int
     done*: bool
@@ -192,6 +194,8 @@ proc initMatch*(config: GameConfig): Match =
     sim: initSim(normalized, 0),
     totals: newSeq[float](normalized.players.len),
     roundWins: newSeq[int](normalized.players.len),
+    friendPoints: newSeq[int](normalized.players.len),
+    foePoints: newSeq[int](normalized.players.len),
     killsTotal: newSeq[int](normalized.players.len)
   )
 
@@ -208,6 +212,11 @@ proc finishRound*(match: var Match) =
   for index in 0 ..< match.totals.len:
     match.totals[index] += roundScores[index]
     match.killsTotal[index] += match.sim.seats[index].kills
+    if match.sim.seats[index].enemyKill:
+      inc match.foePoints[index]
+    let friend = match.sim.seats[index].friend
+    if friend >= 0 and roundWinners[friend]:
+      inc match.friendPoints[index]
     if roundWinners[index]:
       inc match.roundWins[index]
       match.sim.addEvent(evRoundEnd, index)
@@ -236,6 +245,8 @@ proc resultsJson*(match: Match): JsonNode =
   var hpNode = newJArray()
   var killsNode = newJArray()
   var roundWinsNode = newJArray()
+  var friendNode = newJArray()
+  var foeNode = newJArray()
   for index, seat in match.sim.seats:
     names.add(%seat.name)
     scoresNode.add(%match.totals[index])
@@ -243,6 +254,8 @@ proc resultsJson*(match: Match): JsonNode =
     hpNode.add(%max(seat.hp, 0))
     killsNode.add(%match.killsTotal[index])
     roundWinsNode.add(%match.roundWins[index])
+    friendNode.add(%match.friendPoints[index])
+    foeNode.add(%match.foePoints[index])
   %*{
     "names": names,
     "scores": scoresNode,
@@ -250,6 +263,8 @@ proc resultsJson*(match: Match): JsonNode =
     "hp": hpNode,
     "kills": killsNode,
     "roundWins": roundWinsNode,
+    "friendPoints": friendNode,
+    "foePoints": foeNode,
     "rounds": match.config.rounds,
     "turns": match.turnsTotal
   }

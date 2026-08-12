@@ -233,16 +233,15 @@
         ctx.restore();
       }
 
-      // This round's secret cards, fanned beside the cog: a heart card in
-      // the FRIEND's color and a cross card in the ENEMY's color.
+      // This round's secret cards dealt under the cog, side by side: a
+      // green-framed FRIEND card and a red-framed ENEMY card, each showing
+      // the target cog's portrait.
       if (seat.friend >= 0 && seat.enemy >= 0 && seat.alive) {
-        // Fan the cards toward the table so they never clip the edge.
-        var side = pos.x > w / 2 ? -1 : 1;
-        var cardX = pos.x + side * size * 0.62;
-        drawCard(ctx, cardX, pos.y - size * 0.28,
-          COLOR_HEX[seatColor(seat.friend)], "\u2665", -0.14 * side);
-        drawCard(ctx, cardX + side * 13, pos.y - size * 0.28 + 5,
-          COLOR_HEX[seatColor(seat.enemy)], "\u2715", 0.12 * side);
+        var cardY = pos.y + size * 0.62 + 60;
+        drawCard(ctx, images, pos.x - 21, cardY,
+          seat.friend, "#45a85e", "\u2665", -0.05);
+        drawCard(ctx, images, pos.x + 21, cardY,
+          seat.enemy, "#e0523a", "\u2715", 0.05);
       }
     });
 
@@ -257,22 +256,30 @@
 
   }
 
-  function drawCard(ctx, x, y, color, glyph, tilt) {
-    var cw = 15, chh = 20;
+  function drawCard(ctx, images, x, y, targetSeat, frameColor, glyph, tilt) {
+    var cw = 34, chh = 46;
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(tilt);
+    // Paper face with a thick friend-green / enemy-red frame.
     ctx.fillStyle = PAPER;
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 1.5;
-    roundRect(ctx, -cw / 2, -chh / 2, cw, chh, 3);
+    ctx.strokeStyle = frameColor;
+    ctx.lineWidth = 3;
+    roundRect(ctx, -cw / 2, -chh / 2, cw, chh, 4);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.font = "700 11px 'rajdhani', system-ui, sans-serif";
+    // The target cog's portrait.
+    var sprite = images["soldier_" + seatColor(targetSeat) + "_front.png"];
+    if (sprite && sprite.width) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(sprite, -13, -15, 26, 26);
+    }
+    // Corner glyph naming the relationship.
+    ctx.fillStyle = frameColor;
+    ctx.font = "700 12px 'rajdhani', system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(glyph, 0, 1);
+    ctx.fillText(glyph, 0, chh / 2 - 8);
     ctx.restore();
   }
 
@@ -409,11 +416,13 @@
       if (section.getAttribute("data-key") === activeKey) {
         section.classList.add("feed-active");
         // Only scroll when the playhead enters a new section, so autoplay
-        // doesn't fight the user's own scrolling within a section.
+        // doesn't fight the user's own scrolling within a section — and
+        // keep the two previous sections visible above it for context.
         if (element.dataset.activeKey !== activeKey) {
           element.dataset.activeKey = activeKey;
+          var anchor = sections[Math.max(0, s - 2)];
           element.scrollTo({
-            top: Math.max(section.offsetTop - element.offsetTop - 8, 0),
+            top: Math.max(anchor.offsetTop - element.offsetTop - 8, 0),
             behavior: "smooth"
           });
         }
@@ -531,22 +540,25 @@
       escapeHtml(winners.join(" & ") || "NOBODY") + " WINS THE MATCH</div>" +
       '<div class="end-rows">' +
       '<span class="end-head"></span><span class="end-head"></span>' +
-      '<span class="end-head">score</span>' +
-      '<span class="end-head">rounds</span>' +
-      '<span class="end-head">kos</span>';
+      '<span class="end-head">total</span>' +
+      '<span class="end-head">survivor</span>' +
+      '<span class="end-head">friend</span>' +
+      '<span class="end-head">foe</span>';
     order.forEach(function (i, rank) {
       var winner = results.win && results.win[i];
+      var cell = function (value) {
+        return '<span class="end-cell' + (winner ? " end-row-winner" : "") +
+          '">' + value + "</span>";
+      };
       html += '<span class="end-cell rank' + (winner ? " end-row-winner" : "") +
         '">' + (rank + 1) + "</span>" +
         '<span class="end-cell name ' + seatColor(i) +
         (winner ? " end-row-winner" : "") + '">' + escapeHtml(names[i]) +
         "</span>" +
-        '<span class="end-cell' + (winner ? " end-row-winner" : "") + '">' +
-        (results.scores[i] || 0) + "</span>" +
-        '<span class="end-cell' + (winner ? " end-row-winner" : "") + '">' +
-        ((results.roundWins || [])[i] || 0) + "</span>" +
-        '<span class="end-cell' + (winner ? " end-row-winner" : "") + '">' +
-        ((results.kills || [])[i] || 0) + "</span>";
+        cell(results.scores[i] || 0) +
+        cell(((results.roundWins || [])[i] || 0) * 3) +
+        cell((results.friendPoints || [])[i] || 0) +
+        cell((results.foePoints || [])[i] || 0);
     });
     html += "</div></div>";
     container.innerHTML = html;

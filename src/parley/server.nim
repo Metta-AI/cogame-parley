@@ -165,6 +165,8 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
       "names": results["names"],
       "kills": results["kills"],
       "roundWins": results["roundWins"],
+      "friendPoints": results["friendPoints"],
+      "foePoints": results["foePoints"],
       "rounds": results["rounds"]
     }
     for slot, socket in state.playerSockets:

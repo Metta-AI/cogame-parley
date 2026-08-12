@@ -148,6 +148,8 @@
         "hp",
         "kills",
         "roundWins",
+        "friendPoints",
+        "foePoints",
         "rounds",
         "turns"
       ],
@@ -218,6 +220,26 @@
           "description": "Rounds played in the match.",
           "type": "integer",
           "minimum": 1
+        },
+        "friendPoints": {
+          "description": "Points earned from the seat's secret friend being last standing (1 per round).",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "foePoints": {
+          "description": "Points earned from fatally shooting the seat's secret enemy (1 per round).",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       }
     },

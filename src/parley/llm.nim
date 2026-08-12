@@ -35,7 +35,9 @@ type
     curl: Curly
     transport: LlmTransport
     apiKey: string          ## anthropic transport
-    bedrockUrl: string      ## bedrock transport: <endpoint>/model/<id>/invoke
+    bedrockEndpoint: string ## bedrock transport: sidecar or public runtime host
+    bedrockModels: seq[string]  ## candidates, tried in order on model-access denial
+    bedrockModel: int           ## index into bedrockModels
     bedrockToken: string
     model: string
     maxOutputTokens: int
@@ -56,13 +58,37 @@ proc resolveApiKey(): string =
     echo "parley llm: failed to fetch ANTHROPIC_API_KEY_URI: ", error.msg
     result = ""
 
-proc bedrockModelId(config: GameConfig): string =
-  ## Bedrock inference-profile id for the configured model; BEDROCK_MODEL
-  ## overrides, mirroring the platform's player convention.
-  result = getEnv("BEDROCK_MODEL").strip()
-  if result.len > 0:
-    return
-  result = "us.anthropic." & config.model
+proc bedrockModelIds(): seq[string] =
+  ## Bedrock inference-profile candidates, tried in order. BEDROCK_MODEL pins a
+  ## single id (the platform's player convention); the game container is not
+  ## given that env, so it falls back to this list. Bedrock model access is a
+  ## per-account Marketplace subscription, so an id that works in one account
+  ## 403s in another - hence a list rather than one hardcoded id.
+  let pinned = getEnv("BEDROCK_MODEL").strip()
+  if pinned.len > 0:
+    return @[pinned]
+  ## Haiku leads: hosted Bedrock capacity is shared account-wide and the sonnet
+  ## profiles run out of daily tokens first, and table talk does not need a
+  ## bigger model than the round can spend.
+  @[
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "us.anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  ]
+
+proc tryNextBedrockModel(client: LlmClient, why: string): bool =
+  ## Bedrock rejects a model per-account (no Marketplace subscription) and
+  ## per-day (shared capacity exhausted) with different statuses but the same
+  ## remedy: this model is unusable right now, so move to the next candidate.
+  if client.transport != ltBedrock or client.bedrockModel + 1 >= client.bedrockModels.len:
+    return false
+  client.bedrockModel.inc
+  echo "parley llm: ", client.bedrockModels[client.bedrockModel - 1], " unusable (", why,
+    "); falling back to ", client.bedrockModels[client.bedrockModel]
+  true
+
+proc bedrockUrl(client: LlmClient): string =
+  client.bedrockEndpoint & "/model/" & client.bedrockModels[client.bedrockModel] & "/invoke"
 
 proc newLlmClient*(config: GameConfig): LlmClient =
   result = LlmClient(
@@ -82,11 +108,11 @@ proc newLlmClient*(config: GameConfig): LlmClient =
       if bedrockEndpoint.len > 0: bedrockEndpoint
       else: "https://bedrock-runtime." & region & ".amazonaws.com"
     result.transport = ltBedrock
-    result.bedrockUrl = endpoint.strip(chars = {'/'}, leading = false) &
-      "/model/" & bedrockModelId(config) & "/invoke"
+    result.bedrockEndpoint = endpoint.strip(chars = {'/'}, leading = false)
+    result.bedrockModels = bedrockModelIds()
     result.bedrockToken = bedrockToken
     result.curl = newCurly()
-    echo "parley llm: bedrock transport, model ", bedrockModelId(config)
+    echo "parley llm: bedrock transport, url ", result.bedrockUrl
     return
   result.apiKey = resolveApiKey()
   if result.apiKey.len > 0:
@@ -257,7 +283,7 @@ proc completeText(client: LlmClient, system, user: string): string =
     body["anthropic_version"] = %BedrockAnthropicVersion
     if client.bedrockToken.len > 0:
       headers["authorization"] = "Bearer " & client.bedrockToken
-    url = client.bedrockUrl
+    url = client.bedrockUrl()
   else:
     body["model"] = %client.model
     body["output_config"] = %*{"effort": "low"}
@@ -268,10 +294,22 @@ proc completeText(client: LlmClient, system, user: string): string =
     url, headers, $body, client.timeoutSeconds
   )
   if response.code == 401 or response.code == 403:
-    ## Credentials are bad; stop trying for the rest of the episode.
+    ## Bedrock answers "this account has no Marketplace subscription for that
+    ## model" with the same 403 it uses for bad credentials, so distinguish
+    ## them: an unsubscribed model means try the next candidate, whereas bad
+    ## credentials mean every further call would fail too. Carry the body -
+    ## without it a hosted 403 is undiagnosable from the episode log.
+    let detail = response.body[0 .. min(response.body.high, 400)]
+    if "Model access is denied" in response.body and client.tryNextBedrockModel("no model access"):
+      raise newException(ParleyError, "bedrock model access denied: " & detail)
     client.disabled = true
     raise newException(ParleyError,
-      "anthropic auth failed (" & $response.code & ")")
+      "llm auth failed (" & $response.code & ") at " & url & ": " & detail)
+  if response.code == 429:
+    ## Shared hosted capacity, not our quota: another model may still have room.
+    let detail = response.body[0 .. min(response.body.high, 300)]
+    discard client.tryNextBedrockModel("throttled")
+    raise newException(ParleyError, "llm throttled (429): " & detail)
   if response.code < 200 or response.code >= 300:
     raise newException(ParleyError,
       "anthropic error " & $response.code & ": " & response.body[0 .. min(response.body.high, 300)])

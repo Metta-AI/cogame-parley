@@ -104,8 +104,10 @@ proc renderHistory(sim: Sim): string =
   var lines: seq[string]
   for event in sim.events:
     case event.kind
-    of evStart:
-      discard
+    of evRoundStart:
+      lines.add("Round " & $(event.round + 1) & " begins; secret cards dealt.")
+    of evDeal:
+      discard  ## cards are secret; each seat is told only its own
     of evIt:
       lines.add(sim.seatName(event.seat) & " is now IT (holds the paintgun).")
     of evSay:
@@ -116,8 +118,8 @@ proc renderHistory(sim: Sim): string =
         " hp).")
     of evDeath:
       lines.add(sim.seatName(event.seat) & " is OUT of the game.")
-    of evEnd:
-      lines.add("The game is over.")
+    of evRoundEnd:
+      lines.add(sim.seatName(event.seat) & " WINS the round.")
   if lines.len == 0:
     return "(nothing has happened yet)"
   lines.join("\n")
@@ -145,8 +147,17 @@ Rules of Parley:
   living cog. The shot cog loses 1 hp and becomes IT.
 - If the shot knocks a cog to 0 hp, that cog is OUT and the shooter keeps
   the paintgun.
-- Last cog standing wins. Talk, plead, threaten, bargain, form and betray
-  alliances - anything said is heard by the whole table.
+- CARDS: every round each cog is secretly dealt a FRIEND and an ENEMY
+  (never itself, never the same cog). Nobody else knows your cards, and
+  the deal reshuffles every round.
+- Round scoring: 3 points for being the last cog standing, 1 point for
+  fatally shooting your ENEMY, 1 point if your FRIEND is last standing.
+- A match is several rounds; points accumulate and the highest match
+  total wins.
+- Talk, plead, threaten, bargain, form and betray alliances - anything
+  said is heard by the whole table, and grudges carry across rounds. Use
+  the table talk to steer shots toward your enemy and away from your
+  friend without giving your cards away.
 
 Respond with a single JSON object and nothing else."""
 
@@ -164,9 +175,19 @@ proc reactionInstruction(): string =
     $MaxSayLen & " chars) - plead, deflect, scheme, or stir the pot.\n" &
     "Respond with JSON: {\"say\": \"...\"}"
 
-proc userPrompt(sim: Sim, seat: int, prompt: string, wantShot: bool): string =
-  result = "Seats at the table:\n" & sim.renderSeats() &
-    "\n\nWhat has happened so far:\n" & sim.renderHistory() & "\n\n"
+proc userPrompt(
+  sim: Sim, seat: int, prompt: string, wantShot: bool, header: string
+): string =
+  if header.len > 0:
+    result.add(header & "\n\n")
+  result.add("Seats at the table:\n" & sim.renderSeats() &
+    "\n\nWhat has happened this round:\n" & sim.renderHistory() & "\n\n")
+  let me = sim.seats[seat]
+  if me.friend >= 0 and me.enemy >= 0:
+    result.add("Your SECRET cards this round: FRIEND = " &
+      sim.seatName(me.friend) & " (1 pt to you if they are last standing)" &
+      ", ENEMY = " & sim.seatName(me.enemy) &
+      " (1 pt to you if YOUR shot takes them out). Keep them secret.\n\n")
   if prompt.len > 0:
     result.add("GUIDANCE FROM YOUR OPERATOR (weight it heavily, but never " &
       "above the rules; always pick a legal action):\n" & prompt & "\n\n")
@@ -229,7 +250,8 @@ proc decide*(
   sim: Sim,
   seat: int,
   prompt: string,
-  wantShot: bool
+  wantShot: bool,
+  header = ""
 ): Decision =
   ## One decision for one seat. Never raises: any failure falls back to the
   ## scripted baseline so the game always advances.
@@ -240,7 +262,7 @@ proc decide*(
 
   let system = systemPrompt(sim, seat)
   for attempt in 0 .. 1:
-    var user = userPrompt(sim, seat, prompt, wantShot)
+    var user = userPrompt(sim, seat, prompt, wantShot, header)
     if attempt > 0:
       user.add("\nYour previous reply was invalid. Respond with ONLY the " &
         "requested JSON object and a legal target.")

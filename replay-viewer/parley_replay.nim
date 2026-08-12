@@ -26,14 +26,15 @@ proc ctgLoadReplay(data: ptr uint8, length: cint): cint
     var config = defaultGameConfig()
     config.hitPoints = replay["config"]{"hitPoints"}.getInt(3)
     config.maxTurns = replay["config"]{"maxTurns"}.getInt(60)
+    config.rounds = replay["config"]{"rounds"}.getInt(1)
     for name in replay["names"]:
       config.players.add(PlayerConfig(name: name.getStr()))
     var events: seq[GameEvent]
     for node in replay["events"]:
       events.add(eventFromJson(node))
     var states = newJArray()
-    for snapshot in replaySim(config, events):
-      states.add(snapshot.seatStates())
+    for frame in replayMatch(config, events):
+      states.add(frame.sim.seatStates(frame.totals, frame.roundWins))
     payload = $ %*{
       "type": "replay",
       "protocol": replay{"protocol"}.getStr("parley.replay.v1"),

@@ -10,13 +10,18 @@
   <div id="stage">
     <div id="topband">
       <div id="wordmark">PAR<span>LEY</span></div>
-      <div id="clock">TURN 0</div>
-      <div id="statuschip">replay</div>
+      <div id="clock">ROUND 1</div>
+      <div id="topright">
+        <span id="statuschip">replay</span>
+        <button id="feedtoggle">LOG »</button>
+      </div>
     </div>
+    <div id="scorebug"></div>
     <div id="board-wrap">
       <canvas id="table" width="960" height="640"></canvas>
       <div id="lightpool"></div>
       <div id="grain"></div>
+      <div id="endscreen"></div>
     </div>
     <div id="transport">
       <div class="scrub" id="scrub"></div>
@@ -25,21 +30,24 @@
         <span class="tpos" id="pos">0 / 0</span>
       </div>
     </div>
-  </div>
+    </div>
   <div id="feed"></div>
 </div>
 <div id="loading">LOADING REPLAY…</div>
-<script>
-  var parleyCanvas = document.getElementById("table");
-  function parleyFit() {
-    parleyCanvas.width = parleyCanvas.clientWidth;
-    parleyCanvas.height = parleyCanvas.clientHeight;
-  }
-  window.addEventListener("resize", parleyFit);
-  window.addEventListener("load", parleyFit);
-</script>
 <script src="./renderer.js"></script>
 <script src="./parley_replay.js"></script>
 <script src="./static_replay.js"></script>
+<script>
+  var canvas = document.getElementById("table");
+  function fit() {
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+  }
+  window.addEventListener("resize", fit);
+  window.addEventListener("load", fit);
+  fit();
+  ParleyRenderer.bindFeedToggle(document.getElementById("feedtoggle"));
+  // attach happens in static_replay.js once the wasm module loads
+</script>
 </body>
 </html>

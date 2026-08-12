@@ -10,13 +10,18 @@
   <div id="stage">
     <div id="topband">
       <div id="wordmark">PAR<span>LEY</span></div>
-      <div id="clock">TURN 0</div>
-      <div id="statuschip">replay</div>
+      <div id="clock">ROUND 1</div>
+      <div id="topright">
+        <span id="statuschip">replay</span>
+        <button id="feedtoggle">LOG »</button>
+      </div>
     </div>
+    <div id="scorebug"></div>
     <div id="board-wrap">
       <canvas id="table" width="960" height="640"></canvas>
       <div id="lightpool"></div>
       <div id="grain"></div>
+      <div id="endscreen"></div>
     </div>
     <div id="transport">
       <div class="scrub" id="scrub"></div>
@@ -25,7 +30,7 @@
         <span class="tpos" id="pos">0 / 0</span>
       </div>
     </div>
-  </div>
+    </div>
   <div id="feed"></div>
 </div>
 <div id="loading">LOADING REPLAY…</div>
@@ -37,8 +42,9 @@
     canvas.height = canvas.clientHeight;
   }
   window.addEventListener("resize", fit);
+  window.addEventListener("load", fit);
   fit();
-
+  ParleyRenderer.bindFeedToggle(document.getElementById("feedtoggle"));
   var scheme = location.protocol === "https:" ? "wss://" : "ws://";
   var socket = new WebSocket(scheme + location.host + "/replay");
   socket.onmessage = function (frame) {
@@ -53,6 +59,8 @@
       playButton: document.getElementById("play"),
       label: document.getElementById("pos"),
       clock: document.getElementById("clock"),
+      scorebug: document.getElementById("scorebug"),
+      endscreen: document.getElementById("endscreen"),
       assetBase: "/client/assets",
       payload: payload
     });

@@ -33,7 +33,7 @@ const
 type
   GameState = object
     config: GameConfig
-    sim: Sim
+    match: Match
     prompts: seq[string]
     promptSet: seq[bool]
     playerSockets: Table[int, WebSocket]
@@ -67,7 +67,7 @@ proc dataDir(): string =
 
 proc snapshotJson(gs: GameState): JsonNode =
   var events = newJArray()
-  for event in gs.sim.events:
+  for event in gs.match.allEvents():
     events.add(event.eventToJson())
   var connected = newJArray()
   for slot in 0 ..< gs.config.tokens.len:
@@ -75,13 +75,15 @@ proc snapshotJson(gs: GameState): JsonNode =
   %*{
     "type": "state",
     "game": "parley",
-    "seats": gs.sim.seatStates(),
+    "seats": gs.match.sim.seatStates(gs.match.totals, gs.match.roundWins),
     "events": events,
-    "turn": gs.sim.turn,
+    "turn": gs.match.sim.turn,
+    "round": gs.match.sim.round,
+    "rounds": gs.config.rounds,
     "maxTurns": gs.config.maxTurns,
     "hitPoints": gs.config.hitPoints,
     "started": gs.started,
-    "done": gs.sim.done,
+    "done": gs.match.done,
     "connected": connected
   }
 
@@ -118,10 +120,10 @@ proc writeArtifact(uri, data, contentType, methodEnv: string) =
 
 proc replayPayload(gs: GameState, results: JsonNode): string =
   var names = newJArray()
-  for seat in gs.sim.seats:
+  for seat in gs.match.sim.seats:
     names.add(%seat.name)
   var events = newJArray()
-  for event in gs.sim.events:
+  for event in gs.match.allEvents():
     events.add(event.eventToJson())
   $ %*{
     "protocol": "parley.replay.v" & $ReplayVersion,
@@ -129,6 +131,7 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
     "config": {
       "hitPoints": gs.config.hitPoints,
       "maxTurns": gs.config.maxTurns,
+      "rounds": gs.config.rounds,
       "seed": gs.config.seed
     },
     "events": events,
@@ -138,8 +141,8 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
 proc statesFromEvents(config: GameConfig, events: seq[GameEvent]): JsonNode =
   ## One seat-state array per event prefix, for scrubbing replays.
   result = newJArray()
-  for snapshot in replaySim(config, events):
-    result.add(snapshot.seatStates())
+  for frame in replayMatch(config, events):
+    result.add(frame.sim.seatStates(frame.totals, frame.roundWins))
 
 proc finishEpisode(runtimeConfig: RuntimeConfig) =
   var results: JsonNode
@@ -148,7 +151,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
     if state.finished:
       return
     state.finished = true
-    results = state.sim.resultsJson()
+    results = state.match.resultsJson()
     replayData = state.replayPayload(results)
 
     ## Send final frames to players BEFORE writing artifacts: the hosted
@@ -159,7 +162,10 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
       "done": true,
       "scores": results["scores"],
       "win": results["win"],
-      "names": results["names"]
+      "names": results["names"],
+      "kills": results["kills"],
+      "roundWins": results["roundWins"],
+      "rounds": results["rounds"]
     }
     for slot, socket in state.playerSockets:
       final["slot"] = %slot
@@ -201,29 +207,46 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
     let client = newLlmClient(config)
 
+    proc matchHeader(): string =
+      ## Cross-round context for the model: standings and round position.
+      var standings: seq[string]
+      for index, seat in state.match.sim.seats:
+        standings.add(seat.name & "=" & $state.match.totals[index] &
+          " (" & $state.match.roundWins[index] & " round wins)")
+      "Round " & $(state.match.sim.round + 1) & " of " &
+        $state.config.rounds & ". Match standings so far: " &
+        standings.join(", ") & "."
+
     while true:
       var simCopy: Sim
       var itSeat: int
       var itPrompt: string
+      var header: string
       withLock stateLock:
-        if state.sim.done:
+        if state.match.done:
           break
-        simCopy = state.sim
-        itSeat = state.sim.itSeat
+        simCopy = state.match.sim
+        itSeat = state.match.sim.itSeat
         itPrompt = state.prompts[itSeat]
+        header = matchHeader()
 
       ## The slow part (Sonnet) runs outside the lock on a snapshot; only
-      ## this thread mutates the sim, so the snapshot cannot go stale.
-      let shot = client.decide(simCopy, itSeat, itPrompt, wantShot = true)
+      ## this thread mutates the match, so the snapshot cannot go stale.
+      let shot = client.decide(simCopy, itSeat, itPrompt, wantShot = true,
+        header = header)
 
+      var roundEnded = false
       withLock stateLock:
-        state.sim.recordSay(itSeat, shot.say)
+        state.match.sim.recordSay(itSeat, shot.say)
         try:
-          state.sim.applyShot(itSeat, shot.target)
+          state.match.sim.applyShot(itSeat, shot.target)
         except ParleyError as error:
           echo "parley: llm shot rejected (", error.msg, "); using fallback"
-          let fallback = client.scriptedShot(state.sim, itSeat)
-          state.sim.applyShot(itSeat, fallback.target)
+          let fallback = client.scriptedShot(state.match.sim, itSeat)
+          state.match.sim.applyShot(itSeat, fallback.target)
+        if state.match.sim.done:
+          state.match.finishRound()
+          roundEnded = true
         state.broadcastLocked()
 
       if config.turnDelayMs > 0:
@@ -231,19 +254,24 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
       var done = false
       withLock stateLock:
-        done = state.sim.done
+        done = state.match.done
       if done:
         break
+      if roundEnded:
+        ## Let the round verdict land before the next deal starts talking.
+        if config.turnDelayMs > 0:
+          sleep(config.turnDelayMs)
+        continue
 
       if config.reactions:
         ## Table talk between shots: the new "it" acts next turn, so let a
         ## few of the other cogs get a word in - victims first.
         var speakers: seq[int]
         withLock stateLock:
-          let nextIt = state.sim.itSeat
-          for offset in 1 ..< state.sim.seats.len:
-            let seat = (nextIt + offset) mod state.sim.seats.len
-            if state.sim.seats[seat].alive and seat != nextIt:
+          let nextIt = state.match.sim.itSeat
+          for offset in 1 ..< state.match.sim.seats.len:
+            let seat = (nextIt + offset) mod state.match.sim.seats.len
+            if state.match.sim.seats[seat].alive and seat != nextIt:
               speakers.add(seat)
         if speakers.len > config.maxReactions:
           speakers.setLen(config.maxReactions)
@@ -251,14 +279,16 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           var reactionCopy: Sim
           var reactionPrompt: string
           withLock stateLock:
-            reactionCopy = state.sim
+            reactionCopy = state.match.sim
             reactionPrompt = state.prompts[seat]
+            header = matchHeader()
           let reaction = client.decide(
-            reactionCopy, seat, reactionPrompt, wantShot = false
+            reactionCopy, seat, reactionPrompt, wantShot = false,
+            header = header
           )
           if reaction.say.len > 0:
             withLock stateLock:
-              state.sim.recordSay(seat, reaction.say)
+              state.match.sim.recordSay(seat, reaction.say)
               state.broadcastLocked()
           if config.turnDelayMs > 0:
             sleep(config.turnDelayMs div 2)
@@ -338,8 +368,9 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         "type": "welcome",
         "protocol": "parley.player.v1",
         "slot": slot,
-        "name": state.sim.seats[slot].name,
+        "name": state.match.sim.seats[slot].name,
         "hitPoints": state.config.hitPoints,
+        "rounds": state.config.rounds,
         "maxTurns": state.config.maxTurns
       })
 
@@ -417,6 +448,7 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
   var config = defaultGameConfig()
   config.hitPoints = payload["config"]{"hitPoints"}.getInt(3)
   config.maxTurns = payload["config"]{"maxTurns"}.getInt(60)
+  config.rounds = payload["config"]{"rounds"}.getInt(1)
   for name in payload["names"]:
     config.players.add(PlayerConfig(name: name.getStr()))
   var events: seq[GameEvent]
@@ -442,7 +474,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   if config.tokens.len != config.players.len:
     raise newException(ParleyError, "tokens and players must align")
   state.config = config
-  state.sim = initSim(config)
+  state.match = initMatch(config)
   state.prompts = newSeq[string](config.players.len)
   state.promptSet = newSeq[bool](config.players.len)
   runtimeConfigGlobal = runtimeConfig

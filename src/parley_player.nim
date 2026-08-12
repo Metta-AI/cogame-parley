@@ -14,11 +14,12 @@ import
   whisky
 
 const DefaultPrompt = """
-Play to win, but make it fun. Shoot whoever is currently the biggest threat:
-healthy cogs who have taken shots at you, or whoever the table seems to be
-rallying behind. Keep your table talk short, funny, and a little scheming -
-propose truces you may or may not honor, and never waste a shot on a cog
-that is about to be someone else's problem.
+Play to win, but make it fun. Your secret cards run the round: steer shots
+toward your ENEMY without being obvious about it (a point for the fatal
+shot yourself is even better), quietly keep your FRIEND alive, and never
+reveal either card. Shoot whoever threatens you or your friend most. Keep
+your table talk short, funny, and a little scheming - propose truces you
+may or may not honor, and let the table do your dirty work when it will.
 """
 
 when isMainModule:

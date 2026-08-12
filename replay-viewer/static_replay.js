@@ -40,6 +40,8 @@
       playButton: document.getElementById("play"),
       label: document.getElementById("pos"),
       clock: document.getElementById("clock"),
+      scorebug: document.getElementById("scorebug"),
+      endscreen: document.getElementById("endscreen"),
       assetBase: "./assets",
       payload: payload
     });

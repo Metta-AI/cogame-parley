@@ -10,6 +10,7 @@ type
     tokens*: seq[string]
     players*: seq[PlayerConfig]
     seed*: int
+    rounds*: int
     hitPoints*: int
     maxTurns*: int
     reactions*: bool
@@ -21,31 +22,39 @@ type
     llmTimeoutSeconds*: int
 
   EventKind* = enum
-    evStart = "start"
+    evRoundStart = "roundStart"
+    evDeal = "deal"
     evIt = "it"
     evSay = "say"
     evShot = "shot"
     evDeath = "death"
-    evEnd = "end"
+    evRoundEnd = "roundEnd"
 
   GameEvent* = object
     kind*: EventKind
+    round*: int     ## 0-based round this event belongs to
     turn*: int
     seat*: int      ## acting seat (speaker, shooter, victim, new "it")
     target*: int    ## shot target seat; -1 otherwise
     text*: string   ## say text; empty otherwise
     hpAfter*: int   ## target hp after a shot; -1 otherwise
+    friend*: int    ## deal events: this seat's friend card; -1 otherwise
+    enemy*: int     ## deal events: this seat's enemy card; -1 otherwise
 
   Seat* = object
     name*: string
     hp*: int
     alive*: bool
     kills*: int
-    deathIndex*: int ## order of elimination, -1 while alive
+    deathIndex*: int  ## order of elimination, -1 while alive
+    friend*: int      ## this round's secret friend card
+    enemy*: int       ## this round's secret enemy card
+    enemyKill*: bool  ## fatally shot its enemy this round
 
 proc defaultGameConfig*(): GameConfig =
   GameConfig(
     seed: 0,
+    rounds: 3,
     hitPoints: 3,
     maxTurns: 60,
     reactions: true,
@@ -74,6 +83,8 @@ proc update*(config: var GameConfig, configJson: string) =
       config.players.add(PlayerConfig(name: player["name"].getStr()))
   if node.hasKey("seed"):
     config.seed = node["seed"].getInt()
+  if node.hasKey("rounds"):
+    config.rounds = node["rounds"].getInt()
   if node.hasKey("hitPoints"):
     config.hitPoints = node["hitPoints"].getInt()
   if node.hasKey("maxTurns"):

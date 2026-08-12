@@ -257,3 +257,162 @@ canvas#table {
   pointer-events: none;
   z-index: 20;
 }
+
+/* ---------- scorebug (second top-band row) ---------- */
+#scorebug {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  padding: 4px 14px 8px;
+  background: var(--stage-lo);
+  box-shadow: inset 0 -1px 0 rgba(242, 232, 216, 0.06);
+  font-family: var(--pixfont);
+  z-index: 10;
+}
+.plate {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+.plate-name {
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  color: var(--tc, var(--paper));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 2px 0 var(--ink);
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.plate.dead .plate-name { color: var(--ghost); text-decoration: line-through; }
+.plate-score { font-size: 17px; line-height: 1; color: var(--paper); flex: none; }
+.plate-label {
+  font-family: var(--finefont);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-dim);
+  flex: none;
+}
+.plate-pips { display: flex; gap: 3px; flex: none; align-self: center; }
+.plate-pip {
+  width: 7px; height: 7px;
+  background: var(--amber);
+}
+.plate-it {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+  background: var(--amber);
+  padding: 1px 4px;
+  border-radius: 2px;
+  flex: none;
+  align-self: center;
+}
+
+/* ---------- scrubber round decoration ---------- */
+.round-span {
+  position: absolute;
+  top: 9px;
+  height: 8px;
+  background: rgba(242, 232, 216, 0.05);
+  z-index: 1;
+}
+.round-span.alt { background: rgba(232, 163, 61, 0.08); }
+.round-sep {
+  position: absolute;
+  top: 2px;
+  width: 2px;
+  height: 22px;
+  background: rgba(242, 232, 216, 0.45);
+  transform: translateX(-1px);
+  z-index: 2;
+}
+/* round-winner chip: a flag block above the track in the winner's color */
+.beat-marker.rwin {
+  top: 0;
+  height: 9px;
+  width: 8px;
+  transform: translateX(-4px);
+  box-shadow: 0 0 6px var(--tc, var(--amber));
+}
+
+/* ---------- feed rounds + collapse ---------- */
+.feed-round-head {
+  font-family: var(--pixfont);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--paper);
+  margin: 12px 0 6px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid rgba(242, 232, 216, 0.14);
+}
+.feed-round-head:first-child { margin-top: 2px; }
+.feed-rwin { color: var(--amber); font-weight: 700; }
+#feedtoggle {
+  justify-self: end;
+  font-family: var(--pixfont);
+  font-size: 12px;
+  color: var(--paper-dim);
+  background: rgba(242, 232, 216, 0.08);
+  border: none;
+  padding: 3px 8px;
+  cursor: pointer;
+  line-height: 1;
+}
+#feedtoggle:hover { background: rgba(242, 232, 216, 0.2); color: var(--paper); }
+body.feed-collapsed #feed { display: none; }
+#topright { justify-self: end; display: flex; align-items: center; gap: 10px; }
+
+/* ---------- final score screen ---------- */
+#endscreen {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(18, 13, 9, 0.82);
+  z-index: 8;
+}
+#endscreen.show { display: flex; }
+.end-panel {
+  min-width: 380px;
+  max-width: 80%;
+  background: var(--stage-lo);
+  border: 1px solid rgba(242, 232, 216, 0.16);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  padding: 22px 26px 18px;
+  font-family: var(--pixfont);
+}
+.end-title {
+  font-family: var(--finefont);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--paper-dim);
+  text-align: center;
+}
+.end-verdict {
+  font-size: 26px;
+  letter-spacing: 0.06em;
+  text-align: center;
+  margin: 8px 0 16px;
+  color: var(--tc, var(--amber));
+  text-shadow: 0 2px 0 var(--ink);
+}
+.end-rows { display: grid; grid-template-columns: auto 1fr auto auto auto; gap: 6px 16px; }
+.end-head {
+  font-family: var(--finefont);
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--paper-dim);
+  align-self: end;
+}
+.end-cell { font-size: 16px; color: var(--paper); white-space: nowrap; }
+.end-cell.rank { color: var(--paper-dim); }
+.end-cell.name { color: var(--tc, var(--paper)); overflow: hidden; text-overflow: ellipsis; }
+.end-row-winner .end-cell { color: var(--amber); }
+.end-row-winner .end-cell.name { color: var(--tc, var(--amber)); }

@@ -12,7 +12,7 @@
     "replay_viewer": {
       "bundle": "static-replay-viewer"
     },
-    "description": "Parley: a talkative last-cog-standing party game. Four cogs sit around a table; one holds the paintgun and is IT. Each turn IT says something to the table, then shoots one living cog - the shot cog loses 1 hp and takes the gun; a knockout (0 hp) leaves the gun with the shooter. Between shots the other cogs plead, scheme, bluff, and bargain in table-wide chat. Last cog standing wins; scores are elimination placements. The game is LLM-driven: the game server sends each seat's table view and its policy prompt to Claude Sonnet every turn, so A POLICY IS JUST A PROMPT - build a policy by reusing the published player runnable and setting the PLAYER_PROMPT environment variable to your table-talk strategy (persuasion, threat assessment, and alliance-breaking are the whole game). Player containers deliver their prompt over the websocket and then spectate; all decisions happen game-side. Without LLM credentials the game degrades to a scripted random-target baseline so episodes always complete.",
+    "description": "Parley: a talkative last-cog-standing party game. Four cogs sit around a table; one holds the paintgun and is IT. Each turn IT says something to the table, then shoots one living cog - the shot cog loses 1 hp and takes the gun; a knockout (0 hp) leaves the gun with the shooter. Between shots the other cogs plead, scheme, bluff, and bargain in table-wide chat. CARDS: every round each cog is secretly dealt a FRIEND and an ENEMY (two distinct other cogs; only that cog knows its own cards; spectators see everything; the deal reshuffles every round). Round scoring: 3 points for being last cog standing, 1 point for fatally shooting your enemy, 1 point if your friend is last standing. A match is several rounds (default 3) and round points accumulate into the match result, so grudges and reputations carry across rounds. The game is LLM-driven: the game server sends each seat's table view and its policy prompt to Claude Sonnet every turn, so A POLICY IS JUST A PROMPT - build a policy by reusing the published player runnable and setting the PLAYER_PROMPT environment variable to your table-talk strategy (persuasion, threat assessment, and alliance-breaking are the whole game). Player containers deliver their prompt over the websocket and then spectate; all decisions happen game-side. Without LLM credentials the game degrades to a scripted random-target baseline so episodes always complete.",
     "owner": "daveey@gmail.com",
     "runnable": {
       "type": "game",
@@ -127,6 +127,13 @@
           "type": "number",
           "minimum": 0,
           "default": 180
+        },
+        "rounds": {
+          "description": "Rounds per match; placement scores accumulate across rounds.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 3
         }
       }
     },
@@ -140,6 +147,8 @@
         "win",
         "hp",
         "kills",
+        "roundWins",
+        "rounds",
         "turns"
       ],
       "properties": {
@@ -153,7 +162,7 @@
           }
         },
         "scores": {
-          "description": "Elimination placement per seat: first cog out scores 0, later eliminations score higher, survivors rank above every knockout by remaining hp (ties share a value).",
+          "description": "Summed card points across all rounds: per round, 3 for being last cog standing, 1 for fatally shooting your secret enemy, 1 if your secret friend is last standing.",
           "type": "array",
           "minItems": 4,
           "maxItems": 4,
@@ -171,7 +180,7 @@
           }
         },
         "hp": {
-          "description": "Remaining hp per seat at game end.",
+          "description": "Remaining hp per seat at the end of the final round.",
           "type": "array",
           "minItems": 4,
           "maxItems": 4,
@@ -181,7 +190,7 @@
           }
         },
         "kills": {
-          "description": "Knockouts scored per seat.",
+          "description": "Knockouts scored per seat across the match.",
           "type": "array",
           "minItems": 4,
           "maxItems": 4,
@@ -191,9 +200,24 @@
           }
         },
         "turns": {
-          "description": "Total shots fired.",
+          "description": "Total shots fired across the match.",
           "type": "integer",
           "minimum": 0
+        },
+        "roundWins": {
+          "description": "Rounds won per seat.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "rounds": {
+          "description": "Rounds played in the match.",
+          "type": "integer",
+          "minimum": 1
         }
       }
     },
@@ -218,7 +242,7 @@
           "title": "rules.md",
           "content": {
             "type": "text",
-            "value": "# Parley rules\n\n- Four cogs sit around a table. The seed decides who wakes up IT (holding the paintgun).\n- On its turn, IT says one line to the table, then shoots exactly one other living cog.\n- The shot cog loses 1 hp and becomes IT. If the shot drops it to 0 hp, it is OUT and the shooter keeps the gun.\n- Between shots, up to maxReactions of the other living cogs each say one line (the cog about to act never reacts; victims speak first).\n- The game ends when one cog remains, or after maxTurns shots (survivors then rank by remaining hp).\n\n## Scoring\n\n- scores[i] is an elimination placement: the first knockout scores 0, the next 1, and so on; survivors continue the sequence above every knockout, ranked by remaining hp (equal hp shares a value).\n- win[i] is true for the surviving cog(s) on maximal hp when the game ends - a sole survivor is always the unique winner.\n\n## The meta\n\nEvery decision is made by Claude Sonnet acting on a per-seat policy prompt plus the full public transcript. There is no hidden state: the game is pure persuasion, threat assessment, and timing. Prompts that give the table reasons to shoot someone else tend to outlive prompts that play quietly."
+            "value": "# Parley rules\n\n- Four cogs sit around a table. The seed decides who wakes up IT (holding the paintgun).\n- Every round, each cog is SECRETLY dealt a FRIEND card and an ENEMY card - two distinct other cogs, never itself. Only that cog knows its own cards; spectators and replays see every card. The deal reshuffles every round.\n- On its turn, IT says one line to the table, then shoots exactly one other living cog.\n- The shot cog loses 1 hp and becomes IT. If the shot drops it to 0 hp, it is OUT and the shooter keeps the gun.\n- Between shots, up to maxReactions of the other living cogs each say one line (the cog about to act never reacts; victims speak first).\n- The round ends when one cog remains, or after maxTurns shots (the surviving cogs on top hp then count as last standing).\n\n## Scoring (per round)\n\n- 3 points - being the last cog standing.\n- 1 point - fatally shooting your ENEMY (your shot takes them from 1 hp to OUT).\n- 1 point - your FRIEND is the last cog standing.\n\nA match is `rounds` rounds (default 3); round points accumulate and the highest match total wins. `roundWins` in the results counts last-cog-standing rounds per seat.\n\n## The meta\n\nEvery decision is made by Claude Sonnet acting on a per-seat policy prompt plus the full public transcript and that seat's own secret cards. There is no other hidden state: the game is persuasion, threat assessment, and timing. Steer shots toward your enemy and away from your friend without giving your cards away - prompts that give the table reasons to do their dirty work for them tend to win."
           }
         }
       ]
@@ -250,7 +274,7 @@
     {
       "id": "table4",
       "name": "Table of four",
-      "description": "The standard table: four cogs, 3 hp each, reactions on. One episode is a complete social arc - opening banter, mid-game alliances, and an endgame standoff.",
+      "description": "The standard table: four cogs, 3 hp each, best-of-three rounds, reactions on. Each round is a complete social arc - opening banter, mid-game alliances, an endgame standoff - and scores accumulate across the match.",
       "game_config": {
         "players": [
           {
@@ -272,7 +296,8 @@
         "reactions": true,
         "maxReactions": 3,
         "turnDelayMs": 1200,
-        "player_connect_timeout_seconds": 180
+        "player_connect_timeout_seconds": 180,
+        "rounds": 3
       }
     }
   ],
@@ -298,7 +323,8 @@
       "reactions": true,
       "maxReactions": 1,
       "turnDelayMs": 0,
-      "player_connect_timeout_seconds": 180
+      "player_connect_timeout_seconds": 180,
+      "rounds": 2
     },
     "players": [
       {

@@ -1,10 +1,11 @@
 import std/[json, unittest]
 import parley/sim
 
-proc fixtureConfig(players: int, hp = 3, maxTurns = 60): GameConfig =
+proc fixtureConfig(players: int, hp = 3, maxTurns = 60, rounds = 1): GameConfig =
   result = defaultGameConfig()
   result.hitPoints = hp
   result.maxTurns = maxTurns
+  result.rounds = rounds
   for index in 0 ..< players:
     result.players.add(PlayerConfig(name: "P" & $(index + 1)))
     result.tokens.add("token-" & $index)
@@ -16,6 +17,7 @@ suite "parley sim":
     let sim = initSim(config)
     check sim.itSeat == 2
     check sim.aliveCount() == 4
+    check sim.events[0].kind == evRoundStart
 
   test "shot passes the gun to the target":
     var sim = initSim(fixtureConfig(3))
@@ -36,7 +38,15 @@ suite "parley sim":
     sim.applyShot(0, 2)
     check sim.done
     check sim.winners() == @[true, false, false]
-    check sim.scores() == @[2.0, 0.0, 1.0]
+    # Card scoring: 3 for last standing, +1 per fatal enemy shot, +1 for a
+    # winning friend.
+    let w = sim.winners()
+    for i in 0 ..< 3:
+      var expected = 0.0
+      if w[i]: expected += 3
+      if sim.seats[i].enemyKill: expected += 1
+      if sim.seats[i].friend >= 0 and w[sim.seats[i].friend]: expected += 1
+      check sim.scores()[i] == expected
 
   test "illegal shots raise":
     var sim = initSim(fixtureConfig(3))
@@ -49,49 +59,115 @@ suite "parley sim":
     expect ParleyError:
       killer.applyShot(0, 1)  # already dead
 
-  test "max turns ends the game with hp ranking":
+  test "max turns ends the round with hp ranking":
     var sim = initSim(fixtureConfig(3, hp = 9, maxTurns = 2))
     sim.applyShot(0, 1)
     sim.applyShot(1, 2)
     check sim.done
-    # hp: P1 9, P2 8, P3 8 -> P1 wins; P2/P3 share the lower placement.
+    # hp: P1 9, P2 8, P3 8 -> P1 alone on top hp is "last standing".
     check sim.winners() == @[true, false, false]
-    check sim.scores() == @[2.0, 0.0, 0.0]
+    check sim.scores()[0] >= 3.0
+
+  test "match plays rounds and accumulates":
+    var match = initMatch(fixtureConfig(2, hp = 1, rounds = 3))
+    var roundsPlayed = 0
+    while not match.done:
+      let shooter = match.sim.itSeat
+      let target = match.sim.validTargets(shooter)[0]
+      match.sim.applyShot(shooter, target)
+      check match.sim.done
+      match.finishRound()
+      inc roundsPlayed
+    check roundsPlayed == 3
+    # Seeds 0,1,2 alternate the starting shooter: P1 shoots first in rounds
+    # 1 and 3, P2 in round 2 -> P1 wins twice. Two players deal no cards,
+    # so scoring is 3 points per round win.
+    check match.roundWins == @[2, 1]
+    check match.totals == @[6.0, 3.0]
+    check match.killsTotal == @[2, 1]
+    check match.turnsTotal == 3
+    check match.matchWinners() == @[true, false]
 
   test "results json shape":
-    var sim = initSim(fixtureConfig(2, hp = 1))
-    sim.recordSay(0, "any last words?")
-    sim.applyShot(0, 1)
-    let results = sim.resultsJson()
+    var match = initMatch(fixtureConfig(2, hp = 1, rounds = 2))
+    while not match.done:
+      match.sim.applyShot(match.sim.itSeat,
+        match.sim.validTargets(match.sim.itSeat)[0])
+      match.finishRound()
+    let results = match.resultsJson()
     check results["names"].len == 2
-    check results["scores"][0].getFloat() == 1.0
+    check results["scores"][0].getFloat() == 3.0
+    check results["scores"][1].getFloat() == 3.0
     check results["win"][0].getBool()
-    check not results["win"][1].getBool()
-    check results["kills"][0].getInt() == 1
-    check results["turns"].getInt() == 1
+    check results["win"][1].getBool()
+    check results["roundWins"][0].getInt() == 1
+    check results["rounds"].getInt() == 2
+    check results["turns"].getInt() == 2
 
-  test "replay re-derivation matches the live sim":
-    var config = fixtureConfig(4, hp = 2, maxTurns = 30)
+  test "replay re-derivation matches the live match":
+    var config = fixtureConfig(4, hp = 2, maxTurns = 30, rounds = 2)
     config.seed = 1
-    var sim = initSim(config)
-    sim.recordSay(1, "not me, shoot P3!")
-    sim.applyShot(1, 2)
-    sim.recordSay(2, "traitors, all of you")
-    sim.applyShot(2, 3)
-    sim.applyShot(3, 2)  # kills P3
-    let states = replaySim(config, sim.events)
-    check states.len == sim.events.len + 1
-    let last = states[^1]
-    check last.itSeat == sim.itSeat
-    check last.deathCount == sim.deathCount
+    var match = initMatch(config)
+    while not match.done:
+      let shooter = match.sim.itSeat
+      match.sim.recordSay(shooter, "round " & $match.sim.round & " talk")
+      let targets = match.sim.validTargets(shooter)
+      match.sim.applyShot(shooter, targets[targets.len - 1])
+      if match.sim.done:
+        match.finishRound()
+    let frames = replayMatch(config, match.allEvents())
+    check frames.len == match.allEvents().len + 1
+    let last = frames[^1]
+    check last.totals == match.totals
+    check last.roundWins == match.roundWins
     for index in 0 ..< 4:
-      check last.seats[index].hp == sim.seats[index].hp
-      check last.seats[index].alive == sim.seats[index].alive
+      check last.sim.seats[index].hp == match.sim.seats[index].hp
+      check last.sim.seats[index].alive == match.sim.seats[index].alive
+
+  test "cards deal a friend and a distinct enemy every round":
+    let config = fixtureConfig(4, rounds = 2)
+    for round in 0 .. 1:
+      let sim = initSim(config, round)
+      for index, seat in sim.seats:
+        check seat.friend != index
+        check seat.enemy != index
+        check seat.friend != seat.enemy
+        check seat.friend in 0 .. 3
+        check seat.enemy in 0 .. 3
+      ## Deterministic: the same seed and round deal the same cards.
+      let again = initSim(config, round)
+      for index in 0 ..< 4:
+        check again.seats[index].friend == sim.seats[index].friend
+        check again.seats[index].enemy == sim.seats[index].enemy
+
+  test "fatally shooting your enemy scores the bonus":
+    var sim = initSim(fixtureConfig(4, hp = 1))
+    ## Play the round out: each "it" shoots its enemy when alive, else the
+    ## first legal target.
+    while not sim.done:
+      let shooter = sim.itSeat
+      let enemy = sim.seats[shooter].enemy
+      let target =
+        if sim.seats[enemy].alive and enemy != shooter: enemy
+        else: sim.validTargets(shooter)[0]
+      sim.applyShot(shooter, target)
+    let w = sim.winners()
+    var sawEnemyKill = false
+    for i in 0 ..< 4:
+      var expected = 0.0
+      if w[i]: expected += 3
+      if sim.seats[i].enemyKill:
+        expected += 1
+        sawEnemyKill = true
+      if sim.seats[i].friend >= 0 and w[sim.seats[i].friend]: expected += 1
+      check sim.scores()[i] == expected
+    check sawEnemyKill
 
   test "events round-trip through json":
-    var sim = initSim(fixtureConfig(2))
-    sim.recordSay(0, "bang bang")
-    sim.applyShot(0, 1)
+    var sim = initSim(fixtureConfig(2), round = 1)
+    sim.recordSay(sim.itSeat, "bang bang")
+    sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[0])
     for event in sim.events:
       let roundTripped = eventFromJson(event.eventToJson())
       check roundTripped == event
+      check roundTripped.round == 1

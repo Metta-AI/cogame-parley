@@ -10,15 +10,20 @@
   <div id="stage">
     <div id="topband">
       <div id="wordmark">PAR<span>LEY</span></div>
-      <div id="clock">TURN 0</div>
-      <div id="statuschip">connecting…</div>
+      <div id="clock">ROUND 1</div>
+      <div id="topright">
+        <span id="statuschip">connecting…</span>
+        <button id="feedtoggle">LOG »</button>
+      </div>
     </div>
+    <div id="scorebug"></div>
     <div id="board-wrap">
       <canvas id="table" width="960" height="640"></canvas>
       <div id="lightpool"></div>
       <div id="grain"></div>
+      <div id="endscreen"></div>
     </div>
-  </div>
+    </div>
   <div id="feed"></div>
 </div>
 <script src="/client/renderer.js"></script>
@@ -29,14 +34,19 @@
     canvas.height = canvas.clientHeight;
   }
   window.addEventListener("resize", fit);
+  window.addEventListener("load", fit);
   fit();
+  ParleyRenderer.bindFeedToggle(document.getElementById("feedtoggle"));
+  var WS_PATH = "/global";
   ParleyRenderer.attachLive({
     canvas: canvas,
     feed: document.getElementById("feed"),
     status: document.getElementById("statuschip"),
     clock: document.getElementById("clock"),
+    scorebug: document.getElementById("scorebug"),
+    endscreen: document.getElementById("endscreen"),
     assetBase: "/client/assets",
-    wsPath: "/global"
+    wsPath: WS_PATH
   });
 </script>
 </body>

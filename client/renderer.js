@@ -232,6 +232,18 @@
         }
         ctx.restore();
       }
+
+      // This round's secret cards, fanned beside the cog: a heart card in
+      // the FRIEND's color and a cross card in the ENEMY's color.
+      if (seat.friend >= 0 && seat.enemy >= 0 && seat.alive) {
+        // Fan the cards toward the table so they never clip the edge.
+        var side = pos.x > w / 2 ? -1 : 1;
+        var cardX = pos.x + side * size * 0.62;
+        drawCard(ctx, cardX, pos.y - size * 0.28,
+          COLOR_HEX[seatColor(seat.friend)], "\u2665", -0.14 * side);
+        drawCard(ctx, cardX + side * 13, pos.y - size * 0.28 + 5,
+          COLOR_HEX[seatColor(seat.enemy)], "\u2715", 0.12 * side);
+      }
     });
 
     // Speech bubbles (drawn last, on top).
@@ -243,31 +255,25 @@
       drawBubble(ctx, w, pos.x, pos.y - 58, bubble.text, alpha);
     });
 
-    // End banner.
-    if (view.done) {
-      var winners = [];
-      seats.forEach(function (seat) {
-        if (seat.alive && seat.isIt !== undefined && view.winners &&
-            view.winners[seats.indexOf(seat)]) winners.push(seat.name);
-      });
-      if (!winners.length) {
-        seats.forEach(function (seat) { if (seat.alive) winners.push(seat.name); });
-      }
-      ctx.save();
-      ctx.fillStyle = "rgba(18, 13, 9, 0.78)";
-      ctx.fillRect(0, h / 2 - 46, w, 92);
-      ctx.font = "700 30px 'rajdhani', system-ui, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillStyle = AMBER;
-      ctx.fillText("GAME OVER", w / 2, h / 2 - 8);
-      ctx.font = "600 16px 'rajdhani', system-ui, sans-serif";
-      ctx.fillStyle = PAPER;
-      ctx.fillText(
-        winners.length ? "Last cog standing: " + winners.join(", ") : "Nobody survived",
-        w / 2, h / 2 + 22
-      );
-      ctx.restore();
-    }
+  }
+
+  function drawCard(ctx, x, y, color, glyph, tilt) {
+    var cw = 15, chh = 20;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(tilt);
+    ctx.fillStyle = PAPER;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, -cw / 2, -chh / 2, cw, chh, 3);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = "700 11px 'rajdhani', system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(glyph, 0, 1);
+    ctx.restore();
   }
 
   function drawBubble(ctx, canvasWidth, x, y, text, alpha) {
@@ -334,14 +340,16 @@
   function describeEvent(event, names) {
     function name(i) { return names[i] || ("Seat " + i); }
     switch (event.kind) {
-      case "start": return "The cogs take their seats.";
+      case "roundStart":
+        return "New deal — every cog back to full hp.";
       case "it": return name(event.seat) + " is IT.";
       case "say": return name(event.seat) + ": “" + event.text + "”";
       case "shot":
         return name(event.seat) + " shoots " + name(event.target) +
           " (" + Math.max(event.hpAfter, 0) + " hp left)";
       case "death": return name(event.seat) + " is OUT!";
-      case "end": return "Game over.";
+      case "roundEnd":
+        return name(event.seat) + " WINS round " + (event.round + 1) + "!";
       default: return JSON.stringify(event);
     }
   }
@@ -355,20 +363,31 @@
     var live = currentIndex === undefined;
     var limit = live ? events.length : currentIndex;
     var html = "";
-    var lastTurn = null;
+    var lastKey = null;
+    var lastRound = null;
     var open = false;
     for (var i = 0; i < events.length; i++) {
       var event = events[i];
-      if (event.turn !== lastTurn) {
+      if (event.kind === "deal") continue;  // cards render on the table
+      var key = event.round + ":" + event.turn;
+      if (event.round !== lastRound) {
+        if (open) { html += "</div>"; open = false; }
+        html += '<div class="feed-round-head">ROUND ' +
+          (event.round + 1) + "</div>";
+        lastRound = event.round;
+        lastKey = null;
+      }
+      if (key !== lastKey) {
         if (open) html += "</div>";
         var label = event.turn === 0 ? "The table gathers" :
           "Turn " + event.turn;
-        html += '<div class="feed-turn" data-turn="' + event.turn + '">' +
+        html += '<div class="feed-turn" data-key="' + key + '">' +
           '<div class="feed-turn-head">' + label + "</div>";
-        lastTurn = event.turn;
+        lastKey = key;
         open = true;
       }
       var cls = "feed-line feed-" + event.kind +
+        (event.kind === "roundEnd" ? " feed-rwin" : "") +
         (i >= limit ? " feed-future" : "");
       html += '<div class="' + cls + '">' +
         escapeHtml(describeEvent(event, names)) + "</div>";
@@ -380,18 +399,19 @@
       element.scrollTop = element.scrollHeight;
       return;
     }
-    var activeTurn = limit > 0 ? events[limit - 1].turn :
-      (events.length ? events[0].turn : null);
-    if (activeTurn === null) return;
+    var activeEvent = limit > 0 ? events[limit - 1] :
+      (events.length ? events[0] : null);
+    if (!activeEvent) return;
+    var activeKey = activeEvent.round + ":" + activeEvent.turn;
     var sections = element.querySelectorAll(".feed-turn");
     for (var s = 0; s < sections.length; s++) {
       var section = sections[s];
-      if (section.getAttribute("data-turn") === String(activeTurn)) {
+      if (section.getAttribute("data-key") === activeKey) {
         section.classList.add("feed-active");
         // Only scroll when the playhead enters a new section, so autoplay
         // doesn't fight the user's own scrolling within a section.
-        if (element.dataset.activeTurn !== String(activeTurn)) {
-          element.dataset.activeTurn = String(activeTurn);
+        if (element.dataset.activeKey !== activeKey) {
+          element.dataset.activeKey = activeKey;
           element.scrollTo({
             top: Math.max(section.offsetTop - element.offsetTop - 8, 0),
             behavior: "smooth"
@@ -455,6 +475,97 @@
     };
   }
 
+
+  // ---- Scorebug, endscreen, feed toggle -----------------------------------
+
+  // Per-cog plates for the top band: colored name, cumulative match score,
+  // one amber pip per round win, and an IT chip on the armed cog.
+  function updateScorebug(container, seats) {
+    if (!container || !seats) return;
+    var html = "";
+    seats.forEach(function (seat, index) {
+      var pips = "";
+      for (var p = 0; p < (seat.roundWins || 0); p++) {
+        pips += '<span class="plate-pip"></span>';
+      }
+      html += '<div class="plate ' + seatColor(index) +
+        (seat.alive ? "" : " dead") + '">' +
+        '<span class="plate-name">' + escapeHtml(seat.name) + "</span>" +
+        (seat.isIt ? '<span class="plate-it">IT</span>' : "") +
+        '<span class="plate-score">' + (seat.score || 0) + "</span>" +
+        '<span class="plate-label">pts</span>' +
+        '<span class="plate-pips">' + pips + "</span>" +
+        "</div>";
+    });
+    if (container.dataset.html !== html) {
+      container.dataset.html = html;
+      container.innerHTML = html;
+    }
+  }
+
+  // Final standings overlay, paintbot-endscreen style: verdict up top,
+  // ranked rows of score / round wins / knockouts below.
+  function updateEndscreen(container, results, show) {
+    if (!container) return;
+    container.classList.toggle("show", !!show);
+    if (!show || !results || container.dataset.built === "yes") return;
+    container.dataset.built = "yes";
+    var names = results.names || [];
+    var order = names.map(function (_, i) { return i; });
+    order.sort(function (a, b) {
+      return (results.scores[b] || 0) - (results.scores[a] || 0);
+    });
+    var winners = [];
+    names.forEach(function (name, i) {
+      if (results.win && results.win[i]) winners.push(name);
+    });
+    var verdictColor = "";
+    if (results.win) {
+      var winnerIndex = results.win.indexOf(true);
+      if (winnerIndex >= 0) verdictColor = seatColor(winnerIndex);
+    }
+    var html = '<div class="end-panel">' +
+      '<div class="end-title">FINAL \u2014 ' + (results.rounds || 1) +
+      ' ROUND' + ((results.rounds || 1) > 1 ? "S" : "") + "</div>" +
+      '<div class="end-verdict ' + verdictColor + '">' +
+      escapeHtml(winners.join(" & ") || "NOBODY") + " WINS THE MATCH</div>" +
+      '<div class="end-rows">' +
+      '<span class="end-head"></span><span class="end-head"></span>' +
+      '<span class="end-head">score</span>' +
+      '<span class="end-head">rounds</span>' +
+      '<span class="end-head">kos</span>';
+    order.forEach(function (i, rank) {
+      var winner = results.win && results.win[i];
+      html += '<span class="end-cell rank' + (winner ? " end-row-winner" : "") +
+        '">' + (rank + 1) + "</span>" +
+        '<span class="end-cell name ' + seatColor(i) +
+        (winner ? " end-row-winner" : "") + '">' + escapeHtml(names[i]) +
+        "</span>" +
+        '<span class="end-cell' + (winner ? " end-row-winner" : "") + '">' +
+        (results.scores[i] || 0) + "</span>" +
+        '<span class="end-cell' + (winner ? " end-row-winner" : "") + '">' +
+        ((results.roundWins || [])[i] || 0) + "</span>" +
+        '<span class="end-cell' + (winner ? " end-row-winner" : "") + '">' +
+        ((results.kills || [])[i] || 0) + "</span>";
+    });
+    html += "</div></div>";
+    container.innerHTML = html;
+  }
+
+  function bindFeedToggle(button) {
+    if (!button) return;
+    function refresh() {
+      button.textContent =
+        document.body.classList.contains("feed-collapsed") ? "\u00ab LOG" : "LOG \u00bb";
+    }
+    button.onclick = function () {
+      document.body.classList.toggle("feed-collapsed");
+      refresh();
+      window.dispatchEvent(new Event("resize"));
+    };
+    refresh();
+  }
+
   // ---- Drivers -------------------------------------------------------------
 
   function attachLive(options) {
@@ -485,7 +596,12 @@
             }
             if (options.clock && latest) {
               options.clock.textContent =
-                "TURN " + latest.turn + " / " + latest.maxTurns;
+                "ROUND " + ((latest.round || 0) + 1) + " / " +
+                (latest.rounds || 1) + " \u00b7 TURN " + latest.turn;
+            }
+            if (latest) updateScorebug(options.scorebug, latest.seats);
+            if (data.type === "final") {
+              updateEndscreen(options.endscreen, data, true);
             }
             if (latest && latest.done) setStatus("final", false);
           }
@@ -530,12 +646,37 @@
     var fill = document.createElement("div");
     fill.className = "scrub-fill";
     container.appendChild(fill);
+    // Alternating round spans + boundary separators, so the timeline
+    // reads as rounds at a glance; winner chips flag each round verdict.
+    var roundStarts = [];
     events.forEach(function (event, i) {
-      if (event.kind !== "shot" && event.kind !== "death") return;
+      if (event.kind === "roundStart") roundStarts.push(i);
+    });
+    roundStarts.forEach(function (startIdx, r) {
+      var endIdx = r + 1 < roundStarts.length ?
+        roundStarts[r + 1] : events.length;
+      var span = document.createElement("div");
+      span.className = "round-span" + (r % 2 ? " alt" : "");
+      span.style.left = (startIdx / events.length * 100) + "%";
+      span.style.width = ((endIdx - startIdx) / events.length * 100) + "%";
+      container.appendChild(span);
+      if (r > 0) {
+        var sep = document.createElement("div");
+        sep.className = "round-sep";
+        sep.style.left = (startIdx / events.length * 100) + "%";
+        container.appendChild(sep);
+      }
+    });
+    events.forEach(function (event, i) {
+      var kind = event.kind;
+      if (kind !== "shot" && kind !== "death" && kind !== "roundEnd") return;
       var marker = document.createElement("div");
-      marker.className = "beat-marker seat" +
-        ((event.kind === "shot" ? event.seat : event.seat) % 4) +
-        (event.kind === "death" ? " death" : "");
+      marker.className = "beat-marker seat" + (event.seat % 4) +
+        (kind === "death" ? " death" : "") +
+        (kind === "roundEnd" ? " rwin" : "");
+      if (kind === "roundEnd") {
+        marker.title = "Round " + (event.round + 1) + " winner";
+      }
       marker.style.left = ((i + 1) / events.length * 100) + "%";
       container.appendChild(marker);
     });
@@ -552,7 +693,7 @@
     var dragging = false;
     container.addEventListener("pointerdown", function (evt) {
       dragging = true;
-      container.setPointerCapture(evt.pointerId);
+      try { container.setPointerCapture(evt.pointerId); } catch (ignore) {}
       seekFromEvent(evt);
     });
     container.addEventListener("pointermove", function (evt) {
@@ -611,10 +752,16 @@
           options.label.textContent = index + " / " + events.length;
         }
         if (options.clock) {
-          var turn = index > 0 ? events[index - 1].turn : 0;
-          options.clock.textContent = "TURN " + turn +
-            (maxTurns ? " / " + maxTurns : "");
+          var current = index > 0 ? events[index - 1] : null;
+          var round = current ? current.round : 0;
+          var turn = current ? current.turn : 0;
+          options.clock.textContent = "ROUND " + (round + 1) + " / " +
+            ((payload.config || {}).rounds || 1) + " \u00b7 TURN " + turn;
         }
+        updateScorebug(options.scorebug,
+          states[Math.min(index, states.length - 1)]);
+        updateEndscreen(options.endscreen, payload.results,
+          index >= events.length && events.length > 0);
       }
       setIndex(0, true);
 
@@ -647,6 +794,7 @@
   window.ParleyRenderer = {
     attachLive: attachLive,
     attachReplay: attachReplay,
-    renderFeed: renderFeed
+    renderFeed: renderFeed,
+    bindFeedToggle: bindFeedToggle
   };
 })();

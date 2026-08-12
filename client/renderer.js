@@ -113,23 +113,9 @@
     ctx.fillStyle = "rgba(18, 13, 9, 0.45)";
     ctx.fillRect(0, 0, w, h);
 
-    // Table.
+    // No table is drawn: the cogs and their cards are the composition.
+    // cx/cy stay the center the paint splats and seat ring reference.
     var cx = w / 2, cy = h / 2 - 12;
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.scale(1, 0.62);
-    var tableR = w * 0.26;
-    var grad = ctx.createRadialGradient(0, 0, tableR * 0.2, 0, 0, tableR);
-    grad.addColorStop(0, "#6d4a2f");
-    grad.addColorStop(1, "#4a3120");
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(0, 0, tableR, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.lineWidth = 10;
-    ctx.strokeStyle = "#2e1f14";
-    ctx.stroke();
-    ctx.restore();
 
     // Old paint splats on the table (from shot history).
     (view.splats || []).forEach(function (splat) {

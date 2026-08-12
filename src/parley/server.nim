@@ -93,6 +93,20 @@ proc snapshotJson(gs: GameState): JsonNode =
     "connected": connected
   }
 
+proc redactCards(snapshot: JsonNode, slot: int) =
+  ## Cards are secret: a player sees only its own friend/enemy pair. The
+  ## global viewer keeps the full deal (that is the spectator's edge).
+  for index, seat in snapshot["seats"].getElems():
+    if index != slot:
+      seat["friend"] = %(-1)
+      seat["enemy"] = %(-1)
+  var visible = newJArray()
+  for event in snapshot["events"]:
+    if event{"kind"}.getStr() == "deal" and event{"seat"}.getInt() != slot:
+      continue
+    visible.add(event)
+  snapshot["events"] = visible
+
 proc broadcastLocked(gs: GameState) =
   ## Callers hold stateLock.
   let payload = $gs.snapshotJson()
@@ -102,6 +116,7 @@ proc broadcastLocked(gs: GameState) =
     var observation = gs.snapshotJson()
     observation["type"] = %"state"
     observation["slot"] = %slot
+    observation.redactCards(slot)
     socket.send($observation)
 
 proc broadcast() =

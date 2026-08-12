@@ -196,8 +196,8 @@
       ctx.fillStyle = seat.alive ? PAPER : GHOST;
       ctx.shadowColor = "rgba(0,0,0,0.8)";
       ctx.shadowBlur = 4;
-      var label = seat.name + (seat.isIt && seat.alive ? "  ◀ IT" : "");
-      ctx.fillText(label, pos.x, pos.y + size * 0.62 + 14);
+      // The dashed halo already marks IT; no text tag needed.
+      ctx.fillText(seat.name, pos.x, pos.y + size * 0.62 + 14);
       ctx.restore();
 
       // Hearts.

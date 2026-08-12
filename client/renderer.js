@@ -102,15 +102,26 @@
   // as a multiple of it so the whole seat scales as one block.
   var SEAT_BASE = 84;
   var CARD_W = 34, CARD_H = 46, CARD_GAP = 21, CARD_DROP = 60;
+  var BUBBLE_MAX_W = 220, BUBBLE_LINES = 4, BUBBLE_LINE_H = 16;
+  var BUBBLE_PAD = 8, BUBBLE_TAIL = 8, BUBBLE_RISE = 0.69;
+
+  function bubbleHeight(lines) {
+    return lines * BUBBLE_LINE_H + BUBBLE_PAD * 2 - 4;
+  }
 
   function seatExtent(size) {
     // How far one seat reaches above and below its cog's centre. The stack is
-    // lopsided — nothing above the sprite, four stacked rows below it — which
-    // is why the ring has to be centred on the extent rather than on the
-    // canvas.
+    // lopsided — a speech bubble above, four stacked rows below — so the ring
+    // has to be centred on the extent rather than on the canvas.
+    //
+    // The bubble's headroom is reserved at its WORST case (a full four lines)
+    // even while nobody is talking. Bubbles are transient and arrive without
+    // warning; sizing the ring to the quiet table would clip the one thing on
+    // screen anyone is reading. Their width needs no reserve — drawBubble
+    // already clamps the box inside the canvas.
     var scale = size / SEAT_BASE;
     return {
-      above: size / 2,
+      above: size * BUBBLE_RISE + bubbleHeight(BUBBLE_LINES) * scale,
       below: size * 0.62 + (CARD_DROP + CARD_H / 2 + 8) * scale,
       half: Math.max(size / 2, (CARD_GAP + CARD_W / 2 + 2) * scale)
     };
@@ -329,7 +340,8 @@
       if (age > BUBBLE_MS) return;
       var pos = seatPosition(bubble.seat, count, layout);
       var alpha = age > BUBBLE_MS - 600 ? (BUBBLE_MS - age) / 600 : 1;
-      drawBubble(ctx, w, pos.x, pos.y - layout.size * 0.69, bubble.text, alpha);
+      drawBubble(ctx, w, pos.x, pos.y - layout.size * BUBBLE_RISE, bubble.text,
+        alpha, layout.scale);
     });
 
   }
@@ -375,11 +387,12 @@
     ctx.restore();
   }
 
-  function drawBubble(ctx, canvasWidth, x, y, text, alpha) {
+  function drawBubble(ctx, canvasWidth, x, y, text, alpha, scale) {
+    var s = scale || 1;
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.font = "13px 'rajdhani', system-ui, sans-serif";
-    var maxWidth = 220;
+    ctx.font = Math.round(13 * s) + "px 'rajdhani', system-ui, sans-serif";
+    var maxWidth = BUBBLE_MAX_W * s;
     var words = text.split(/\s+/);
     var lines = [];
     var line = "";
@@ -393,33 +406,34 @@
       }
     });
     if (line) lines.push(line);
-    lines = lines.slice(0, 4);
+    lines = lines.slice(0, BUBBLE_LINES);
     var widest = 0;
     lines.forEach(function (l) {
       widest = Math.max(widest, ctx.measureText(l).width);
     });
-    var pad = 8;
+    var pad = BUBBLE_PAD * s;
+    var lineH = BUBBLE_LINE_H * s;
     var bw = widest + pad * 2;
-    var bh = lines.length * 16 + pad * 2 - 4;
+    var bh = lines.length * lineH + pad * 2 - 4 * s;
     var bx = Math.max(6, Math.min(x - bw / 2, canvasWidth - bw - 6));
     var by = y - bh;
 
     ctx.fillStyle = "rgba(242, 232, 216, 0.96)";
     ctx.strokeStyle = "rgba(42, 31, 22, 0.9)";
     ctx.lineWidth = 1.5;
-    roundRect(ctx, bx, by, bw, bh, 8);
+    roundRect(ctx, bx, by, bw, bh, 8 * s);
     ctx.fill();
     ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(x - 6, by + bh);
-    ctx.lineTo(x + 6, by + bh);
-    ctx.lineTo(x, by + bh + 8);
+    ctx.moveTo(x - 6 * s, by + bh);
+    ctx.lineTo(x + 6 * s, by + bh);
+    ctx.lineTo(x, by + bh + BUBBLE_TAIL * s);
     ctx.closePath();
     ctx.fill();
 
     ctx.fillStyle = INK;
     lines.forEach(function (l, i) {
-      ctx.fillText(l, bx + pad, by + pad + 11 + i * 16);
+      ctx.fillText(l, bx + pad, by + pad + 11 * s + i * lineH);
     });
     ctx.restore();
   }

@@ -86,6 +86,9 @@ proc snapshotJson(gs: GameState): JsonNode =
     "turn": gs.match.sim.turn,
     "round": gs.match.sim.round,
     "rounds": gs.config.rounds,
+    "survivors": gs.config.survivors,
+    "roundsKnown": gs.config.roundsKnown,
+    "survivorsKnown": gs.config.survivorsKnown,
     "maxTurns": gs.config.maxTurns,
     "hitPoints": gs.config.hitPoints,
     "started": gs.started,
@@ -153,6 +156,10 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
       "hitPoints": gs.config.hitPoints,
       "maxTurns": gs.config.maxTurns,
       "rounds": gs.config.rounds,
+      "survivors": gs.config.survivors,
+      "roundsKnown": gs.config.roundsKnown,
+      "survivorsKnown": gs.config.survivorsKnown,
+      "sampled": true,
       "seed": gs.config.seed
     },
     "events": events,
@@ -393,7 +400,12 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         "slot": slot,
         "name": state.match.sim.seats[slot].name,
         "hitPoints": state.config.hitPoints,
-        "rounds": state.config.rounds,
+        "rounds": (if state.config.roundsKnown: %state.config.rounds
+                   else: newJNull()),
+        "survivors": (if state.config.survivorsKnown: %state.config.survivors
+                      else: newJNull()),
+        "roundsKnown": state.config.roundsKnown,
+        "survivorsKnown": state.config.survivorsKnown,
         "maxTurns": state.config.maxTurns
       })
 
@@ -472,6 +484,11 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
   config.hitPoints = payload["config"]{"hitPoints"}.getInt(3)
   config.maxTurns = payload["config"]{"maxTurns"}.getInt(60)
   config.rounds = payload["config"]{"rounds"}.getInt(1)
+  config.survivors = payload["config"]{"survivors"}.getInt(1)
+  config.roundsKnown = payload["config"]{"roundsKnown"}.getBool(true)
+  config.survivorsKnown = payload["config"]{"survivorsKnown"}.getBool(true)
+  ## The replay carries the episode's drawn table; never re-roll it.
+  config.sampled = true
   for name in payload["names"]:
     config.players.add(PlayerConfig(name: name.getStr()))
   var events: seq[GameEvent]

@@ -617,6 +617,26 @@
     return n.length > 24 ? n.slice(0, 23) + "\u2026" : n;
   }
 
+  // The episode's drawn table, plus which of those facts the cogs were actually
+  // told. Rounds and the survivor count are sampled per episode and each is
+  // independently announced or withheld, so a spectator needs both the value
+  // and whether the table could see it — a round count the players are blind to
+  // changes how their play should be read.
+  function matchHeader(config, round, turn) {
+    var c = config || {};
+    var hidden = function (known) { return known === false ? " (hidden)" : ""; };
+    var rounds = c.rounds || 1;
+    var survivors = c.survivors || 1;
+    var parts = [
+      "ROUND " + (round + 1) + " / " + rounds + hidden(c.roundsKnown),
+      "TURN " + turn,
+      survivors + (survivors === 1 ? " SURVIVES" : " SURVIVE") +
+        hidden(c.survivorsKnown)
+    ];
+    if (c.hitPoints) parts.push(c.hitPoints + " HP");
+    return parts.join(" \u00b7 ");
+  }
+
   function updateScorebug(container, seats) {
     if (!container || !seats) return;
     var html = "";
@@ -746,8 +766,7 @@
             }
             if (options.clock && latest) {
               options.clock.textContent =
-                "ROUND " + ((latest.round || 0) + 1) + " / " +
-                (latest.rounds || 1) + " \u00b7 TURN " + latest.turn;
+                matchHeader(latest, latest.round || 0, latest.turn);
             }
             if (latest) updateScorebug(options.scorebug, latest.seats);
             if (data.type === "final") {
@@ -905,8 +924,8 @@
           var current = index > 0 ? events[index - 1] : null;
           var round = current ? current.round : 0;
           var turn = current ? current.turn : 0;
-          options.clock.textContent = "ROUND " + (round + 1) + " / " +
-            ((payload.config || {}).rounds || 1) + " \u00b7 TURN " + turn;
+          options.clock.textContent =
+            matchHeader(payload.config, round, turn);
         }
         updateScorebug(options.scorebug,
           states[Math.min(index, states.length - 1)]);

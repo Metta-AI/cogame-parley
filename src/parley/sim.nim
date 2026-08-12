@@ -16,6 +16,19 @@ import std/[json, random, sequtils, strutils, tables], types
 
 export types
 
+const
+  ## Per-episode sample ranges. Rounds and survivor count are also either told
+  ## to the table or withheld, which is itself drawn per episode.
+  RoundsMin* = 3
+  RoundsMax* = 20
+  SurvivorsMin* = 1
+  SurvivorsMax* = 3
+  HitPointsMin* = 2
+  HitPointsMax* = 5
+  ## The most one seat can bank in a round: survive (3) + fatally shoot its
+  ## enemy (1) + its friend survives (1).
+  PointsPerRound* = 5.0
+
 type
   Sim* = object
     ## One round of play.
@@ -167,6 +180,29 @@ proc tableNames*(players: seq[PlayerConfig], seed: int): seq[string] =
     else:
       result.add(player.name)
 
+proc sampleEpisode*(config: GameConfig): GameConfig =
+  ## Draws this episode's table rules from the seed. Every seat plays the same
+  ## table, and a replay carries the drawn values in its config, so the server,
+  ## the tests and the wasm re-derivation all agree without re-rolling.
+  ##
+  ## Idempotent: a config that already carries a draw (a replay being re-read,
+  ## or an operator pinning values by hand) is returned untouched.
+  result = config
+  if result.sampled:
+    return
+  var rng = initRand(int64(config.seed) * 2654435761 + 1013904223)
+  result.rounds = rng.rand(RoundsMin .. RoundsMax)
+  result.survivors = rng.rand(SurvivorsMin .. SurvivorsMax)
+  result.hitPoints = rng.rand(HitPointsMin .. HitPointsMax)
+  result.roundsKnown = rng.rand(1) == 1
+  result.survivorsKnown = rng.rand(1) == 1
+  ## A round has to be able to END: with N seats we can never get below one
+  ## survivor per seat, and the cards need at least three cogs at the table.
+  let seats = config.players.len
+  if seats > 0:
+    result.survivors = min(result.survivors, max(seats - 1, 1))
+  result.sampled = true
+
 proc initSim*(config: GameConfig, round = 0): Sim =
   if config.players.len < 2:
     raise newException(ParleyError, "parley needs at least 2 players")
@@ -191,10 +227,10 @@ proc initSim*(config: GameConfig, round = 0): Sim =
 proc winners*(sim: Sim): seq[bool]
 
 proc scores*(sim: Sim): seq[float] =
-  ## Card scoring for one round: 3 points for being last cog standing,
-  ## 1 point for having fatally shot your enemy, 1 point if your friend is
-  ## last cog standing. (A max-turns stop crowns the surviving cogs on top
-  ## hp as "last standing".)
+  ## Card scoring for one round: 3 points for surviving the round, 1 point for
+  ## having fatally shot your enemy, 1 point if your friend survived. Every
+  ## survivor takes the full 3, so a round played to three survivors pays out
+  ## more than one played to a sole winner.
   result = newSeq[float](sim.seats.len)
   let winFlags = sim.winners()
   for index, seat in sim.seats:
@@ -206,10 +242,17 @@ proc scores*(sim: Sim): seq[float] =
       result[index] += 1
 
 proc winners*(sim: Sim): seq[bool] =
-  ## Round winners: the living cogs on maximal hp when the round ends. A
-  ## sole survivor is always the unique winner; a max-turns stop can crown
-  ## ties.
+  ## Round winners: the cogs left standing. When the round ran to its natural
+  ## end every survivor won it outright, however much paint they took — the
+  ## survivor count IS the win condition. Only a max-turns stop, which leaves
+  ## more cogs alive than the table was playing for, falls back to ranking the
+  ## living on hp (and can crown ties).
   result = newSeq[bool](sim.seats.len)
+  let living = sim.aliveCount()
+  if living <= max(sim.config.survivors, 1):
+    for index, seat in sim.seats:
+      result[index] = seat.alive
+    return
   var best = -1
   for seat in sim.seats:
     if seat.alive and seat.hp > best:
@@ -254,7 +297,8 @@ proc applyShot*(sim: var Sim, shooter, target: int) =
     sim.itSeat = target
     sim.addEvent(evIt, target)
 
-  if sim.aliveCount() <= 1 or sim.turn >= sim.config.maxTurns:
+  if sim.aliveCount() <= max(sim.config.survivors, 1) or
+      sim.turn >= sim.config.maxTurns:
     sim.done = true
 
 # ---- Match ------------------------------------------------------------------
@@ -320,8 +364,17 @@ proc matchWinners*(match: Match): seq[bool] =
   for index, total in match.totals:
     result[index] = total == best
 
+proc pointsAvailable*(match: Match): float =
+  ## Every point one seat could have banked this episode. Episodes no longer
+  ## play the same table — rounds and the survivor count are drawn per episode
+  ## — so raw totals are not comparable between them: a 20-round table simply
+  ## pays out more than a 3-round one. Dividing by this ceiling is what makes
+  ## an episode's result mean the same thing as any other episode's.
+  PointsPerRound * float(max(match.config.rounds, 1))
+
 proc resultsJson*(match: Match): JsonNode =
   let winFlags = match.matchWinners()
+  let available = match.pointsAvailable()
   var names = newJArray()
   var scoresNode = newJArray()
   var winNode = newJArray()
@@ -330,9 +383,13 @@ proc resultsJson*(match: Match): JsonNode =
   var roundWinsNode = newJArray()
   var friendNode = newJArray()
   var foeNode = newJArray()
+  var rawNode = newJArray()
   for index, seat in match.sim.seats:
     names.add(%seat.name)
-    scoresNode.add(%match.totals[index])
+    ## `scores` is the normalized share of the episode's ceiling so the league
+    ## can rank across differently-shaped tables; the raw points ride along.
+    scoresNode.add(%(match.totals[index] / available))
+    rawNode.add(%match.totals[index])
     winNode.add(%(match.done and winFlags[index]))
     hpNode.add(%max(seat.hp, 0))
     killsNode.add(%match.killsTotal[index])
@@ -348,7 +405,13 @@ proc resultsJson*(match: Match): JsonNode =
     "roundWins": roundWinsNode,
     "friendPoints": friendNode,
     "foePoints": foeNode,
+    "rawScores": rawNode,
+    "pointsAvailable": available,
     "rounds": match.config.rounds,
+    "survivors": match.config.survivors,
+    "hitPoints": match.config.hitPoints,
+    "roundsKnown": match.config.roundsKnown,
+    "survivorsKnown": match.config.survivorsKnown,
     "turns": match.turnsTotal
   }
 

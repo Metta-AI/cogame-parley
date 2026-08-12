@@ -1,11 +1,15 @@
 import std/[json, unittest]
 import parley/sim
 
-proc fixtureConfig(players: int, hp = 3, maxTurns = 60, rounds = 1): GameConfig =
+proc fixtureConfig(players: int, hp = 3, maxTurns = 60, rounds = 1,
+    survivors = 1): GameConfig =
   result = defaultGameConfig()
   result.hitPoints = hp
   result.maxTurns = maxTurns
   result.rounds = rounds
+  result.survivors = survivors
+  ## Pinned, so these tests exercise the rules rather than the per-episode draw.
+  result.sampled = true
   for index in 0 ..< players:
     result.players.add(PlayerConfig(name: "P" & $(index + 1)))
     result.tokens.add("token-" & $index)
@@ -96,8 +100,11 @@ suite "parley sim":
       match.finishRound()
     let results = match.resultsJson()
     check results["names"].len == 2
-    check results["scores"][0].getFloat() == 3.0
-    check results["scores"][1].getFloat() == 3.0
+    ## Scores are the share of the episode ceiling (5 points x 2 rounds).
+    check results["pointsAvailable"].getFloat() == 10.0
+    check results["rawScores"][0].getFloat() == 3.0
+    check results["scores"][0].getFloat() == 0.3
+    check results["scores"][1].getFloat() == 0.3
     check results["win"][0].getBool()
     check results["win"][1].getBool()
     check results["roundWins"][0].getInt() == 1
@@ -208,6 +215,64 @@ suite "parley sim":
       if sim.seats[i].friend >= 0 and w[sim.seats[i].friend]: expected += 1
       check sim.scores()[i] == expected
     check sawEnemyKill
+
+
+  test "the survivor count ends the round and crowns everyone left":
+    ## Two survivors: the round stops with two cogs standing and both win it.
+    var match = initMatch(fixtureConfig(4, hp = 1, survivors = 2))
+    while not match.sim.done:
+      match.sim.applyShot(match.sim.itSeat,
+        match.sim.validTargets(match.sim.itSeat)[0])
+    check match.sim.aliveCount() == 2
+    let winFlags = match.sim.winners()
+    var winners = 0
+    for index, seat in match.sim.seats:
+      if winFlags[index]:
+        winners.inc
+        check seat.alive
+    check winners == 2
+
+  test "every episode draws a table inside the published ranges":
+    for seed in 0 .. 60:
+      var config = fixtureConfig(5)
+      config.sampled = false
+      config.seed = seed
+      let drawn = sampleEpisode(config)
+      check drawn.rounds in RoundsMin .. RoundsMax
+      check drawn.survivors in SurvivorsMin .. SurvivorsMax
+      check drawn.hitPoints in HitPointsMin .. HitPointsMax
+      ## A round must be able to end while cogs are still standing.
+      check drawn.survivors < config.players.len
+      check drawn.sampled
+      ## Same seed, same table - a replay re-reads rather than re-rolls.
+      check sampleEpisode(config) == drawn
+
+  test "a drawn table is never re-drawn":
+    var config = fixtureConfig(5)
+    config.sampled = false
+    config.seed = 3
+    let once = sampleEpisode(config)
+    ## Feeding a drawn config back through leaves every value alone, which is
+    ## what keeps a replay's header honest.
+    check sampleEpisode(once) == once
+
+  test "both known flags get drawn over a spread of seeds":
+    var sawKnown, sawHidden: bool
+    for seed in 0 .. 60:
+      var config = fixtureConfig(5)
+      config.sampled = false
+      config.seed = seed
+      let drawn = sampleEpisode(config)
+      if drawn.roundsKnown: sawKnown = true else: sawHidden = true
+    check sawKnown
+    check sawHidden
+
+  test "normalization makes differently-shaped episodes comparable":
+    ## A seat that banks every available point scores 1.0 whatever the table.
+    for rounds in [3, 11, 20]:
+      var config = fixtureConfig(2, hp = 1, rounds = rounds)
+      var match = initMatch(config)
+      check match.pointsAvailable() == float(rounds) * PointsPerRound
 
   test "events round-trip through json":
     var sim = initSim(fixtureConfig(2), round = 1)

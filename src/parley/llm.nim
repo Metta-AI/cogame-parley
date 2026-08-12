@@ -203,6 +203,26 @@ proc renderSeats(sim: Sim): string =
     lines.add(line)
   lines.join("\n")
 
+proc tableRules(sim: Sim): string =
+  ## What this episode reveals about its own shape. Rounds and the survivor
+  ## count are drawn per episode and each is independently either announced or
+  ## withheld, so a cog may be playing a table whose length it cannot see.
+  ## Saying "unknown" out loud matters: silence would read as "one survivor,
+  ## three rounds" and quietly mislead.
+  let survivorText =
+    if sim.config.survivorsKnown:
+      (if sim.config.survivors == 1: "A round ends when ONE cog is left standing."
+       else: "A round ends when " & $sim.config.survivors &
+         " cogs are left standing - they all survive it and all score.")
+    else:
+      "How many cogs must be left standing to end a round is NOT known to the table."
+  let roundText =
+    if sim.config.roundsKnown:
+      "This match is " & $sim.config.rounds & " rounds."
+    else:
+      "How many rounds this match runs is NOT known to the table - it could end after any round."
+  survivorText & "\n- " & roundText
+
 proc systemPrompt(sim: Sim, seat: int): string =
   """You are """ & sim.seatName(seat) &
     """, a cog seated at a round table in a game of Parley.
@@ -216,10 +236,10 @@ Rules of Parley:
 - CARDS: every round each cog is secretly dealt a FRIEND and an ENEMY
   (never itself, never the same cog). Nobody else knows your cards, and
   the deal reshuffles every round.
-- Round scoring: 3 points for being the last cog standing, 1 point for
-  fatally shooting your ENEMY, 1 point if your FRIEND is last standing.
-- A match is several rounds; points accumulate and the highest match
-  total wins.
+- Round scoring: 3 points for SURVIVING the round, 1 point for fatally
+  shooting your ENEMY, 1 point if your FRIEND survives.
+- """ & tableRules(sim) & """
+- Points accumulate across rounds and the highest match total wins.
 - Talk, plead, threaten, bargain, form and betray alliances - anything
   said is heard by the whole table, and grudges carry across rounds. Use
   the table talk to steer shots toward your enemy and away from your

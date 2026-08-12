@@ -11,7 +11,13 @@ type
     players*: seq[PlayerConfig]
     seed*: int
     rounds*: int
+    survivors*: int       ## cogs left standing that ends a round
     hitPoints*: int
+    ## Whether the table is TOLD this episode's rounds / survivors. Spectators
+    ## always see both; these gate only what reaches the players' prompts.
+    roundsKnown*: bool
+    survivorsKnown*: bool
+    sampled*: bool        ## true once per-episode values have been drawn
     maxTurns*: int
     reactions*: bool
     maxReactions*: int
@@ -57,7 +63,10 @@ proc defaultGameConfig*(): GameConfig =
   GameConfig(
     seed: 0,
     rounds: 3,
+    survivors: 1,
     hitPoints: 3,
+    roundsKnown: true,
+    survivorsKnown: true,
     maxTurns: 60,
     reactions: true,
     maxReactions: 3,
@@ -87,8 +96,16 @@ proc update*(config: var GameConfig, configJson: string) =
     config.seed = node["seed"].getInt()
   if node.hasKey("rounds"):
     config.rounds = node["rounds"].getInt()
+  if node.hasKey("survivors"):
+    config.survivors = node["survivors"].getInt()
   if node.hasKey("hitPoints"):
     config.hitPoints = node["hitPoints"].getInt()
+  if node.hasKey("roundsKnown"):
+    config.roundsKnown = node["roundsKnown"].getBool()
+  if node.hasKey("survivorsKnown"):
+    config.survivorsKnown = node["survivorsKnown"].getBool()
+  if node.hasKey("sampled"):
+    config.sampled = node["sampled"].getBool()
   if node.hasKey("maxTurns"):
     config.maxTurns = node["maxTurns"].getInt()
   if node.hasKey("reactions"):

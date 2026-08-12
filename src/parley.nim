@@ -36,7 +36,13 @@ when isMainModule:
       ## scripted-fallback draws) are not precomputable.
       config.seed = randomSeed()
       echo "parley: seed not pinned; randomized"
+    ## Draw this episode's table AFTER the seed is settled, so an unpinned
+    ## (randomized) seed gives a fresh table and a pinned one reproduces it.
+    config = sampleEpisode(config)
     echo "parley: seats=", config.players.len,
+      " rounds=", config.rounds, (if config.roundsKnown: "" else: " (hidden)"),
+      " survivors=", config.survivors,
+      (if config.survivorsKnown: "" else: " (hidden)"),
       " hp=", config.hitPoints,
       " maxTurns=", config.maxTurns,
       " model=", config.model

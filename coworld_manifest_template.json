@@ -151,7 +151,13 @@
         "friendPoints",
         "foePoints",
         "rounds",
-        "turns"
+        "turns",
+        "rawScores",
+        "pointsAvailable",
+        "survivors",
+        "hitPoints",
+        "roundsKnown",
+        "survivorsKnown"
       ],
       "properties": {
         "names": {
@@ -164,7 +170,7 @@
           }
         },
         "scores": {
-          "description": "Summed card points across all rounds: per round, 3 for being last cog standing, 1 for fatally shooting your secret enemy, 1 if your secret friend is last standing.",
+          "description": "Share of the episode ceiling (0-1), so tables of different shapes compare.",
           "type": "array",
           "minItems": 5,
           "maxItems": 5,
@@ -240,6 +246,33 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "rawScores": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Un-normalized round points per seat."
+        },
+        "pointsAvailable": {
+          "type": "number",
+          "description": "Every point one seat could have banked this episode (5 per round); scores are the share of this."
+        },
+        "survivors": {
+          "type": "integer",
+          "description": "Cogs left standing that ended each round, drawn per episode."
+        },
+        "hitPoints": {
+          "type": "integer",
+          "description": "Starting hp, drawn per episode."
+        },
+        "roundsKnown": {
+          "type": "boolean",
+          "description": "Whether the table was told the round count."
+        },
+        "survivorsKnown": {
+          "type": "boolean",
+          "description": "Whether the table was told the survivor count."
         }
       }
     },

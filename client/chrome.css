@@ -416,3 +416,5 @@ body.feed-collapsed #feed { display: none; }
 .end-cell.name { color: var(--tc, var(--paper)); overflow: hidden; text-overflow: ellipsis; }
 .end-row-winner .end-cell { color: var(--amber); }
 .end-row-winner .end-cell.name { color: var(--tc, var(--amber)); }
+
+.feed-score { color: var(--tc, var(--amber)); font-weight: 600; }

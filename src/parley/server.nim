@@ -72,10 +72,16 @@ proc snapshotJson(gs: GameState): JsonNode =
   var connected = newJArray()
   for slot in 0 ..< gs.config.tokens.len:
     connected.add(%gs.playerSockets.hasKey(slot))
-  %*{
+  ## Mid-round foe points show up in the scorebug as soon as they land
+  ## (match.totals itself only folds them in at round end).
+  var liveTotals = gs.match.totals
+  for index in 0 ..< gs.match.sim.seats.len:
+    if gs.match.sim.seats[index].enemyKill:
+      liveTotals[index] += 1
+  return %*{
     "type": "state",
     "game": "parley",
-    "seats": gs.match.sim.seatStates(gs.match.totals, gs.match.roundWins),
+    "seats": gs.match.sim.seatStates(liveTotals, gs.match.roundWins),
     "events": events,
     "turn": gs.match.sim.turn,
     "round": gs.match.sim.round,

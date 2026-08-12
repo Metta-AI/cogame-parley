@@ -20,6 +20,7 @@ import
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
   AnthropicVersion = "2023-06-01"
+  BedrockAnthropicVersion = "bedrock-2023-05-31"
   MaxSayLen = 240
 
 type
@@ -27,9 +28,15 @@ type
     say*: string
     target*: int      ## seat index; -1 for pure table talk
 
+  LlmTransport = enum
+    ltNone, ltBedrock, ltAnthropic
+
   LlmClient* = ref object
     curl: Curly
-    apiKey: string
+    transport: LlmTransport
+    apiKey: string          ## anthropic transport
+    bedrockUrl: string      ## bedrock transport: <endpoint>/model/<id>/invoke
+    bedrockToken: string
     model: string
     maxOutputTokens: int
     timeoutSeconds: int
@@ -49,20 +56,47 @@ proc resolveApiKey(): string =
     echo "parley llm: failed to fetch ANTHROPIC_API_KEY_URI: ", error.msg
     result = ""
 
+proc bedrockModelId(config: GameConfig): string =
+  ## Bedrock inference-profile id for the configured model; BEDROCK_MODEL
+  ## overrides, mirroring the platform's player convention.
+  result = getEnv("BEDROCK_MODEL").strip()
+  if result.len > 0:
+    return
+  result = "us.anthropic." & config.model
+
 proc newLlmClient*(config: GameConfig): LlmClient =
   result = LlmClient(
-    apiKey: resolveApiKey(),
     model: config.model,
     maxOutputTokens: config.maxOutputTokens,
     timeoutSeconds: config.llmTimeoutSeconds,
     rand: initRand(config.seed xor 0x5EED)
   )
-  result.disabled = result.apiKey.len == 0
-  if result.disabled:
-    echo "parley llm: no Anthropic credentials; using scripted fallback"
-  else:
+  ## Preferred transport: Bedrock. Hosted pods get a platform sidecar
+  ## (AWS_ENDPOINT_URL_BEDROCK_RUNTIME + a dummy bearer token it re-signs);
+  ## a real AWS_BEARER_TOKEN_BEDROCK against the public endpoint also works.
+  let bedrockEndpoint = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip()
+  let bedrockToken = getEnv("AWS_BEARER_TOKEN_BEDROCK").strip()
+  if bedrockEndpoint.len > 0 or bedrockToken.len > 0:
+    let region = getEnv("AWS_REGION", getEnv("AWS_DEFAULT_REGION", "us-west-2"))
+    let endpoint =
+      if bedrockEndpoint.len > 0: bedrockEndpoint
+      else: "https://bedrock-runtime." & region & ".amazonaws.com"
+    result.transport = ltBedrock
+    result.bedrockUrl = endpoint.strip(chars = {'/'}, leading = false) &
+      "/model/" & bedrockModelId(config) & "/invoke"
+    result.bedrockToken = bedrockToken
     result.curl = newCurly()
-    echo "parley llm: using model ", result.model
+    echo "parley llm: bedrock transport, model ", bedrockModelId(config)
+    return
+  result.apiKey = resolveApiKey()
+  if result.apiKey.len > 0:
+    result.transport = ltAnthropic
+    result.curl = newCurly()
+    echo "parley llm: anthropic transport, model ", result.model
+  else:
+    result.transport = ltNone
+    result.disabled = true
+    echo "parley llm: no LLM credentials; using scripted fallback"
 
 const CannedTaunts = [
   "Nothing personal.",
@@ -118,6 +152,12 @@ proc renderHistory(sim: Sim): string =
         " hp).")
     of evDeath:
       lines.add(sim.seatName(event.seat) & " is OUT of the game.")
+    of evScore:
+      if event.text == "foe":
+        lines.add(sim.seatName(event.seat) &
+          " scored a point for taking out their secret enemy.")
+      ## survivor/friend deltas land after the round verdict; the round
+      ## summary already covers them.
     of evRoundEnd:
       lines.add(sim.seatName(event.seat) & " WINS the round.")
   if lines.len == 0:
@@ -205,19 +245,27 @@ proc extractJsonObject(text: string): JsonNode =
   parseJson(text[start .. stop])
 
 proc completeText(client: LlmClient, system, user: string): string =
-  let body = %*{
-    "model": client.model,
+  var body = %*{
     "max_tokens": client.maxOutputTokens,
     "system": system,
-    "output_config": {"effort": "low"},
     "messages": [{"role": "user", "content": user}]
   }
   var headers: HttpHeaders
   headers["content-type"] = "application/json"
-  headers["x-api-key"] = client.apiKey
-  headers["anthropic-version"] = AnthropicVersion
+  var url: string
+  if client.transport == ltBedrock:
+    body["anthropic_version"] = %BedrockAnthropicVersion
+    if client.bedrockToken.len > 0:
+      headers["authorization"] = "Bearer " & client.bedrockToken
+    url = client.bedrockUrl
+  else:
+    body["model"] = %client.model
+    body["output_config"] = %*{"effort": "low"}
+    headers["x-api-key"] = client.apiKey
+    headers["anthropic-version"] = AnthropicVersion
+    url = AnthropicUrl
   let response = client.curl.post(
-    AnthropicUrl, headers, $body, client.timeoutSeconds
+    url, headers, $body, client.timeoutSeconds
   )
   if response.code == 401 or response.code == 403:
     ## Credentials are bad; stop trying for the rest of the episode.

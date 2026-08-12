@@ -241,7 +241,7 @@
         drawCard(ctx, images, pos.x - 21, cardY,
           seat.friend, "#45a85e", "\u2665", -0.05);
         drawCard(ctx, images, pos.x + 21, cardY,
-          seat.enemy, "#e0523a", "\u2715", 0.05);
+          seat.enemy, "#e0523a", "\u2715", 0.05, seat.enemyDone);
       }
     });
 
@@ -256,7 +256,8 @@
 
   }
 
-  function drawCard(ctx, images, x, y, targetSeat, frameColor, glyph, tilt) {
+  function drawCard(ctx, images, x, y, targetSeat, frameColor, glyph, tilt,
+    checked) {
     var cw = 34, chh = 46;
     ctx.save();
     ctx.translate(x, y);
@@ -280,6 +281,17 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(glyph, 0, chh / 2 - 8);
+    if (checked) {
+      // The card has been cashed in: a big check across the face.
+      ctx.strokeStyle = "#45a85e";
+      ctx.lineWidth = 4;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(-9, 0);
+      ctx.lineTo(-2, 8);
+      ctx.lineTo(11, -11);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -357,6 +369,16 @@
       case "death": return name(event.seat) + " is OUT!";
       case "roundEnd":
         return name(event.seat) + " WINS round " + (event.round + 1) + "!";
+      case "score":
+        var reason = "";
+        if (event.text === "foe") {
+          reason = "fatally shot " + name(event.target) + " (FOE)";
+        } else if (event.text === "survivor") {
+          reason = "last cog standing";
+        } else if (event.text === "friend") {
+          reason = name(event.target) + " survived (FRIEND)";
+        }
+        return name(event.seat) + " +" + event.points + " \u2014 " + reason;
       default: return JSON.stringify(event);
     }
   }
@@ -395,6 +417,7 @@
       }
       var cls = "feed-line feed-" + event.kind +
         (event.kind === "roundEnd" ? " feed-rwin" : "") +
+        (event.kind === "score" ? " feed-score seat" + (event.seat % 4) : "") +
         (i >= limit ? " feed-future" : "");
       html += '<div class="' + cls + '">' +
         escapeHtml(describeEvent(event, names)) + "</div>";

@@ -28,6 +28,7 @@ type
     evSay = "say"
     evShot = "shot"
     evDeath = "death"
+    evScore = "score"
     evRoundEnd = "roundEnd"
 
   GameEvent* = object
@@ -40,6 +41,7 @@ type
     hpAfter*: int   ## target hp after a shot; -1 otherwise
     friend*: int    ## deal events: this seat's friend card; -1 otherwise
     enemy*: int     ## deal events: this seat's enemy card; -1 otherwise
+    points*: int    ## score events: points awarded; 0 otherwise
 
   Seat* = object
     name*: string

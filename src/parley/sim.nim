@@ -59,7 +59,8 @@ proc addEvent(
   text = "",
   hpAfter = -1,
   friend = -1,
-  enemy = -1
+  enemy = -1,
+  points = 0
 ) =
   sim.events.add(GameEvent(
     kind: kind,
@@ -70,7 +71,8 @@ proc addEvent(
     text: text,
     hpAfter: hpAfter,
     friend: friend,
-    enemy: enemy
+    enemy: enemy,
+    points: points
   ))
 
 proc dealCards(sim: var Sim) =
@@ -172,9 +174,11 @@ proc applyShot*(sim: var Sim, shooter, target: int) =
     sim.seats[target].deathIndex = sim.deathCount
     inc sim.deathCount
     inc sim.seats[shooter].kills
+    sim.addEvent(evDeath, target)
     if target == sim.seats[shooter].enemy:
       sim.seats[shooter].enemyKill = true
-    sim.addEvent(evDeath, target)
+      ## The FOE point lands the moment the fatal shot does.
+      sim.addEvent(evScore, shooter, target, points = 1, text = "foe")
     ## The gun stays with the shooter: a dead cog cannot be "it".
   else:
     sim.itSeat = target
@@ -220,6 +224,15 @@ proc finishRound*(match: var Match) =
     if roundWinners[index]:
       inc match.roundWins[index]
       match.sim.addEvent(evRoundEnd, index)
+  ## Round-end score deltas, after the verdict lines: survivor points for
+  ## the winners, friend points for everyone whose friend made it.
+  for index in 0 ..< match.totals.len:
+    if roundWinners[index]:
+      match.sim.addEvent(evScore, index, points = 3, text = "survivor")
+  for index in 0 ..< match.totals.len:
+    let friend = match.sim.seats[index].friend
+    if friend >= 0 and roundWinners[friend]:
+      match.sim.addEvent(evScore, index, friend, points = 1, text = "friend")
   match.turnsTotal += match.sim.turn
 
   if match.sim.round + 1 < match.config.rounds:
@@ -282,7 +295,8 @@ proc seatStates*(sim: Sim, totals: seq[float], roundWins: seq[int]): JsonNode =
       "score": if index < totals.len: totals[index] else: 0.0,
       "roundWins": if index < roundWins.len: roundWins[index] else: 0,
       "friend": seat.friend,
-      "enemy": seat.enemy
+      "enemy": seat.enemy,
+      "enemyDone": seat.enemyKill
     })
 
 type
@@ -312,7 +326,6 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[ReplayFrame] 
       deathIndex: -1
     ))
   result.add(frame)
-  var scoredRound = -1
   for event in events:
     frame.sim.turn = event.turn
     frame.sim.round = event.round
@@ -347,16 +360,11 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[ReplayFrame] 
       inc frame.sim.seats[frame.sim.itSeat].kills
       if event.seat == frame.sim.seats[frame.sim.itSeat].enemy:
         frame.sim.seats[frame.sim.itSeat].enemyKill = true
+    of evScore:
+      frame.totals[event.seat] += float(event.points)
     of evRoundEnd:
       frame.sim.done = true
       inc frame.roundWins[event.seat]
-      if scoredRound < event.round:
-        ## Fold this round's placements into the totals exactly once, even
-        ## when a max-turns tie emits several roundEnd events.
-        scoredRound = event.round
-        let roundScores = frame.sim.scores()
-        for index in 0 ..< frame.totals.len:
-          frame.totals[index] += roundScores[index]
     result.add(frame)
 
 proc eventToJson*(event: GameEvent): JsonNode =
@@ -376,6 +384,8 @@ proc eventToJson*(event: GameEvent): JsonNode =
     result["friend"] = %event.friend
   if event.enemy >= 0:
     result["enemy"] = %event.enemy
+  if event.points != 0:
+    result["points"] = %event.points
 
 proc eventFromJson*(node: JsonNode): GameEvent =
   result = GameEvent(
@@ -387,5 +397,6 @@ proc eventFromJson*(node: JsonNode): GameEvent =
     text: node{"text"}.getStr(""),
     hpAfter: node{"hpAfter"}.getInt(-1),
     friend: node{"friend"}.getInt(-1),
-    enemy: node{"enemy"}.getInt(-1)
+    enemy: node{"enemy"}.getInt(-1),
+    points: node{"points"}.getInt(0)
   )

@@ -89,6 +89,15 @@
     });
   }
 
+  function ellipsize(ctx, text, maxWidth) {
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    var cut = text;
+    while (cut.length > 1 && ctx.measureText(cut + "…").width > maxWidth) {
+      cut = cut.slice(0, -1);
+    }
+    return cut + "…";
+  }
+
   function seatPosition(index, count, width, height) {
     // Seat 0 at the bottom, going clockwise around the table.
     var angle = Math.PI / 2 + (index * 2 * Math.PI) / count;
@@ -224,8 +233,10 @@
       ctx.fillStyle = seat.alive ? PAPER : GHOST;
       ctx.shadowColor = "rgba(0,0,0,0.8)";
       ctx.shadowBlur = 4;
-      // The dashed halo already marks IT; no text tag needed.
-      ctx.fillText(seat.name, pos.x, pos.y + size * 0.62 + 14);
+      // The dashed halo already marks IT; no text tag needed. Seat names come
+      // from policy display names, which can run long enough to collide with
+      // the neighbouring seat, so clamp them to the seat's own width.
+      ctx.fillText(ellipsize(ctx, seat.name, size * 1.35), pos.x, pos.y + size * 0.62 + 14);
       ctx.restore();
 
       // Hearts.
@@ -371,7 +382,11 @@
   // ---- Event feed ----------------------------------------------------------
 
   function describeEvent(event, names) {
-    function name(i) { return names[i] || ("Seat " + i); }
+    // Long policy display names otherwise swamp the line they appear in.
+    function name(i) {
+      var n = names[i] || ("Seat " + i);
+      return n.length > 24 ? n.slice(0, 23) + "…" : n;
+    }
     switch (event.kind) {
       case "roundStart":
         return "New deal — every cog back to full hp.";

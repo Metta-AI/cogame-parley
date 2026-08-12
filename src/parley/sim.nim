@@ -28,6 +28,19 @@ const
   ## The most one seat can bank in a round: survive (3) + fatally shoot its
   ## enemy (1) + its friend survives (1).
   PointsPerRound* = 5.0
+  ## An episode's whole model-call allowance. A hosted episode is killed if it
+  ## outlives the platform's artifact timeout, so the budget has to sit on the
+  ## EPISODE rather than the round: a 20-round draw would otherwise run ~7x a
+  ## 3-round one and time out instead of finishing.
+  ##
+  ## Counted in CALLS, not turns, because a turn is not a fixed cost — it is
+  ## one call for IT plus one per reacting cog. Budgeting turns alone left the
+  ## expense hiding in the reactions and blew the ceiling at LOW round counts,
+  ## where chatter is cheapest to allow and therefore most of it happens.
+  EpisodeCallBudget* = 240
+  MinRoundTurns* = 6
+  ## Total spectator-pacing sleep an episode may spend, in milliseconds.
+  PacingBudgetMs* = 60_000
 
 type
   Sim* = object
@@ -52,6 +65,7 @@ type
     foePoints*: seq[int]      ## rounds where the seat fatally shot its enemy
     killsTotal*: seq[int]
     turnsTotal*: int
+    roundsPlayed*: int   ## completed rounds; may fall short of config.rounds
     done*: bool
 
 proc aliveCount*(sim: Sim): int =
@@ -201,6 +215,33 @@ proc sampleEpisode*(config: GameConfig): GameConfig =
   let seats = config.players.len
   if seats > 0:
     result.survivors = min(result.survivors, max(seats - 1, 1))
+
+  ## Fit the drawn table into one episode's call budget.
+  ##
+  ## Reactions first, since they set what a turn costs. They are table flavour
+  ## rather than the game itself, so a long match spends its allowance on
+  ## playing more rounds instead of on more chatter per shot.
+  result.maxReactions =
+    if result.rounds <= 5: config.maxReactions
+    elif result.rounds <= 10: min(config.maxReactions, 1)
+    else: 0
+  result.reactions = result.maxReactions > 0
+
+  ## Then turns, from what those calls cost. A round also never needs more
+  ## shots than it takes to knock the table down to its survivor count, so cap
+  ## there too rather than burning the configured ceiling on a decided round.
+  let callsPerTurn = 1 + result.maxReactions
+  let affordable = EpisodeCallBudget div (result.rounds * callsPerTurn)
+  let decisive = max(seats - result.survivors, 1) * max(result.hitPoints, 1) + 4
+  result.maxTurns = max(
+    min(min(config.maxTurns, decisive), affordable), MinRoundTurns)
+
+  ## Spectator pacing is a fixed sleep per turn, so on a long table it stops
+  ## being pacing and becomes most of the episode's wall clock. Spread a fixed
+  ## allowance across the turns this table can actually play.
+  let plannedTurns = max(result.rounds * result.maxTurns, 1)
+  result.turnDelayMs =
+    min(config.turnDelayMs, PacingBudgetMs div plannedTurns)
   result.sampled = true
 
 proc initSim*(config: GameConfig, round = 0): Sim =
@@ -348,12 +389,19 @@ proc finishRound*(match: var Match) =
     if friend >= 0 and roundWinners[friend]:
       match.sim.addEvent(evScore, index, friend, points = 1, text = "friend")
   match.turnsTotal += match.sim.turn
+  match.roundsPlayed.inc
 
   if match.sim.round + 1 < match.config.rounds:
     match.history.add(match.sim.events)
     match.sim = initSim(match.config, match.sim.round + 1)
   else:
     match.done = true
+
+proc endMatchEarly*(match: var Match) =
+  ## Stop after the round just scored. The hosted platform kills an episode
+  ## that outlives its timeout and keeps NOTHING — no results, no replay — so
+  ## a short honest match always beats a long one that never lands.
+  match.done = true
 
 proc matchWinners*(match: Match): seq[bool] =
   result = newSeq[bool](match.totals.len)
@@ -370,7 +418,12 @@ proc pointsAvailable*(match: Match): float =
   ## — so raw totals are not comparable between them: a 20-round table simply
   ## pays out more than a 3-round one. Dividing by this ceiling is what makes
   ## an episode's result mean the same thing as any other episode's.
-  PointsPerRound * float(max(match.config.rounds, 1))
+  ##
+  ## Measured against the rounds actually PLAYED. A match cut short by the
+  ## episode deadline banked points over fewer rounds than it drew, and
+  ## dividing those by the drawn count would score the table as though it had
+  ## thrown away rounds it never got to play.
+  PointsPerRound * float(max(match.roundsPlayed, 1))
 
 proc resultsJson*(match: Match): JsonNode =
   let winFlags = match.matchWinners()

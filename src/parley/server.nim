@@ -216,10 +216,16 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
   echo "parley: episode complete, shutting down"
   quit(0)
 
+const PlayBudgetFraction* = 0.6
+  ## Share of the platform's episode timeout spent playing. The rest covers
+  ## container start, player connects, and writing the artifacts — the part
+  ## that must never be the thing that runs out of time.
+
 proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
   {.gcsafe.}:
     let config = state.config
-    let deadline = epochTime() + config.playerConnectTimeoutSeconds
+    let gameStart = epochTime()
+    let deadline = gameStart + config.playerConnectTimeoutSeconds
 
     while epochTime() < deadline:
       var allConnected = false
@@ -236,6 +242,22 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       state.broadcastLocked()
 
     let client = newLlmClient(config)
+
+    ## The platform hands the container its own kill time. Play inside a
+    ## fraction of it so results and the replay are written with room to
+    ## spare — an episode that overruns is discarded whole, so the deadline
+    ## has to be the game's problem, not the platform's.
+    let hostedTimeout = getEnv("COWORLD_TIMEOUT_SECONDS", "").strip()
+    let timeoutSeconds =
+      if hostedTimeout.len > 0:
+        try: parseFloat(hostedTimeout) except ValueError: 0.0
+      else: 0.0
+    let playDeadline =
+      if timeoutSeconds > 0.0: gameStart + timeoutSeconds * PlayBudgetFraction
+      else: 0.0
+    if playDeadline > 0.0:
+      echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",
+        (timeoutSeconds * PlayBudgetFraction).int, "s"
 
     proc matchHeader(): string =
       ## Cross-round context for the model: standings and round position.
@@ -288,6 +310,18 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       if done:
         break
       if roundEnded:
+        ## The platform kills an episode that outruns its timeout and keeps
+        ## nothing at all, so give up rounds rather than the whole result.
+        ## Checked between rounds: a part-played round has no verdict to score.
+        if playDeadline > 0.0 and epochTime() > playDeadline:
+          withLock stateLock:
+            if not state.match.done:
+              echo "parley: episode deadline reached after ",
+                state.match.roundsPlayed, "/", config.rounds,
+                " rounds; ending the match here"
+              state.match.endMatchEarly()
+              state.broadcastLocked()
+          break
         ## Let the round verdict land before the next deal starts talking.
         if config.turnDelayMs > 0:
           sleep(config.turnDelayMs)

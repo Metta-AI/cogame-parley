@@ -268,11 +268,35 @@ suite "parley sim":
     check sawHidden
 
   test "normalization makes differently-shaped episodes comparable":
-    ## A seat that banks every available point scores 1.0 whatever the table.
+    ## The ceiling tracks the rounds actually PLAYED, so a table that ran its
+    ## full length and one cut short by the deadline are both scored against
+    ## what they had the chance to win.
     for rounds in [3, 11, 20]:
-      var config = fixtureConfig(2, hp = 1, rounds = rounds)
-      var match = initMatch(config)
+      var match = initMatch(fixtureConfig(2, hp = 1, rounds = rounds))
+      while not match.done:
+        match.sim.applyShot(match.sim.itSeat,
+          match.sim.validTargets(match.sim.itSeat)[0])
+        match.finishRound()
+      check match.roundsPlayed == rounds
       check match.pointsAvailable() == float(rounds) * PointsPerRound
+      for score in match.resultsJson()["scores"]:
+        check score.getFloat() <= 1.0
+
+  test "a match cut short is scored over the rounds it played":
+    var match = initMatch(fixtureConfig(2, hp = 1, rounds = 12))
+    for _ in 0 ..< 3:
+      match.sim.applyShot(match.sim.itSeat,
+        match.sim.validTargets(match.sim.itSeat)[0])
+      match.finishRound()
+    match.endMatchEarly()
+    check match.done
+    check match.roundsPlayed == 3
+    ## Three rounds played, so the ceiling is three rounds - not the twelve
+    ## drawn. Dividing by the draw would punish a table for rounds the
+    ## deadline took away from it.
+    check match.pointsAvailable() == 3.0 * PointsPerRound
+    for score in match.resultsJson()["scores"]:
+      check score.getFloat() <= 1.0
 
   test "events round-trip through json":
     var sim = initSim(fixtureConfig(2), round = 1)

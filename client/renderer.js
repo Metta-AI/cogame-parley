@@ -127,40 +127,51 @@
     };
   }
 
+  function seatsCollide(count, layout, ext) {
+    // A seat's SOLID footprint: the cog plus its name/hearts/cards stack.
+    // Bubble headroom is deliberately not part of this test — bubbles are
+    // transient, drawn last on top, and already clamp themselves into the
+    // canvas — so it should not pull seats toward each other.
+    var solidAbove = layout.size / 2;
+    for (var i = 0; i < count; i++) {
+      var a = seatPosition(i, count, layout);
+      var b = seatPosition((i + 1) % count, count, layout);
+      var dx = Math.abs(a.x - b.x);
+      var dy = Math.abs(a.y - b.y);
+      if (dx < ext.half * 2 && dy < solidAbove + ext.below) return true;
+    }
+    return false;
+  }
+
   function computeLayout(width, height, count) {
-    // Shrink the cogs until every seat's FULL stack fits the canvas and the
-    // ring is still wide enough to keep neighbours from overlapping. Callers
-    // embed this viewer at wildly different sizes (a league page's featured
-    // panel is far shorter than a standalone tab), so the fit is solved per
-    // frame rather than assumed.
+    // Every seat is allocated one spot — bubble headroom above the cog, the
+    // name/hearts/cards stack below, ext.half to each side — and the ring is
+    // pushed all the way to the canvas edges so the table FILLS the panel
+    // instead of huddling in the middle. Cogs only shrink when neighbouring
+    // spots would actually collide. Callers embed this viewer at wildly
+    // different sizes (a league page's featured panel is far shorter than a
+    // standalone tab), so the fit is solved per frame rather than assumed.
     var margin = 10;
     var size = Math.min(SEAT_BASE, (width / count) * 0.9);
-    var ext, rx, ry;
+    var layout;
     for (var attempt = 0; attempt < 40; attempt++) {
-      ext = seatExtent(size);
-      ry = (height - 2 * margin - ext.above - ext.below) / 2;
-      rx = (width - 2 * margin - 2 * ext.half) / 2;
-      // Neighbouring seats sit 2*r*sin(pi/count) apart on the ring; require
-      // that gap to clear a seat's own width.
-      var spread = 2 * Math.min(rx, ry) * Math.sin(Math.PI / count);
-      if (ry > 0 && rx > 0 && spread >= ext.half * 2) break;
+      var ext = seatExtent(size);
+      // The largest ellipse whose top seat still has full bubble headroom,
+      // whose bottom seat's cards still fit, and whose side seats stay in.
+      var rx = (width - 2 * margin - 2 * ext.half) / 2;
+      var ry = (height - 2 * margin - ext.above - ext.below) / 2;
+      layout = {
+        size: size,
+        scale: size / SEAT_BASE,
+        cx: width / 2,
+        cy: margin + ext.above + Math.max(ry, 0),
+        rx: Math.max(rx, 0),
+        ry: Math.max(ry, 0)
+      };
+      if (rx > 0 && ry > 0 && !seatsCollide(count, layout, ext)) break;
       size *= 0.92;
     }
-    // The fit above yields the LARGEST ring the box allows, which on a wide
-    // panel stretches the seats to the far edges and leaves a dead middle.
-    // Cap the eccentricity so the arrangement still reads as cogs around a
-    // table, then centre what's left over.
-    rx = Math.max(Math.min(rx, ry * 1.7), 0);
-    ry = Math.max(Math.min(ry, rx * 1.7), 0);
-    var stack = ext.above + ext.below;
-    return {
-      size: size,
-      scale: size / SEAT_BASE,
-      cx: width / 2,
-      cy: (height - (2 * ry + stack)) / 2 + ext.above + ry,
-      rx: rx,
-      ry: ry
-    };
+    return layout;
   }
 
   function seatPosition(index, count, layout) {
@@ -406,7 +417,13 @@
       }
     });
     if (line) lines.push(line);
+    // Never cut a line off silently: mark the overflow so a long say reads
+    // as trimmed, not as a bug.
+    var overflow = lines.length > BUBBLE_LINES;
     lines = lines.slice(0, BUBBLE_LINES);
+    if (overflow && lines.length) {
+      lines[lines.length - 1] += "…";
+    }
     var widest = 0;
     lines.forEach(function (l) {
       widest = Math.max(widest, ctx.measureText(l).width);
@@ -450,17 +467,68 @@
 
   // ---- Event feed ----------------------------------------------------------
 
-  function describeEvent(event, names) {
+  // The agents only ever hear anonymous table names ("Tinker", "Gasket");
+  // the payload carries the policy names separately, spectator-side only.
+  // A name map swaps them in wherever a name is RENDERED — seat labels and
+  // the spoken lines both — while the underlying events keep the aliases.
+  function makeNameMap(tableNames, policyNames) {
+    var table = tableNames || [];
+    var display = table.map(function (name, i) {
+      return (policyNames && policyNames[i]) ? policyNames[i] : name;
+    });
+    // One combined pattern, one pass: replacing alias-by-alias would rescan
+    // text it just inserted, which garbles the table whenever a policy NAME
+    // collides with another seat's alias (certification seats a policy
+    // literally named "Gizmo").
+    var byAlias = {};
+    table.forEach(function (name, i) {
+      if (name && display[i] && display[i] !== name) byAlias[name] = display[i];
+    });
+    var aliases = Object.keys(byAlias);
+    var pattern = aliases.length ? new RegExp(
+      "\\b(?:" + aliases.map(function (name) {
+        return name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }).join("|") + ")\\b", "g") : null;
+    return {
+      seat: function (i) { return display[i] || ("Seat " + i); },
+      text: function (text) {
+        if (!pattern) return text;
+        return text.replace(pattern, function (match) {
+          return byAlias[match];
+        });
+      }
+    };
+  }
+
+  // Render-time application of the name map: copies, never mutates, because
+  // the seat states and bubble list are the drivers' bookkeeping.
+  function applyNames(seats, nameMap) {
+    return (seats || []).map(function (seat, i) {
+      var copy = Object.assign({}, seat);
+      copy.name = nameMap.seat(i);
+      return copy;
+    });
+  }
+
+  function renameBubbles(bubbles, nameMap) {
+    return (bubbles || []).map(function (bubble) {
+      return { seat: bubble.seat, text: nameMap.text(bubble.text), at: bubble.at };
+    });
+  }
+
+  function describeEvent(event, nameMap) {
     // Long policy display names otherwise swamp the line they appear in.
     function name(i) {
-      var n = names[i] || ("Seat " + i);
-      return n.length > 24 ? n.slice(0, 23) + "…" : n;
+      return clampName(nameMap.seat(i));
     }
     switch (event.kind) {
       case "roundStart":
         return "New deal — every cog back to full hp.";
       case "it": return name(event.seat) + " is IT.";
-      case "say": return name(event.seat) + ": “" + event.text + "”";
+      case "say":
+        return name(event.seat) + ": “" + nameMap.text(event.text) + "”";
+      case "skip":
+        return name(event.seat) + " holds fire — the table keeps talking.";
       case "shot":
         return name(event.seat) + " shoots " + name(event.target) +
           " (" + Math.max(event.hpAfter, 0) + " hp left)";
@@ -486,7 +554,7 @@
   // render dimmed, and the section containing the playhead is highlighted
   // and scrolled into view. Omit currentIndex for live views (everything is
   // "played"; the feed follows the bottom).
-  function renderFeed(element, events, names, currentIndex) {
+  function renderFeed(element, events, nameMap, currentIndex) {
     var live = currentIndex === undefined;
     var limit = live ? events.length : currentIndex;
     var html = "";
@@ -518,7 +586,7 @@
         (event.kind === "score" ? " feed-score seat" + (event.seat % COLORS.length) : "") +
         (i >= limit ? " feed-future" : "");
       html += '<div class="' + cls + '">' +
-        escapeHtml(describeEvent(event, names)) + "</div>";
+        escapeHtml(describeEvent(event, nameMap)) + "</div>";
     }
     if (open) html += "</div>";
     element.innerHTML = html;
@@ -637,7 +705,7 @@
     return parts.join(" \u00b7 ");
   }
 
-  function updateScorebug(container, seats) {
+  function updateScorebug(container, seats, nameMap) {
     if (!container || !seats) return;
     var html = "";
     seats.forEach(function (seat, index) {
@@ -645,9 +713,10 @@
       for (var p = 0; p < (seat.roundWins || 0); p++) {
         pips += '<span class="plate-pip"></span>';
       }
+      var plateName = nameMap ? nameMap.seat(index) : seat.name;
       html += '<div class="plate ' + seatColor(index) +
         (seat.alive ? "" : " dead") + '">' +
-        '<span class="plate-name">' + escapeHtml(clampName(seat.name)) + "</span>" +
+        '<span class="plate-name">' + escapeHtml(clampName(plateName)) + "</span>" +
         (seat.isIt ? '<span class="plate-it">IT</span>' : "") +
         '<span class="plate-score">' + (seat.score || 0) + "</span>" +
         '<span class="plate-label">pts</span>' +
@@ -703,7 +772,7 @@
         '<span class="end-cell name ' + seatColor(i) +
         (winner ? " end-row-winner" : "") + '">' + escapeHtml(names[i]) +
         "</span>" +
-        cell(results.scores[i] || 0) +
+        cell((results.scores[i] || 0).toFixed(2)) +
         cell(((results.roundWins || [])[i] || 0) * 3) +
         cell((results.friendPoints || [])[i] || 0) +
         cell((results.foePoints || [])[i] || 0);
@@ -742,6 +811,9 @@
     // options: {canvas, feed, status, clock, assetBase, wsPath, onFrame}
     makeRenderer(options.canvas, options.assetBase, function (renderer) {
       var latest = null;
+      // Player pages get no policyNames (they must not learn who is behind a
+      // seat), so their map degrades to the anonymous table names.
+      var nameMap = makeNameMap([], null);
       var effects = makeEffects();
       var scheme = location.protocol === "https:" ? "wss://" : "ws://";
       var url = scheme + location.host + options.wsPath;
@@ -759,16 +831,19 @@
           if (data.type === "state" || data.type === "final") {
             var prevSeats = latest ? latest.seats : null;
             if (data.type === "state") latest = data;
-            if (latest) effects.absorb(latest.events || [], prevSeats);
+            if (latest) {
+              nameMap = makeNameMap(seatNames(latest), latest.policyNames);
+              effects.absorb(latest.events || [], prevSeats);
+            }
             if (options.feed && latest) {
               renderFeed(options.feed, latest.events || [],
-                seatNames(latest), undefined);
+                nameMap, undefined);
             }
             if (options.clock && latest) {
               options.clock.textContent =
                 matchHeader(latest, latest.round || 0, latest.turn);
             }
-            if (latest) updateScorebug(options.scorebug, latest.seats);
+            if (latest) updateScorebug(options.scorebug, latest.seats, nameMap);
             if (data.type === "final") {
               updateEndscreen(options.endscreen, data, true);
             }
@@ -793,7 +868,8 @@
       (function frame() {
         if (latest) {
           var view = effects.view();
-          view.seats = effects.seats(latest.seats, Date.now());
+          view.seats = applyNames(effects.seats(latest.seats, Date.now()), nameMap);
+          view.bubbles = renameBubbles(view.bubbles, nameMap);
           view.hitPoints = latest.hitPoints;
           view.done = latest.done;
           view.now = Date.now();
@@ -885,7 +961,7 @@
     var payload = options.payload;
     var events = payload.events || [];
     var states = payload.states || [];
-    var names = payload.names || [];
+    var nameMap = makeNameMap(payload.names, payload.policyNames);
     var maxTurns = (payload.config || {}).maxTurns || 0;
     var index = 0;
     var playing = true;
@@ -916,7 +992,7 @@
           // is the pre-event view the paintball animation should fly over.
           effects.absorb(events.slice(0, index), states[previous]);
         }
-        if (options.feed) renderFeed(options.feed, events, names, index);
+        if (options.feed) renderFeed(options.feed, events, nameMap, index);
         if (options.label) {
           options.label.textContent = index + " / " + events.length;
         }
@@ -928,7 +1004,7 @@
             matchHeader(payload.config, round, turn);
         }
         updateScorebug(options.scorebug,
-          states[Math.min(index, states.length - 1)]);
+          states[Math.min(index, states.length - 1)], nameMap);
         updateEndscreen(options.endscreen, payload.results,
           index >= events.length && events.length > 0);
       }
@@ -947,7 +1023,8 @@
         }
         var state = states[Math.min(index, states.length - 1)] || [];
         var view = effects.view();
-        view.seats = effects.seats(state, Date.now());
+        view.seats = applyNames(effects.seats(state, Date.now()), nameMap);
+        view.bubbles = renameBubbles(view.bubbles, nameMap);
         view.hitPoints = (payload.config || {}).hitPoints || 3;
         view.done = index >= events.length && events.length > 0;
         view.winners = (payload.results || {}).win;

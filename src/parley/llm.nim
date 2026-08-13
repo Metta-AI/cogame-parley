@@ -21,12 +21,15 @@ const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
   AnthropicVersion = "2023-06-01"
   BedrockAnthropicVersion = "bedrock-2023-05-31"
-  MaxSayLen = 240
+  ## What the viewer's speech bubble can actually show (~4 wrapped lines).
+  ## Anything longer would render cut off mid-sentence at the table.
+  MaxSayLen = 160
 
 type
   Decision* = object
     say*: string
     target*: int      ## seat index; -1 for pure table talk
+    skip*: bool       ## "it" holds fire this turn instead of shooting
 
   LlmTransport = enum
     ltNone, ltBedrock, ltAnthropic
@@ -172,6 +175,9 @@ proc renderHistory(sim: Sim): string =
       lines.add(sim.seatName(event.seat) & " is now IT (holds the paintgun).")
     of evSay:
       lines.add(sim.seatName(event.seat) & " says: \"" & event.text & "\"")
+    of evSkip:
+      lines.add(sim.seatName(event.seat) &
+        " holds fire and keeps the paintgun.")
     of evShot:
       lines.add(sim.seatName(event.seat) & " SHOOTS " &
         sim.seatName(event.target) & " (now " & $max(event.hpAfter, 0) &
@@ -233,6 +239,8 @@ Rules of Parley:
   living cog. The shot cog loses 1 hp and becomes IT.
 - If the shot knocks a cog to 0 hp, that cog is OUT and the shooter keeps
   the paintgun.
+- IT may PASS instead of shooting, a limited number of times per round:
+  the gun stays put and the table keeps talking.
 - CARDS: every round each cog is secretly dealt a FRIEND and an ENEMY
   (never itself, never the same cog). Nobody else knows your cards, and
   the deal reshuffles every round.
@@ -251,10 +259,18 @@ proc shotInstruction(sim: Sim, seat: int): string =
   var names: seq[string]
   for target in sim.validTargets(seat):
     names.add("\"" & sim.seatName(target) & "\"")
-  "You are IT. Choose exactly one living cog to shoot and say something " &
-    "to the table first (max " & $MaxSayLen & " chars).\n" &
-    "Respond with JSON: {\"say\": \"...\", \"shoot\": <one of " &
-    names.join(", ") & ">}"
+  let passes = sim.skipsLeft()
+  result = "You are IT. Choose exactly one living cog to shoot and say " &
+    "something to the table first (max " & $MaxSayLen & " chars).\n"
+  if passes > 0:
+    result.add("You may instead PASS: hold your fire and let the table " &
+      "keep talking (" & $passes &
+      (if passes == 1: " pass" else: " passes") & " left this round).\n" &
+      "Respond with JSON: {\"say\": \"...\", \"shoot\": <one of " &
+      names.join(", ") & ", or \"pass\">}")
+  else:
+    result.add("Respond with JSON: {\"say\": \"...\", \"shoot\": <one of " &
+      names.join(", ") & ">}")
 
 proc reactionInstruction(): string =
   "You are not IT right now. Say one short line to the table (max " &
@@ -348,8 +364,18 @@ proc seatByName(sim: Sim, name: string): int =
 
 proc cleanSay(text: string): string =
   result = text.strip()
-  if result.len > MaxSayLen:
-    result = result[0 ..< MaxSayLen]
+  if result.len <= MaxSayLen:
+    return
+  ## A model that overshoots the stated cap gets cut at a word boundary with
+  ## the cut marked — a silent mid-word slice reads as a bug at the table.
+  result = result[0 ..< MaxSayLen - 3]
+  ## Never leave a UTF-8 code point split by the byte slice.
+  while result.len > 0 and (result[^1].ord and 0xC0) == 0x80:
+    result.setLen(result.len - 1)
+  let space = result.rfind(' ')
+  if space > MaxSayLen div 2:
+    result.setLen(space)
+  result.add("…")
 
 proc decide*(
   client: LlmClient,
@@ -380,6 +406,9 @@ proc decide*(
       )
       if wantShot:
         let targetName = payload{"shoot"}.getStr().strip()
+        if targetName.toLowerAscii() == "pass" and sim.skipsLeft() > 0:
+          decision.skip = true
+          return decision
         decision.target = sim.seatByName(targetName)
         if decision.target < 0 or decision.target == seat or
             not sim.seats[decision.target].alive:

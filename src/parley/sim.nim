@@ -12,7 +12,7 @@
 ## A match is `rounds` rounds; the deal reshuffles every round and match
 ## scores are the round points summed.
 
-import std/[json, random, sequtils, strutils, tables], types
+import std/[json, random, sequtils, strutils], types
 
 export types
 
@@ -50,6 +50,7 @@ type
     seats*: seq[Seat]
     itSeat*: int
     turn*: int      ## completed shots this round
+    skips*: int     ## times "it" has held fire this round
     done*: bool
     deathCount*: int
     events*: seq[GameEvent]
@@ -149,50 +150,20 @@ const CogNames* = [
   "Piston", "Flywheel", "Rivet", "Tinker", "Gasket"
 ]
 
-proc rosterBaseName(name: string): string =
-  ## Strips a trailing " (n)" — how the platform uniquifies seats that share a
-  ## policy, e.g. "Baseline (3)".
-  result = name
-  if result.len < 4 or result[^1] != ')':
-    return
-  let open = result.rfind(" (")
-  if open < 0:
-    return
-  for index in open + 2 .. result.high - 1:
-    if result[index] notin {'0' .. '9'}:
-      return
-  result = result[0 ..< open]
-
 proc tableNames*(players: seq[PlayerConfig], seed: int): seq[string] =
-  ## Seats filled from the same policy arrive as "Baseline", "Baseline (2)", …
-  ## — a wall of identical names nobody can follow at a table where the whole
-  ## game is talking about each other by name. Any group of seats sharing a
-  ## base name is anonymous by construction, so give each its own cog name.
-  ## Named entrants are never touched.
-  var occurrences = initCountTable[string]()
-  for player in players:
-    occurrences.inc(rosterBaseName(player.name))
+  ## Policy display names never reach the table: every seat plays under an
+  ## anonymous cog name, drawn deterministically from the seed so replays and
+  ## the live table agree. A policy name at the table leaks strategy ("that's
+  ## the champion", "those four are baseline clones") straight into the LLMs'
+  ## transcripts; the viewers map seats back to policy names for spectators.
   var rng = initRand(int64(seed) * 6779 + 31)
   var pool = @CogNames
   rng.shuffle(pool)
-  ## Never hand a filler the name of a real entrant at the same table.
-  var taken: seq[string]
-  for player in players:
-    if occurrences[rosterBaseName(player.name)] == 1:
-      taken.add(player.name)
-  var next = 0
-  for player in players:
-    if occurrences[rosterBaseName(player.name)] == 1:
-      result.add(player.name)
-      continue
-    while next < pool.len and pool[next] in taken:
-      next.inc
-    if next < pool.len:
-      taken.add(pool[next])
-      result.add(pool[next])
-      next.inc
+  for index in 0 ..< players.len:
+    if index < pool.len:
+      result.add(pool[index])
     else:
-      result.add(player.name)
+      result.add("Cog " & $(index + 1))
 
 proc sampleEpisode*(config: GameConfig): GameConfig =
   ## Draws this episode's table rules from the seed. Every seat plays the same
@@ -227,11 +198,22 @@ proc sampleEpisode*(config: GameConfig): GameConfig =
     else: 0
   result.reactions = result.maxReactions > 0
 
+  ## Passes are extra conversation turns, so they ladder down with the round
+  ## count exactly like reactions do: chatter is cheapest to allow on a short
+  ## table and priced out of a long one.
+  result.maxSkips =
+    if result.rounds <= 5: config.maxSkips
+    elif result.rounds <= 10: min(config.maxSkips, 1)
+    else: 0
+
   ## Then turns, from what those calls cost. A round also never needs more
   ## shots than it takes to knock the table down to its survivor count, so cap
   ## there too rather than burning the configured ceiling on a decided round.
+  ## A pass costs a full turn's calls without advancing the round, so each
+  ## round's pass allowance is paid for out of its shot turns.
   let callsPerTurn = 1 + result.maxReactions
-  let affordable = EpisodeCallBudget div (result.rounds * callsPerTurn)
+  let affordable =
+    EpisodeCallBudget div (result.rounds * callsPerTurn) - result.maxSkips
   let decisive = max(seats - result.survivors, 1) * max(result.hitPoints, 1) + 4
   result.maxTurns = max(
     min(min(config.maxTurns, decisive), affordable), MinRoundTurns)
@@ -239,7 +221,8 @@ proc sampleEpisode*(config: GameConfig): GameConfig =
   ## Spectator pacing is a fixed sleep per turn, so on a long table it stops
   ## being pacing and becomes most of the episode's wall clock. Spread a fixed
   ## allowance across the turns this table can actually play.
-  let plannedTurns = max(result.rounds * result.maxTurns, 1)
+  let plannedTurns =
+    max(result.rounds * (result.maxTurns + result.maxSkips), 1)
   result.turnDelayMs =
     min(config.turnDelayMs, PacingBudgetMs div plannedTurns)
   result.sampled = true
@@ -305,6 +288,22 @@ proc recordSay*(sim: var Sim, seat: int, text: string) =
   if sim.done or text.len == 0:
     return
   sim.addEvent(evSay, seat, text = text)
+
+proc skipsLeft*(sim: Sim): int =
+  max(sim.config.maxSkips - sim.skips, 0)
+
+proc applySkip*(sim: var Sim, shooter: int) =
+  ## "It" holds its fire to buy the table another exchange of words. The gun
+  ## stays put and no turn elapses, so the allowance is bounded per round
+  ## (config.maxSkips) — talk can never stall the round out.
+  if sim.done:
+    raise newException(ParleyError, "round is over")
+  if shooter != sim.itSeat:
+    raise newException(ParleyError, "only \"it\" can pass")
+  if sim.skipsLeft() <= 0:
+    raise newException(ParleyError, "no passes left this round")
+  inc sim.skips
+  sim.addEvent(evSkip, shooter)
 
 proc applyShot*(sim: var Sim, shooter, target: int) =
   ## One turn: "it" shoots a living cog. Raises on illegal shots.
@@ -438,7 +437,9 @@ proc resultsJson*(match: Match): JsonNode =
   var foeNode = newJArray()
   var rawNode = newJArray()
   for index, seat in match.sim.seats:
-    names.add(%seat.name)
+    ## Results are platform-facing: the league attributes scores by POLICY
+    ## name, not by the anonymous alias the seat played under.
+    names.add(%match.config.players[index].name)
     ## `scores` is the normalized share of the episode's ceiling so the league
     ## can rank across differently-shaped tables; the raw points ride along.
     scoresNode.add(%(match.totals[index] / available))
@@ -527,6 +528,7 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[ReplayFrame] 
         frame.sim.seats[index].enemy = -1
         frame.sim.seats[index].enemyKill = false
       frame.sim.deathCount = 0
+      frame.sim.skips = 0
       frame.sim.done = false
       frame.sim.itSeat = -1
     of evDeal:
@@ -534,6 +536,8 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[ReplayFrame] 
       frame.sim.seats[event.seat].enemy = event.enemy
     of evSay:
       discard
+    of evSkip:
+      inc frame.sim.skips
     of evIt:
       frame.sim.itSeat = event.seat
     of evShot:

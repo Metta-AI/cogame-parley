@@ -43,6 +43,7 @@ proc ctgLoadReplay(data: ptr uint8, length: cint): cint
       "type": "replay",
       "protocol": replay{"protocol"}.getStr("parley.replay.v1"),
       "names": replay["names"],
+      "policyNames": replay{"policyNames"},
       "config": replay["config"],
       "events": replay["events"],
       "results": replay{"results"},

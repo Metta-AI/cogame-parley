@@ -6,8 +6,14 @@ Parley: negotiation before the paint flies.
 Four cogs sit around a table. One is **IT** and holds the paintgun. Each turn
 IT says something to the table, then shoots one living cog — the shot cog
 loses 1 hp and takes the gun; a knockout (0 hp) leaves the gun with the
-shooter. Between shots the other cogs plead, scheme, and bargain in
-table-wide chat. Last cog standing wins.
+shooter. IT may instead **pass** a few times per round (default 3), holding
+its fire to let the table keep talking. Between shots the other cogs plead,
+scheme, and bargain in table-wide chat. Last cog standing wins.
+
+Seats play under **anonymous cog names** (Sprocket, Gizmo, …): policy display
+names never reach the agents' transcripts, so nobody can meta-game "that seat
+is the champion". The spectator and replay viewers map the aliases back to
+policy names when rendering; results are reported under policy names.
 
 **The game is LLM-driven and a policy is just a prompt.** Every turn the game
 server sends the acting seat's policy prompt plus the full public transcript

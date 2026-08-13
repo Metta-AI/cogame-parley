@@ -28,7 +28,7 @@ import
 
 const
   MaxPromptLen = 4000
-  ReplayVersion = 1
+  ReplayVersion = 2
 
 type
   GameState = object
@@ -65,6 +65,13 @@ proc dataDir(): string =
       return candidate
   "data"
 
+proc policyNamesJson(gs: GameState): JsonNode =
+  ## Seats play under anonymous table names; the policy names ride alongside
+  ## for the SPECTATOR views only, which render them in place of the aliases.
+  result = newJArray()
+  for player in gs.config.players:
+    result.add(%player.name)
+
 proc snapshotJson(gs: GameState): JsonNode =
   var events = newJArray()
   for event in gs.match.allEvents():
@@ -82,6 +89,7 @@ proc snapshotJson(gs: GameState): JsonNode =
     "type": "state",
     "game": "parley",
     "seats": gs.match.sim.seatStates(liveTotals, gs.match.roundWins),
+    "policyNames": gs.policyNamesJson(),
     "events": events,
     "turn": gs.match.sim.turn,
     "round": gs.match.sim.round,
@@ -120,6 +128,9 @@ proc broadcastLocked(gs: GameState) =
     observation["type"] = %"state"
     observation["slot"] = %slot
     observation.redactCards(slot)
+    ## Players never learn who is behind a seat — that is the whole point of
+    ## the aliases — so the policy-name map is spectator-only.
+    observation.delete("policyNames")
     socket.send($observation)
 
 proc broadcast() =
@@ -152,6 +163,7 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
   $ %*{
     "protocol": "parley.replay.v" & $ReplayVersion,
     "names": names,
+    "policyNames": gs.policyNamesJson(),
     "config": {
       "hitPoints": gs.config.hitPoints,
       "maxTurns": gs.config.maxTurns,
@@ -185,12 +197,19 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
     ## Send final frames to players BEFORE writing artifacts: the hosted
     ## worker tears player pods down as soon as results.json exists, and
     ## writing first would race player log collection.
+    ## Results carry POLICY names for the platform, but the final frame goes
+    ## to the player sockets — hand them the table aliases instead, or the
+    ## last message of the match would leak the seat-to-policy mapping the
+    ## aliases exist to hide.
+    var aliasNames = newJArray()
+    for seat in state.match.sim.seats:
+      aliasNames.add(%seat.name)
     var final = %*{
       "type": "final",
       "done": true,
       "scores": results["scores"],
       "win": results["win"],
-      "names": results["names"],
+      "names": aliasNames,
       "kills": results["kills"],
       "roundWins": results["roundWins"],
       "friendPoints": results["friendPoints"],
@@ -291,9 +310,14 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       withLock stateLock:
         state.match.sim.recordSay(itSeat, shot.say)
         try:
-          state.match.sim.applyShot(itSeat, shot.target)
+          if shot.skip:
+            ## "It" holds fire: the gun stays put, the reaction chatter below
+            ## still runs, and the same seat decides again next loop.
+            state.match.sim.applySkip(itSeat)
+          else:
+            state.match.sim.applyShot(itSeat, shot.target)
         except ParleyError as error:
-          echo "parley: llm shot rejected (", error.msg, "); using fallback"
+          echo "parley: llm action rejected (", error.msg, "); using fallback"
           let fallback = client.scriptedShot(state.match.sim, itSeat)
           state.match.sim.applyShot(itSeat, fallback.target)
         if state.match.sim.done:
@@ -532,6 +556,7 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
     "type": "replay",
     "protocol": payload{"protocol"}.getStr("parley.replay.v1"),
     "names": payload["names"],
+    "policyNames": payload{"policyNames"},
     "config": payload["config"],
     "events": payload["events"],
     "results": payload{"results"},

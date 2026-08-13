@@ -163,19 +163,18 @@ suite "parley sim":
           check friendCount[index] == 1
           check enemyCount[index] == 1
 
-  test "filler seats get distinct cog names, entrants keep theirs":
-    ## The shape a hosted league round actually delivers: one real entrant and
-    ## four seats sharing the baseline policy.
+  test "every seat plays under an anonymous cog name":
+    ## Policy names must never reach the table: a name like "daveey" or
+    ## "Baseline (3)" leaks who is behind a seat into the LLM transcripts.
     let roster = @[
       PlayerConfig(name: "daveey"),
       PlayerConfig(name: "Baseline"),
       PlayerConfig(name: "Baseline (2)"),
-      PlayerConfig(name: "Baseline (3)"),
-      PlayerConfig(name: "Baseline (4)")
+      PlayerConfig(name: "rival"),
+      PlayerConfig(name: "third")
     ]
     let named = tableNames(roster, 42)
-    check named[0] == "daveey"
-    for index in 1 .. 4:
+    for index in 0 ..< roster.len:
       check named[index] != roster[index].name
       check named[index] in CogNames
     ## Every seat at the table is distinguishable.
@@ -185,13 +184,84 @@ suite "parley sim":
     ## Stable for a given seed, so replays and the live table agree.
     check tableNames(roster, 42) == named
 
-  test "a table of named entrants is left alone":
-    let roster = @[
-      PlayerConfig(name: "daveey"),
-      PlayerConfig(name: "rival"),
-      PlayerConfig(name: "third")
-    ]
-    check tableNames(roster, 7) == @["daveey", "rival", "third"]
+  test "results carry policy names, not the table aliases":
+    ## The league attributes scores by policy name; the aliases are in-game
+    ## only.
+    var match = initMatch(fixtureConfig(2, hp = 1, rounds = 1))
+    while not match.done:
+      match.sim.applyShot(match.sim.itSeat,
+        match.sim.validTargets(match.sim.itSeat)[0])
+      match.finishRound()
+    let results = match.resultsJson()
+    check results["names"][0].getStr() == "P1"
+    check results["names"][1].getStr() == "P2"
+    check match.sim.seats[0].name != "P1"
+
+  test "it can pass up to maxSkips times, then must shoot":
+    var config = fixtureConfig(3)
+    config.maxSkips = 2
+    var sim = initSim(config)
+    let it = sim.itSeat
+    check sim.skipsLeft() == 2
+    sim.applySkip(it)
+    check sim.itSeat == it       # the gun stays put
+    check sim.turn == 0          # no turn elapses
+    check not sim.done
+    check sim.events[^1].kind == evSkip
+    sim.applySkip(it)
+    check sim.skipsLeft() == 0
+    expect ParleyError:
+      sim.applySkip(it)          # allowance spent
+    ## A shot still works and the round proceeds normally.
+    let target = sim.validTargets(it)[0]
+    sim.applyShot(it, target)
+    check sim.turn == 1
+
+  test "only it can pass, and never after the round ends":
+    var sim = initSim(fixtureConfig(3))
+    for seat in 0 ..< 3:
+      if seat != sim.itSeat:
+        expect ParleyError:
+          sim.applySkip(seat)
+    var over = initSim(fixtureConfig(2, hp = 1))
+    over.applyShot(over.itSeat, over.validTargets(over.itSeat)[0])
+    check over.done
+    expect ParleyError:
+      over.applySkip(over.itSeat)
+
+  test "the pass allowance resets every round":
+    var config = fixtureConfig(2, hp = 1, rounds = 2)
+    config.maxSkips = 1
+    var match = initMatch(config)
+    match.sim.applySkip(match.sim.itSeat)
+    check match.sim.skipsLeft() == 0
+    match.sim.applyShot(match.sim.itSeat,
+      match.sim.validTargets(match.sim.itSeat)[0])
+    match.finishRound()
+    check match.sim.skipsLeft() == 1
+
+  test "skip events replay and round-trip":
+    var config = fixtureConfig(3, hp = 2)
+    var sim = initSim(config)
+    sim.recordSay(sim.itSeat, "let's talk first")
+    sim.applySkip(sim.itSeat)
+    sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[0])
+    for event in sim.events:
+      check eventFromJson(event.eventToJson()) == event
+    let frames = replayMatch(config, sim.events)
+    check frames[^1].sim.skips == 1
+    for index in 0 ..< 3:
+      check frames[^1].sim.seats[index].hp == sim.seats[index].hp
+
+  test "long tables price the pass allowance out":
+    for seed in 0 .. 60:
+      var config = fixtureConfig(5)
+      config.sampled = false
+      config.seed = seed
+      let drawn = sampleEpisode(config)
+      check drawn.maxSkips <= config.maxSkips
+      if drawn.rounds > 10:
+        check drawn.maxSkips == 0
 
   test "fatally shooting your enemy scores the bonus":
     var sim = initSim(fixtureConfig(4, hp = 1))

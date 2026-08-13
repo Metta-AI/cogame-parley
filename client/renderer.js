@@ -471,10 +471,18 @@
   // the payload carries the policy names separately, spectator-side only.
   // A name map swaps them in wherever a name is RENDERED — seat labels and
   // the spoken lines both — while the underlying events keep the aliases.
+  // The platform fills empty seats with "Baseline" / "Baseline (N)" policies.
+  // Mapping those seats back to their policy name tells a spectator nothing,
+  // so they keep their table alias instead — already a cute robot name.
+  function isBaselineFiller(name) {
+    return /^baseline(\s*\(\d+\))?$/i.test(name);
+  }
+
   function makeNameMap(tableNames, policyNames) {
     var table = tableNames || [];
     var display = table.map(function (name, i) {
-      return (policyNames && policyNames[i]) ? policyNames[i] : name;
+      var policy = policyNames && policyNames[i];
+      return (policy && !isBaselineFiller(policy)) ? policy : name;
     });
     // One combined pattern, one pass: replacing alias-by-alias would rescan
     // text it just inserted, which garbles the table whenever a policy NAME
@@ -731,12 +739,16 @@
 
   // Final standings overlay, paintbot-endscreen style: verdict up top,
   // ranked rows of score / round wins / knockouts below.
-  function updateEndscreen(container, results, show) {
+  function updateEndscreen(container, results, show, nameMap) {
     if (!container) return;
     container.classList.toggle("show", !!show);
     if (!show || !results || container.dataset.built === "yes") return;
     container.dataset.built = "yes";
-    var names = results.names || [];
+    // Results carry policy names; route them through the seat name map so
+    // baseline fillers rank under their table alias here too.
+    var names = (results.names || []).map(function (name, i) {
+      return nameMap ? nameMap.seat(i) : name;
+    });
     var order = names.map(function (_, i) { return i; });
     order.sort(function (a, b) {
       return (results.scores[b] || 0) - (results.scores[a] || 0);
@@ -845,7 +857,7 @@
             }
             if (latest) updateScorebug(options.scorebug, latest.seats, nameMap);
             if (data.type === "final") {
-              updateEndscreen(options.endscreen, data, true);
+              updateEndscreen(options.endscreen, data, true, nameMap);
             }
             if (latest && latest.done) setStatus("final", false);
           }
@@ -1006,7 +1018,7 @@
         updateScorebug(options.scorebug,
           states[Math.min(index, states.length - 1)], nameMap);
         updateEndscreen(options.endscreen, payload.results,
-          index >= events.length && events.length > 0);
+          index >= events.length && events.length > 0, nameMap);
       }
       setIndex(0, true);
 

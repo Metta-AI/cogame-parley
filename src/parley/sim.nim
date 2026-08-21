@@ -35,22 +35,6 @@ const
   ## The most one seat can bank in a round: survive (3) + fatally shoot its
   ## enemy (1) + its friend survives (1).
   PointsPerRound* = 5.0
-  ## An episode's whole model-call allowance. A hosted episode is killed if it
-  ## outlives the platform's artifact timeout, so the budget has to sit on the
-  ## EPISODE rather than the round: a 20-round draw would otherwise run ~7x a
-  ## 3-round one and time out instead of finishing.
-  ##
-  ## Counted in CALLS, not turns, because a turn is not a fixed cost — it is
-  ## one call for IT plus one per reacting cog. Budgeting turns alone left the
-  ## expense hiding in the reactions and blew the ceiling at LOW round counts,
-  ## where chatter is cheapest to allow and therefore most of it happens.
-  ##
-  ## The budget buys ROUNDS, never a cut-off inside one. A round that stops on
-  ## a turn count leaves more cogs standing than the table was playing for and
-  ## has to invent a winner by hp ranking, which is not the game — so an
-  ## episode that cannot afford its drawn round count plays fewer rounds and
-  ## every one of them reaches a real verdict.
-  EpisodeCallBudget* = 240
   ## Total spectator-pacing sleep an episode may spend, in milliseconds.
   PacingBudgetMs* = 60_000
   ## A hip-shot lands one time in `HipShotOdds`.
@@ -184,18 +168,6 @@ proc tableNames*(players: seq[PlayerConfig], seed: int): seq[string] =
     else:
       result.add("Cog " & $(index + 1))
 
-proc roundTurnBound*(seats, hitPoints, survivors: int): int =
-  ## The most HITS a round can possibly take. Every hit removes exactly one
-  ## hp from a living cog and the round ends the moment only `survivors` are
-  ## left standing, so the longest round is the one where the doomed cogs are
-  ## drained dry AND every survivor is walked down to its last hp:
-  ##   (seats - survivors) * hp   +   survivors * (hp - 1)   =   seats*hp - survivors
-  ## Exact for hits. Hip-shots can MISS and spend a turn without removing
-  ## anything, so the TURN count of a round is only bounded in expectation
-  ## (a table firing nothing but hip-shots averages three turns per hit);
-  ## the episode deadline between rounds is what backstops the budget.
-  max(seats * max(hitPoints, 1) - max(survivors, 1), 1)
-
 proc talkAllowance(rounds, maxReactions, maxSkips: int): (int, int) =
   ## Reactions and passes are table flavour rather than the game itself, so a
   ## long match spends its allowance on playing more rounds instead of on more
@@ -204,50 +176,6 @@ proc talkAllowance(rounds, maxReactions, maxSkips: int): (int, int) =
   if rounds <= 5: (maxReactions, maxSkips)
   elif rounds <= 10: (min(maxReactions, 1), min(maxSkips, 1))
   else: (0, 0)
-
-proc episodeCallCost*(rounds, seats, hitPoints, survivors,
-    reactions, skips: int): int =
-  ## Every model call an episode can spend. A turn costs one call for IT plus
-  ## one per reacting cog; a pass buys the same chatter without advancing the
-  ## round, so it is priced identically.
-  rounds * (roundTurnBound(seats, hitPoints, survivors) + skips) *
-    (1 + reactions)
-
-proc affordRounds*(drawnRounds, seats, hitPoints, survivors,
-    maxReactions, maxSkips: int): tuple[rounds, reactions, skips: int] =
-  ## The longest table at or below `drawnRounds` that fits the call budget,
-  ## with the richest chatter allowance that still fits alongside it.
-  ##
-  ## ROUNDS OUTRANK CHATTER. A round is where the cards are dealt and where a
-  ## verdict is scored, so an episode that cannot afford both gives up table
-  ## talk before it gives up rounds — every candidate round count is retried
-  ## with the chatter trimmed, and only when even a silent table is unaffordable
-  ## does the round count come down.
-  ##
-  ## Scanned downward rather than divided, because the chatter ladder makes
-  ## cost non-monotonic in the round count — dropping from 11 rounds to 10
-  ## switches reactions back on and DOUBLES the per-turn price, so the largest
-  ## affordable table is not simply budget/cost-of-one-round.
-  ##
-  ## Never returns more rounds than were drawn: the budget is a ceiling on the
-  ## table, not a quota to fill.
-  ##
-  ## Floor: one round with the chatter stripped. A single complete round,
-  ## scored honestly against a one-round ceiling, beats an episode the
-  ## platform kills for overrunning and keeps nothing of.
-  result = (1, 0, 0)
-  for candidate in countdown(max(drawnRounds, 1), 1):
-    let (ladderReactions, ladderSkips) =
-      talkAllowance(candidate, maxReactions, maxSkips)
-    ## Richest allowance first, then trimmed, then silent.
-    for (reactions, skips) in [
-      (ladderReactions, ladderSkips),
-      (min(ladderReactions, 1), min(ladderSkips, 1)),
-      (0, 0)
-    ]:
-      if episodeCallCost(candidate, seats, hitPoints, survivors,
-          reactions, skips) <= EpisodeCallBudget:
-        return (candidate, reactions, skips)
 
 proc sampleEpisode*(config: GameConfig): GameConfig =
   ## Draws this episode's table rules from the seed. Every seat plays the same
@@ -271,23 +199,25 @@ proc sampleEpisode*(config: GameConfig): GameConfig =
   if seats > 0:
     result.survivors = min(result.survivors, max(seats - 1, 1))
 
-  ## Fit the drawn table into one episode's call budget by buying ROUNDS with
-  ## it. A round is never cut off part-way: it runs until the table is down to
-  ## `survivors`, and `roundTurnBound` says exactly what that can cost.
-  let costSeats = max(seats, 2)
-  (result.rounds, result.maxReactions, result.maxSkips) = affordRounds(
-    result.rounds, costSeats, result.hitPoints, result.survivors,
-    config.maxReactions, config.maxSkips)
+  ## Rounds are exactly what was drawn. A round is never cut off part-way and
+  ## there is no turn ceiling of any kind: it runs until the table is down to
+  ## `survivors`, however long that takes. The only thing that shortens a
+  ## match is the hosted deadline, checked between rounds by the server.
+  ##
+  ## Chatter ladders with the round count: reactions and passes are table
+  ## flavour, so a long match spends its time on rounds rather than on more
+  ## talk per shot.
+  (result.maxReactions, result.maxSkips) =
+    talkAllowance(result.rounds, config.maxReactions, config.maxSkips)
   result.reactions = result.maxReactions > 0
 
   ## Spectator pacing is a fixed sleep per turn, so on a long table it stops
   ## being pacing and becomes most of the episode's wall clock. Spread a fixed
-  ## allowance across the turns this table can actually play.
-  let plannedTurns = max(result.rounds *
-    (roundTurnBound(costSeats, result.hitPoints, result.survivors) +
-     result.maxSkips), 1)
+  ## allowance across a rough guess at the turns this table will play — a
+  ## pacing estimate only, never a limit on anything.
+  let roughTurns = max(result.rounds * max(seats, 2) * result.hitPoints, 1)
   result.turnDelayMs =
-    min(config.turnDelayMs, PacingBudgetMs div plannedTurns)
+    min(config.turnDelayMs, PacingBudgetMs div roughTurns)
   result.sampled = true
 
 proc initSim*(config: GameConfig, round = 0): Sim =
@@ -413,8 +343,8 @@ proc applyShot*(sim: var Sim, shooter, target: int, aim = aimHead) =
     sim.addEvent(evIt, target)
 
   ## The survivor count is the ONLY thing that ends a round. There is no turn
-  ## ceiling: every shot has a real chance of removing an hp and hp is finite,
-  ## so the round terminates with probability one.
+  ## ceiling of any kind: every shot has a real chance of removing an hp and
+  ## hp is finite, so the round terminates with probability one.
   if sim.aliveCount() <= max(sim.config.survivors, 1):
     sim.done = true
 

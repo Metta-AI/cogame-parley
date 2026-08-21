@@ -90,18 +90,6 @@ suite "parley sim":
         check sim.seats[index].alive
     check crowned == 1
 
-  test "a round never outruns its turn bound":
-    ## roundTurnBound is what the episode budget is priced off, so it has to
-    ## hold for every table shape, not just the common one.
-    for seats in 3 .. 5:
-      for hp in 1 .. 5:
-        for survivors in 1 .. seats - 1:
-          var sim = initSim(fixtureConfig(seats, hp = hp, survivors = survivors))
-          while not sim.done:
-            sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[^1])
-          check sim.turn <= roundTurnBound(seats, hp, survivors)
-          check sim.aliveCount() <= survivors
-
   test "match plays rounds and accumulates":
     var match = initMatch(fixtureConfig(2, hp = 1, rounds = 3))
     var roundsPlayed = 0
@@ -293,44 +281,6 @@ suite "parley sim":
       if drawn.rounds > 10:
         check drawn.maxSkips == 0
 
-  test "every drawn episode fits the call budget":
-    ## The budget is what stops a hosted episode outliving the platform's
-    ## timeout. Rounds are now what it buys, so it has to hold on the ROUND
-    ## COUNT for every seed - there is no per-round cut-off left to fall back
-    ## on if the arithmetic is wrong.
-    for seats in 3 .. 6:
-      for seed in 0 .. 120:
-        var config = fixtureConfig(seats)
-        config.sampled = false
-        config.seed = seed
-        let drawn = sampleEpisode(config)
-        check drawn.rounds >= 1
-        check episodeCallCost(drawn.rounds, seats, drawn.hitPoints,
-          drawn.survivors, drawn.maxReactions, drawn.maxSkips) <=
-          EpisodeCallBudget
-
-  test "the budget buys as many whole rounds as it can afford":
-    ## Spending down to one round when a longer table fits would quietly throw
-    ## away the variety the draw asked for, so `affordRounds` has to return the
-    ## LARGEST affordable count, never merely an affordable one.
-    for drawnRounds in RoundsMin .. RoundsMax:
-      for hp in HitPointsMin .. HitPointsMax:
-        for survivors in 1 .. 3:
-          let got = affordRounds(drawnRounds, 5, hp, survivors, 3, 3)
-          ## What it picked is affordable, and never more than was drawn.
-          check got.rounds >= 1
-          check got.rounds <= drawnRounds
-          check episodeCallCost(got.rounds, 5, hp, survivors,
-            got.reactions, got.skips) <= EpisodeCallBudget
-          ## ...and nothing larger, up to the drawn count, was affordable.
-          for candidate in got.rounds + 1 .. drawnRounds:
-            let (reactions, skips) =
-              if candidate <= 5: (3, 3)
-              elif candidate <= 10: (1, 1)
-              else: (0, 0)
-            check episodeCallCost(candidate, 5, hp, survivors,
-              reactions, skips) > EpisodeCallBudget
-
   test "fatally shooting your enemy scores the bonus":
     var sim = initSim(fixtureConfig(4, hp = 1))
     ## Play the round out: each "it" shoots its enemy when alive, else the
@@ -381,14 +331,10 @@ suite "parley sim":
       let drawn = sampleEpisode(config)
       var match = initMatch(drawn)
       var rng = initRand(seed)
-      var guard = 0
       while not match.done:
         let shooter = match.sim.itSeat
         let targets = match.sim.validTargets(shooter)
         match.sim.applyShot(shooter, targets[rng.rand(targets.len - 1)])
-        guard.inc
-        check guard <= drawn.rounds *
-          roundTurnBound(5, drawn.hitPoints, drawn.survivors)
         if match.sim.done:
           ## The round stopped because the table reached its survivor count,
           ## never because a turn counter ran out.
@@ -538,9 +484,7 @@ suite "parley sim":
 
   test "hip-shots are unlimited and a hip-shot-only table still ends":
     ## Every shot keeps a real chance of landing, so a round terminates on
-    ## its own even when nobody ever aims for the head — it just runs past
-    ## the hits-only bound.
-    var longest = 0
+    ## its own even when nobody ever aims for the head.
     for seed in 0 ..< 40:
       var config = fixtureConfig(4, hp = 2)
       config.seed = seed
@@ -548,8 +492,6 @@ suite "parley sim":
       while not sim.done:
         sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[^1], aimHip)
       check sim.aliveCount() == 1
-      longest = max(longest, sim.turn)
-    check longest > roundTurnBound(4, 2, 1)
 
   test "hip-shot events replay and round-trip, and are deterministic":
     var config = fixtureConfig(4, hp = 2)

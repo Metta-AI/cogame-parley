@@ -2,3 +2,4 @@ bin/
 tmp/
 dist/
 replay-viewer/dist/
+tests/test_sim

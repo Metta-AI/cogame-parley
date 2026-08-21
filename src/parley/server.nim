@@ -97,7 +97,6 @@ proc snapshotJson(gs: GameState): JsonNode =
     "survivors": gs.config.survivors,
     "roundsKnown": gs.config.roundsKnown,
     "survivorsKnown": gs.config.survivorsKnown,
-    "maxTurns": gs.config.maxTurns,
     "hitPoints": gs.config.hitPoints,
     "started": gs.started,
     "done": gs.match.done,
@@ -166,7 +165,6 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
     "policyNames": gs.policyNamesJson(),
     "config": {
       "hitPoints": gs.config.hitPoints,
-      "maxTurns": gs.config.maxTurns,
       "rounds": gs.config.rounds,
       "survivors": gs.config.survivors,
       "roundsKnown": gs.config.roundsKnown,
@@ -463,8 +461,7 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         "survivors": (if state.config.survivorsKnown: %state.config.survivors
                       else: newJNull()),
         "roundsKnown": state.config.roundsKnown,
-        "survivorsKnown": state.config.survivorsKnown,
-        "maxTurns": state.config.maxTurns
+        "survivorsKnown": state.config.survivorsKnown
       })
 
 proc globalUpgradeHandler(request: Request) {.gcsafe.} =
@@ -546,7 +543,6 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
   let payload = parseJson(runtimeConfig.replay)
   var config = defaultGameConfig()
   config.hitPoints = payload["config"]{"hitPoints"}.getInt(3)
-  config.maxTurns = payload["config"]{"maxTurns"}.getInt(60)
   config.rounds = payload["config"]{"rounds"}.getInt(1)
   config.survivors = payload["config"]{"survivors"}.getInt(1)
   config.roundsKnown = payload["config"]{"roundsKnown"}.getBool(true)

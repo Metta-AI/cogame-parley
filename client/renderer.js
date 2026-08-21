@@ -974,7 +974,6 @@
     var events = payload.events || [];
     var states = payload.states || [];
     var nameMap = makeNameMap(payload.names, payload.policyNames);
-    var maxTurns = (payload.config || {}).maxTurns || 0;
     var index = 0;
     var playing = true;
     var lastStep = 0;

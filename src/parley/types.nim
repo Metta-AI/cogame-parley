@@ -18,7 +18,6 @@ type
     roundsKnown*: bool
     survivorsKnown*: bool
     sampled*: bool        ## true once per-episode values have been drawn
-    maxTurns*: int
     maxSkips*: int        ## times "it" may hold fire per round
     reactions*: bool
     maxReactions*: int
@@ -69,7 +68,6 @@ proc defaultGameConfig*(): GameConfig =
     hitPoints: 3,
     roundsKnown: true,
     survivorsKnown: true,
-    maxTurns: 60,
     maxSkips: 3,
     reactions: true,
     maxReactions: 3,
@@ -109,8 +107,6 @@ proc update*(config: var GameConfig, configJson: string) =
     config.survivorsKnown = node["survivorsKnown"].getBool()
   if node.hasKey("sampled"):
     config.sampled = node["sampled"].getBool()
-  if node.hasKey("maxTurns"):
-    config.maxTurns = node["maxTurns"].getInt()
   if node.hasKey("maxSkips"):
     config.maxSkips = node["maxSkips"].getInt()
   if node.hasKey("reactions"):

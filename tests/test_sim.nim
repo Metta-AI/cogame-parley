@@ -1,11 +1,10 @@
-import std/[json, unittest]
+import std/[json, random, unittest]
 import parley/sim
 
-proc fixtureConfig(players: int, hp = 3, maxTurns = 60, rounds = 1,
+proc fixtureConfig(players: int, hp = 3, rounds = 1,
     survivors = 1): GameConfig =
   result = defaultGameConfig()
   result.hitPoints = hp
-  result.maxTurns = maxTurns
   result.rounds = rounds
   result.survivors = survivors
   ## Pinned, so these tests exercise the rules rather than the per-episode draw.
@@ -63,14 +62,37 @@ suite "parley sim":
     expect ParleyError:
       killer.applyShot(0, 1)  # already dead
 
-  test "max turns ends the round with hp ranking":
-    var sim = initSim(fixtureConfig(3, hp = 9, maxTurns = 2))
+  test "no turn count ends a round: only the survivor count does":
+    ## A deep-hp table used to stop on the turn ceiling and crown whoever was
+    ## least shot. Now it plays out, however long that takes.
+    var sim = initSim(fixtureConfig(3, hp = 9))
     sim.applyShot(0, 1)
     sim.applyShot(1, 2)
-    check sim.done
-    # hp: P1 9, P2 8, P3 8 -> P1 alone on top hp is "last standing".
-    check sim.winners() == @[true, false, false]
-    check sim.scores()[0] >= 3.0
+    check not sim.done
+    check sim.aliveCount() == 3
+    while not sim.done:
+      sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[0])
+    ## The round ended because the table reached one survivor, and that
+    ## survivor is the winner outright — no hp ranking involved.
+    check sim.aliveCount() == 1
+    var crowned = 0
+    for index, won in sim.winners():
+      if won:
+        crowned.inc
+        check sim.seats[index].alive
+    check crowned == 1
+
+  test "a round never outruns its turn bound":
+    ## roundTurnBound is what the episode budget is priced off, so it has to
+    ## hold for every table shape, not just the common one.
+    for seats in 3 .. 5:
+      for hp in 1 .. 5:
+        for survivors in 1 .. seats - 1:
+          var sim = initSim(fixtureConfig(seats, hp = hp, survivors = survivors))
+          while not sim.done:
+            sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[^1])
+          check sim.turn <= roundTurnBound(seats, hp, survivors)
+          check sim.aliveCount() <= survivors
 
   test "match plays rounds and accumulates":
     var match = initMatch(fixtureConfig(2, hp = 1, rounds = 3))
@@ -112,7 +134,7 @@ suite "parley sim":
     check results["turns"].getInt() == 2
 
   test "replay re-derivation matches the live match":
-    var config = fixtureConfig(4, hp = 2, maxTurns = 30, rounds = 2)
+    var config = fixtureConfig(4, hp = 2, rounds = 2)
     config.seed = 1
     var match = initMatch(config)
     while not match.done:
@@ -263,6 +285,44 @@ suite "parley sim":
       if drawn.rounds > 10:
         check drawn.maxSkips == 0
 
+  test "every drawn episode fits the call budget":
+    ## The budget is what stops a hosted episode outliving the platform's
+    ## timeout. Rounds are now what it buys, so it has to hold on the ROUND
+    ## COUNT for every seed - there is no per-round cut-off left to fall back
+    ## on if the arithmetic is wrong.
+    for seats in 3 .. 6:
+      for seed in 0 .. 120:
+        var config = fixtureConfig(seats)
+        config.sampled = false
+        config.seed = seed
+        let drawn = sampleEpisode(config)
+        check drawn.rounds >= 1
+        check episodeCallCost(drawn.rounds, seats, drawn.hitPoints,
+          drawn.survivors, drawn.maxReactions, drawn.maxSkips) <=
+          EpisodeCallBudget
+
+  test "the budget buys as many whole rounds as it can afford":
+    ## Spending down to one round when a longer table fits would quietly throw
+    ## away the variety the draw asked for, so `affordRounds` has to return the
+    ## LARGEST affordable count, never merely an affordable one.
+    for drawnRounds in RoundsMin .. RoundsMax:
+      for hp in HitPointsMin .. HitPointsMax:
+        for survivors in 1 .. 3:
+          let got = affordRounds(drawnRounds, 5, hp, survivors, 3, 3)
+          ## What it picked is affordable, and never more than was drawn.
+          check got.rounds >= 1
+          check got.rounds <= drawnRounds
+          check episodeCallCost(got.rounds, 5, hp, survivors,
+            got.reactions, got.skips) <= EpisodeCallBudget
+          ## ...and nothing larger, up to the drawn count, was affordable.
+          for candidate in got.rounds + 1 .. drawnRounds:
+            let (reactions, skips) =
+              if candidate <= 5: (3, 3)
+              elif candidate <= 10: (1, 1)
+              else: (0, 0)
+            check episodeCallCost(candidate, 5, hp, survivors,
+              reactions, skips) > EpisodeCallBudget
+
   test "fatally shooting your enemy scores the bonus":
     var sim = initSim(fixtureConfig(4, hp = 1))
     ## Play the round out: each "it" shoots its enemy when alive, else the
@@ -301,6 +361,38 @@ suite "parley sim":
         winners.inc
         check seat.alive
     check winners == 2
+
+  test "a whole sampled episode plays every round to a verdict":
+    ## End to end on real draws: sample the table the way an episode does,
+    ## play it out, and check that no round ended on anything but the survivor
+    ## count - and that every crowned cog is one that was actually standing.
+    for seed in 0 .. 80:
+      var config = fixtureConfig(5)
+      config.sampled = false
+      config.seed = seed
+      let drawn = sampleEpisode(config)
+      var match = initMatch(drawn)
+      var rng = initRand(seed)
+      var guard = 0
+      while not match.done:
+        let shooter = match.sim.itSeat
+        let targets = match.sim.validTargets(shooter)
+        match.sim.applyShot(shooter, targets[rng.rand(targets.len - 1)])
+        guard.inc
+        check guard <= drawn.rounds *
+          roundTurnBound(5, drawn.hitPoints, drawn.survivors)
+        if match.sim.done:
+          ## The round stopped because the table reached its survivor count,
+          ## never because a turn counter ran out.
+          check match.sim.aliveCount() == max(drawn.survivors, 1)
+          for index, won in match.sim.winners():
+            if won: check match.sim.seats[index].alive
+          match.finishRound()
+      check match.roundsPlayed == drawn.rounds
+      let results = match.resultsJson()
+      check results["turns"].getInt() > 0
+      check results["pointsAvailable"].getFloat() ==
+        PointsPerRound * float(drawn.rounds)
 
   test "every episode draws a table inside the published ranges":
     for seed in 0 .. 60:

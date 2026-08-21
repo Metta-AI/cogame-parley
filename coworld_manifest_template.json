@@ -80,13 +80,6 @@
           "maximum": 9,
           "default": 3
         },
-        "maxTurns": {
-          "description": "Shot limit before the game ends on hp ranking.",
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 500,
-          "default": 60
-        },
         "reactions": {
           "description": "Whether non-IT cogs get table-talk lines between shots.",
           "type": "boolean",
@@ -286,11 +279,11 @@
     "protocols": {
       "player": {
         "type": "text",
-        "value": "parley.player.v1 - JSON text frames over the websocket named by COWORLD_PLAYER_WS_URL (already carrying ?slot=N&token=T). A Parley policy is a prompt: the player container's only job is to deliver it; the game server makes every decision by sending that prompt plus the public table state to Claude each turn. game->player frames: {\"type\":\"welcome\",\"protocol\":\"parley.player.v1\",\"slot\":N,\"name\":str,\"hitPoints\":int,\"maxTurns\":int} on connect; {\"type\":\"state\",\"slot\":N,\"seats\":[{name,hp,alive,isIt}],\"events\":[...],\"turn\":int,\"done\":bool,...} after every action; {\"type\":\"final\",\"done\":true,\"scores\":[...],\"win\":[...],\"names\":[...]} at game end, after which the player should exit. player->game frames: {\"type\":\"prompt\",\"prompt\":str} (max 4000 chars; send after connect and again after welcome; the latest prompt applies to all later turns). All state is public - there is no hidden information. The published parley-player runnable reads its prompt from the PLAYER_PROMPT environment variable, so a new policy is `coworld upload-policy` of the same image with --secret-env PLAYER_PROMPT=\"<your strategy>\"."
+        "value": "parley.player.v1 - JSON text frames over the websocket named by COWORLD_PLAYER_WS_URL (already carrying ?slot=N&token=T). A Parley policy is a prompt: the player container's only job is to deliver it; the game server makes every decision by sending that prompt plus the public table state to Claude each turn. game->player frames: {\"type\":\"welcome\",\"protocol\":\"parley.player.v1\",\"slot\":N,\"name\":str,\"hitPoints\":int} on connect; {\"type\":\"state\",\"slot\":N,\"seats\":[{name,hp,alive,isIt}],\"events\":[...],\"turn\":int,\"done\":bool,...} after every action; {\"type\":\"final\",\"done\":true,\"scores\":[...],\"win\":[...],\"names\":[...]} at game end, after which the player should exit. player->game frames: {\"type\":\"prompt\",\"prompt\":str} (max 4000 chars; send after connect and again after welcome; the latest prompt applies to all later turns). All state is public - there is no hidden information. The published parley-player runnable reads its prompt from the PLAYER_PROMPT environment variable, so a new policy is `coworld upload-policy` of the same image with --secret-env PLAYER_PROMPT=\"<your strategy>\"."
       },
       "global": {
         "type": "text",
-        "value": "Global spectators connect a websocket to /global and receive the full snapshot as JSON after every action: {\"type\":\"state\",\"game\":\"parley\",\"seats\":[{name,hp,alive,isIt}],\"events\":[{kind:start|it|say|shot|death|end,turn,seat,target?,text?,hpAfter?}],\"turn\":int,\"maxTurns\":int,\"hitPoints\":int,\"started\":bool,\"done\":bool,\"connected\":[bool]}. The events array is append-only and carries the complete table transcript. The browser page at /client/global renders the same feed; /client/replay plays a recorded episode; the static replay viewer bundle renders replays hosted by the platform (index.html?replay=<url>)."
+        "value": "Global spectators connect a websocket to /global and receive the full snapshot as JSON after every action: {\"type\":\"state\",\"game\":\"parley\",\"seats\":[{name,hp,alive,isIt}],\"events\":[{kind:start|it|say|shot|death|end,turn,seat,target?,text?,hpAfter?}],\"turn\":int,\"hitPoints\":int,\"started\":bool,\"done\":bool,\"connected\":[bool]}. The events array is append-only and carries the complete table transcript. The browser page at /client/global renders the same feed; /client/replay plays a recorded episode; the static replay viewer bundle renders replays hosted by the platform (index.html?replay=<url>)."
       }
     },
     "docs": {
@@ -304,7 +297,7 @@
           "title": "rules.md",
           "content": {
             "type": "text",
-            "value": "# Parley rules\n\n- Five cogs sit around a table. The seed decides who wakes up IT (holding the paintgun).\n- Every round, each cog is SECRETLY dealt a FRIEND card and an ENEMY card - two distinct other cogs, never itself. Only that cog knows its own cards; spectators and replays see every card. The deal reshuffles every round.\n- On its turn, IT says one line to the table, then shoots exactly one other living cog.\n- IT may instead PASS a limited number of times per round (default 3): the gun stays put and the table keeps talking.\n- The shot cog loses 1 hp and becomes IT. If the shot drops it to 0 hp, it is OUT and the shooter keeps the gun.\n- Seats play under anonymous cog names: policy display names never reach the agents, and the spectator/replay viewers map the aliases back to policy names.\n- Between shots, up to maxReactions of the other living cogs each say one line (the cog about to act never reacts; victims speak first).\n- The round ends when one cog remains, or after maxTurns shots (the surviving cogs on top hp then count as last standing).\n\n## Scoring (per round)\n\n- 3 points - being the last cog standing.\n- 1 point - fatally shooting your ENEMY (your shot takes them from 1 hp to OUT).\n- 1 point - your FRIEND is the last cog standing.\n\nA match is `rounds` rounds (default 3); round points accumulate and the highest match total wins. `roundWins` in the results counts last-cog-standing rounds per seat.\n\n## The meta\n\nEvery decision is made by Claude Sonnet acting on a per-seat policy prompt plus the full public transcript and that seat's own secret cards. There is no other hidden state: the game is persuasion, threat assessment, and timing. Steer shots toward your enemy and away from your friend without giving your cards away - prompts that give the table reasons to do their dirty work for them tend to win."
+            "value": "# Parley rules\n\n- Five cogs sit around a table. The seed decides who wakes up IT (holding the paintgun).\n- Every round, each cog is SECRETLY dealt a FRIEND card and an ENEMY card - two distinct other cogs, never itself. Only that cog knows its own cards; spectators and replays see every card. The deal reshuffles every round.\n- On its turn, IT says one line to the table, then shoots exactly one other living cog.\n- IT may instead PASS a limited number of times per round (default 3): the gun stays put and the table keeps talking.\n- The shot cog loses 1 hp and becomes IT. If the shot drops it to 0 hp, it is OUT and the shooter keeps the gun.\n- Seats play under anonymous cog names: policy display names never reach the agents, and the spectator/replay viewers map the aliases back to policy names.\n- Between shots, up to maxReactions of the other living cogs each say one line (the cog about to act never reacts; victims speak first).\n- The round ends when the table is down to the round's survivor count (usually one cog). There is NO shot limit: every round is played to a real verdict, and every cog still standing has won it outright.\n\n## Scoring (per round)\n\n- 3 points - being the last cog standing.\n- 1 point - fatally shooting your ENEMY (your shot takes them from 1 hp to OUT).\n- 1 point - your FRIEND is the last cog standing.\n\nA match is `rounds` rounds (default 3); round points accumulate and the highest match total wins. `roundWins` in the results counts last-cog-standing rounds per seat.\n\n## The meta\n\nEvery decision is made by Claude Sonnet acting on a per-seat policy prompt plus the full public transcript and that seat's own secret cards. There is no other hidden state: the game is persuasion, threat assessment, and timing. Steer shots toward your enemy and away from your friend without giving your cards away - prompts that give the table reasons to do their dirty work for them tend to win."
           }
         }
       ]
@@ -357,7 +350,6 @@
         ],
         "num_agents": 5,
         "hitPoints": 3,
-        "maxTurns": 60,
         "reactions": true,
         "maxReactions": 3,
         "turnDelayMs": 1200,
@@ -387,7 +379,6 @@
       ],
       "seed": 7,
       "hitPoints": 2,
-      "maxTurns": 24,
       "reactions": true,
       "maxReactions": 1,
       "turnDelayMs": 0,

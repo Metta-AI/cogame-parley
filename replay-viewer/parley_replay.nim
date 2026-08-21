@@ -25,7 +25,6 @@ proc ctgLoadReplay(data: ptr uint8, length: cint): cint
     let replay = parseJson(bytesFromPointer(data, int(length)))
     var config = defaultGameConfig()
     config.hitPoints = replay["config"]{"hitPoints"}.getInt(3)
-    config.maxTurns = replay["config"]{"maxTurns"}.getInt(60)
     config.rounds = replay["config"]{"rounds"}.getInt(1)
     config.survivors = replay["config"]{"survivors"}.getInt(1)
     config.roundsKnown = replay["config"]{"roundsKnown"}.getBool(true)

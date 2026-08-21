@@ -148,10 +148,15 @@ const CannedReactions = [
 
 proc scriptedShot*(client: LlmClient, sim: Sim, seat: int): Decision =
   ## Always-legal baseline: shoot a random living opponent, canned taunt.
+  ## It knows the one thing about aim that matters: a shot at its own FRIEND
+  ## goes from the hip, so the gun moves on with a good chance of no harm
+  ## done; everything else is a head-shot.
   let targets = sim.validTargets(seat)
+  let target = targets[client.rand.rand(targets.high)]
   Decision(
     say: CannedTaunts[client.rand.rand(CannedTaunts.high)],
-    target: targets[client.rand.rand(targets.high)]
+    target: target,
+    aim: (if target == sim.seats[seat].friend: aimHip else: aimHead)
   )
 
 proc scriptedReaction*(client: LlmClient, sim: Sim, seat: int): Decision =
@@ -253,8 +258,8 @@ Rules of Parley:
 - If a hit knocks a cog to 0 hp, that cog is OUT and the shooter keeps
   the paintgun.
 - AIM: a HEAD-SHOT always hits. A HIP-SHOT misses 2 times in 3 (no damage,
-  but the target still takes the gun). Each cog gets a few hip-shots per
-  round. Nobody is told which aim a shooter chose - the table sees only
+  but the target still takes the gun). Nobody is told which aim a shooter
+  chose - the table sees only
   whether the shot landed - so a hip-shot can pass the gun to a friend
   while probably leaving them unhurt, or fake a grudge.
 - IT may PASS instead of shooting, a limited number of times per round:
@@ -278,19 +283,12 @@ proc shotInstruction(sim: Sim, seat: int): string =
   for target in sim.validTargets(seat):
     names.add("\"" & sim.seatName(target) & "\"")
   let passes = sim.skipsLeft()
-  let hips = sim.hipShotsLeft(seat)
   result = "You are IT. Choose exactly one living cog to shoot and say " &
-    "something to the table first (max " & $MaxSayLen & " chars).\n"
-  if hips > 0:
-    result.add("Choose your AIM: \"head\" always hits; \"hip\" misses 2 " &
-      "in 3 but the target takes the gun either way, and nobody learns " &
-      "which you chose (" & $hips &
-      (if hips == 1: " hip-shot" else: " hip-shots") & " left this round).\n")
-  else:
-    result.add("You have no hip-shots left this round: every shot is a " &
-      "head-shot and always hits.\n")
-  let aimField =
-    if hips > 0: ", \"aim\": <\"head\" or \"hip\">" else: ""
+    "something to the table first (max " & $MaxSayLen & " chars).\n" &
+    "Choose your AIM: \"head\" always hits; \"hip\" misses 2 in 3 but " &
+    "the target takes the gun either way, and nobody learns which you " &
+    "chose.\n"
+  let aimField = ", \"aim\": <\"head\" or \"hip\">"
   if passes > 0:
     result.add("You may instead PASS: hold your fire and let the table " &
       "keep talking (" & $passes &
@@ -443,10 +441,9 @@ proc decide*(
             not sim.seats[decision.target].alive:
           raise newException(ParleyError,
             "illegal target: " & targetName)
-        ## Aim defaults to the head: a model that omits the field, or asks
-        ## for a hip-shot it no longer has, still fires a legal shot.
-        if payload{"aim"}.getStr().strip().toLowerAscii() == "hip" and
-            sim.hipShotsLeft(seat) > 0:
+        ## Aim defaults to the head: a model that omits the field still
+        ## fires a legal shot.
+        if payload{"aim"}.getStr().strip().toLowerAscii() == "hip":
           decision.aim = aimHip
       return decision
     except CatchableError as error:

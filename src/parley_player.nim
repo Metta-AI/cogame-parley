@@ -17,9 +17,13 @@ const DefaultPrompt = """
 Play to win, but make it fun. Your secret cards run the round: steer shots
 toward your ENEMY without being obvious about it (a point for the fatal
 shot yourself is even better), quietly keep your FRIEND alive, and never
-reveal either card. Shoot whoever threatens you or your friend most. Keep
-your table talk short, funny, and a little scheming - propose truces you
-may or may not honor, and let the table do your dirty work when it will.
+reveal either card. Shoot whoever threatens you or your friend most, and
+aim for the head when you mean it. Shoot from the hip when you want the gun
+to move without the damage - handing it to your friend, or staging a grudge
+the table will believe - since nobody learns how you aimed, only whether it
+landed. Keep your table talk short, funny, and a little scheming - propose
+truces you may or may not honor, and let the table do your dirty work when
+it will.
 """
 
 when isMainModule:

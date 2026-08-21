@@ -19,7 +19,6 @@ type
     survivorsKnown*: bool
     sampled*: bool        ## true once per-episode values have been drawn
     maxSkips*: int        ## times "it" may hold fire per round
-    maxHipShots*: int     ## hip-shots each seat may fire per round
     reactions*: bool
     maxReactions*: int
     turnDelayMs*: int
@@ -69,7 +68,6 @@ type
     friend*: int      ## this round's secret friend card
     enemy*: int       ## this round's secret enemy card
     enemyKill*: bool  ## fatally shot its enemy this round
-    hipShots*: int    ## hip-shots fired this round
 
 proc defaultGameConfig*(): GameConfig =
   GameConfig(
@@ -80,7 +78,6 @@ proc defaultGameConfig*(): GameConfig =
     roundsKnown: true,
     survivorsKnown: true,
     maxSkips: 3,
-    maxHipShots: 2,
     reactions: true,
     maxReactions: 3,
     turnDelayMs: 1200,
@@ -121,8 +118,6 @@ proc update*(config: var GameConfig, configJson: string) =
     config.sampled = node["sampled"].getBool()
   if node.hasKey("maxSkips"):
     config.maxSkips = node["maxSkips"].getInt()
-  if node.hasKey("maxHipShots"):
-    config.maxHipShots = node["maxHipShots"].getInt()
   if node.hasKey("reactions"):
     config.reactions = node["reactions"].getBool()
   if node.hasKey("maxReactions"):

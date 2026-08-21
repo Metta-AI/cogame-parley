@@ -98,7 +98,6 @@ proc snapshotJson(gs: GameState): JsonNode =
     "roundsKnown": gs.config.roundsKnown,
     "survivorsKnown": gs.config.survivorsKnown,
     "hitPoints": gs.config.hitPoints,
-    "maxHipShots": gs.config.maxHipShots,
     "started": gs.started,
     "done": gs.match.done,
     "connected": connected
@@ -156,7 +155,6 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
       "survivors": gs.config.survivors,
       "roundsKnown": gs.config.roundsKnown,
       "survivorsKnown": gs.config.survivorsKnown,
-      "maxHipShots": gs.config.maxHipShots,
       "sampled": true,
       "seed": gs.config.seed
     },
@@ -444,7 +442,6 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         "slot": slot,
         "name": state.match.sim.seats[slot].name,
         "hitPoints": state.config.hitPoints,
-        "maxHipShots": state.config.maxHipShots,
         "rounds": (if state.config.roundsKnown: %state.config.rounds
                    else: newJNull()),
         "survivors": (if state.config.survivorsKnown: %state.config.survivors
@@ -536,9 +533,6 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
   config.survivors = payload["config"]{"survivors"}.getInt(1)
   config.roundsKnown = payload["config"]{"roundsKnown"}.getBool(true)
   config.survivorsKnown = payload["config"]{"survivorsKnown"}.getBool(true)
-  ## Replays from before hip-shots carry no allowance and no hip-shot events,
-  ## so the default only matters for the "left" counter the viewer shows.
-  config.maxHipShots = payload["config"]{"maxHipShots"}.getInt(config.maxHipShots)
   ## The replay carries the episode's drawn table; never re-roll it.
   config.sampled = true
   for name in payload["names"]:

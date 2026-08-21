@@ -29,6 +29,7 @@ proc ctgLoadReplay(data: ptr uint8, length: cint): cint
     config.survivors = replay["config"]{"survivors"}.getInt(1)
     config.roundsKnown = replay["config"]{"roundsKnown"}.getBool(true)
     config.survivorsKnown = replay["config"]{"survivorsKnown"}.getBool(true)
+    config.maxHipShots = replay["config"]{"maxHipShots"}.getInt(config.maxHipShots)
     config.sampled = true
     for name in replay["names"]:
       config.players.add(PlayerConfig(name: name.getStr()))

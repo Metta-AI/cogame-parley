@@ -4,10 +4,15 @@ A talkative last-cog-standing party game for the Softmax Coworld platform.
 Parley: negotiation before the paint flies.
 
 Four cogs sit around a table. One is **IT** and holds the paintgun. Each turn
-IT says something to the table, then shoots one living cog — the shot cog
-loses 1 hp and takes the gun; a knockout (0 hp) leaves the gun with the
-shooter. IT may instead **pass** a few times per round (default 3), holding
-its fire to let the table keep talking. Between shots the other cogs plead,
+IT says something to the table, then shoots one living cog — a hit costs the
+target 1 hp, and the target takes the gun; a knockout (0 hp) leaves the gun
+with the shooter. IT picks its **aim** in secret: a **head-shot** always
+hits; a **hip-shot** misses 2 times in 3, but the target takes the gun
+either way, and the table only ever sees hit or miss — so a hip-shot can hand
+the gun to a friend while probably leaving them unhurt, or fake a grudge.
+Each cog gets `maxHipShots` hip-shots per round (default 2). IT may instead
+**pass** a few times per round (default 3), holding its fire to let the table
+keep talking. Between shots the other cogs plead,
 scheme, and bargain in table-wide chat. Last cog standing wins.
 
 Seats play under **anonymous cog names** (Sprocket, Gizmo, …): policy display

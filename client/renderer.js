@@ -250,6 +250,12 @@
       var t = (now - view.shot.at) / SHOT_MS;
       var from = seatPosition(view.shot.from, count, layout);
       var to = seatPosition(view.shot.to, count, layout);
+      if (view.shot.miss) {
+        // A missed ball overshoots the seat and drifts wide of it.
+        var dx = to.x - from.x, dy = to.y - from.y;
+        var len = Math.max(Math.hypot(dx, dy), 1);
+        to = { x: to.x + dx * 0.35 - dy / len * 40, y: to.y + dy * 0.35 + dx / len * 40 };
+      }
       var bx = from.x + (to.x - from.x) * t;
       var by = from.y + (to.y - from.y) * t - Math.sin(Math.PI * t) * 40;
       ctx.save();
@@ -538,7 +544,13 @@
       case "skip":
         return name(event.seat) + " holds fire — the table keeps talking.";
       case "shot":
-        return name(event.seat) + " shoots " + name(event.target) +
+        // Spectators see the aim; players never do (the server strips it).
+        var aim = event.aim === "hip" ? " from the hip" : "";
+        if (event.miss) {
+          return name(event.seat) + " shoots at " + name(event.target) +
+            aim + " \u2014 MISS (" + Math.max(event.hpAfter, 0) + " hp)";
+        }
+        return name(event.seat) + " shoots " + name(event.target) + aim +
           " (" + Math.max(event.hpAfter, 0) + " hp left)";
       case "death": return name(event.seat) + " is OUT!";
       case "roundEnd":
@@ -654,14 +666,17 @@
             bubbles = bubbles.filter(function (b) { return b.seat !== event.seat; });
             bubbles.push({ seat: event.seat, text: event.text, at: now });
           } else if (event.kind === "shot") {
-            shot = { from: event.seat, to: event.target, at: now };
+            shot = { from: event.seat, to: event.target, at: now, miss: !!event.miss };
             if (prevSeats) {
               hold = { seats: prevSeats, until: now + SHOT_MS };
             }
-            splats.push({
-              from: event.seat, seat: event.target, turn: event.turn,
-              at: now + SHOT_MS
-            });
+            // A miss sails past: no paint on the target.
+            if (!event.miss) {
+              splats.push({
+                from: event.seat, seat: event.target, turn: event.turn,
+                at: now + SHOT_MS
+              });
+            }
           }
         }
         var cutoff = now - Math.max(BUBBLE_MS, SPLAT_MS) - SHOT_MS;

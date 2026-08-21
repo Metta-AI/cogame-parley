@@ -98,24 +98,11 @@ proc snapshotJson(gs: GameState): JsonNode =
     "roundsKnown": gs.config.roundsKnown,
     "survivorsKnown": gs.config.survivorsKnown,
     "hitPoints": gs.config.hitPoints,
+    "maxHipShots": gs.config.maxHipShots,
     "started": gs.started,
     "done": gs.match.done,
     "connected": connected
   }
-
-proc redactCards(snapshot: JsonNode, slot: int) =
-  ## Cards are secret: a player sees only its own friend/enemy pair. The
-  ## global viewer keeps the full deal (that is the spectator's edge).
-  for index, seat in snapshot["seats"].getElems():
-    if index != slot:
-      seat["friend"] = %(-1)
-      seat["enemy"] = %(-1)
-  var visible = newJArray()
-  for event in snapshot["events"]:
-    if event{"kind"}.getStr() == "deal" and event{"seat"}.getInt() != slot:
-      continue
-    visible.add(event)
-  snapshot["events"] = visible
 
 proc broadcastLocked(gs: GameState) =
   ## Callers hold stateLock.
@@ -126,7 +113,7 @@ proc broadcastLocked(gs: GameState) =
     var observation = gs.snapshotJson()
     observation["type"] = %"state"
     observation["slot"] = %slot
-    observation.redactCards(slot)
+    observation.redactSecrets(slot)
     ## Players never learn who is behind a seat — that is the whole point of
     ## the aliases — so the policy-name map is spectator-only.
     observation.delete("policyNames")
@@ -169,6 +156,7 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
       "survivors": gs.config.survivors,
       "roundsKnown": gs.config.roundsKnown,
       "survivorsKnown": gs.config.survivorsKnown,
+      "maxHipShots": gs.config.maxHipShots,
       "sampled": true,
       "seed": gs.config.seed
     },
@@ -313,7 +301,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             ## still runs, and the same seat decides again next loop.
             state.match.sim.applySkip(itSeat)
           else:
-            state.match.sim.applyShot(itSeat, shot.target)
+            state.match.sim.applyShot(itSeat, shot.target, shot.aim)
         except ParleyError as error:
           echo "parley: llm action rejected (", error.msg, "); using fallback"
           let fallback = client.scriptedShot(state.match.sim, itSeat)
@@ -456,6 +444,7 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         "slot": slot,
         "name": state.match.sim.seats[slot].name,
         "hitPoints": state.config.hitPoints,
+        "maxHipShots": state.config.maxHipShots,
         "rounds": (if state.config.roundsKnown: %state.config.rounds
                    else: newJNull()),
         "survivors": (if state.config.survivorsKnown: %state.config.survivors
@@ -547,6 +536,9 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
   config.survivors = payload["config"]{"survivors"}.getInt(1)
   config.roundsKnown = payload["config"]{"roundsKnown"}.getBool(true)
   config.survivorsKnown = payload["config"]{"survivorsKnown"}.getBool(true)
+  ## Replays from before hip-shots carry no allowance and no hip-shot events,
+  ## so the default only matters for the "left" counter the viewer shows.
+  config.maxHipShots = payload["config"]{"maxHipShots"}.getInt(config.maxHipShots)
   ## The replay carries the episode's drawn table; never re-roll it.
   config.sampled = true
   for name in payload["names"]:

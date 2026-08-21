@@ -30,6 +30,7 @@ type
     say*: string
     target*: int      ## seat index; -1 for pure table talk
     skip*: bool       ## "it" holds fire this turn instead of shooting
+    aim*: ShotAim     ## head (always lands) or hip (gamble, gun still moves)
 
   LlmTransport = enum
     ltNone, ltBedrock, ltAnthropic
@@ -162,8 +163,10 @@ proc scriptedReaction*(client: LlmClient, sim: Sim, seat: int): Decision =
 proc seatName(sim: Sim, seat: int): string =
   sim.seats[seat].name
 
-proc renderHistory(sim: Sim): string =
-  ## The full public record of the table so far, in reading order.
+proc renderHistory(sim: Sim, me: int): string =
+  ## The full public record of the table so far, in reading order. Shots
+  ## read as hit or miss only — the aim is secret — except that a cog is
+  ## reminded how IT aimed its own shots.
   var lines: seq[string]
   for event in sim.events:
     case event.kind
@@ -179,9 +182,18 @@ proc renderHistory(sim: Sim): string =
       lines.add(sim.seatName(event.seat) &
         " holds fire and keeps the paintgun.")
     of evShot:
-      lines.add(sim.seatName(event.seat) & " SHOOTS " &
-        sim.seatName(event.target) & " (now " & $max(event.hpAfter, 0) &
-        " hp).")
+      let own =
+        if event.seat == me:
+          (if event.aim == aimHip: " [your hip-shot]" else: " [your head-shot]")
+        else: ""
+      if event.miss:
+        lines.add(sim.seatName(event.seat) & " SHOOTS AT " &
+          sim.seatName(event.target) & " and MISSES (still " &
+          $max(event.hpAfter, 0) & " hp)." & own)
+      else:
+        lines.add(sim.seatName(event.seat) & " SHOOTS " &
+          sim.seatName(event.target) & " (now " & $max(event.hpAfter, 0) &
+          " hp)." & own)
     of evDeath:
       lines.add(sim.seatName(event.seat) & " is OUT of the game.")
     of evScore:
@@ -236,9 +248,15 @@ proc systemPrompt(sim: Sim, seat: int): string =
 Rules of Parley:
 - One cog is IT and holds the paintgun.
 - On its turn, IT says something to the table and then shoots one other
-  living cog. The shot cog loses 1 hp and becomes IT.
-- If the shot knocks a cog to 0 hp, that cog is OUT and the shooter keeps
+  living cog. A hit costs the target 1 hp. The target becomes IT, hit
+  or miss.
+- If a hit knocks a cog to 0 hp, that cog is OUT and the shooter keeps
   the paintgun.
+- AIM: a HEAD-SHOT always hits. A HIP-SHOT misses 2 times in 3 (no damage,
+  but the target still takes the gun). Each cog gets a few hip-shots per
+  round. Nobody is told which aim a shooter chose - the table sees only
+  whether the shot landed - so a hip-shot can pass the gun to a friend
+  while probably leaving them unhurt, or fake a grudge.
 - IT may PASS instead of shooting, a limited number of times per round:
   the gun stays put and the table keeps talking.
 - CARDS: every round each cog is secretly dealt a FRIEND and an ENEMY
@@ -260,17 +278,28 @@ proc shotInstruction(sim: Sim, seat: int): string =
   for target in sim.validTargets(seat):
     names.add("\"" & sim.seatName(target) & "\"")
   let passes = sim.skipsLeft()
+  let hips = sim.hipShotsLeft(seat)
   result = "You are IT. Choose exactly one living cog to shoot and say " &
     "something to the table first (max " & $MaxSayLen & " chars).\n"
+  if hips > 0:
+    result.add("Choose your AIM: \"head\" always hits; \"hip\" misses 2 " &
+      "in 3 but the target takes the gun either way, and nobody learns " &
+      "which you chose (" & $hips &
+      (if hips == 1: " hip-shot" else: " hip-shots") & " left this round).\n")
+  else:
+    result.add("You have no hip-shots left this round: every shot is a " &
+      "head-shot and always hits.\n")
+  let aimField =
+    if hips > 0: ", \"aim\": <\"head\" or \"hip\">" else: ""
   if passes > 0:
     result.add("You may instead PASS: hold your fire and let the table " &
       "keep talking (" & $passes &
       (if passes == 1: " pass" else: " passes") & " left this round).\n" &
       "Respond with JSON: {\"say\": \"...\", \"shoot\": <one of " &
-      names.join(", ") & ", or \"pass\">}")
+      names.join(", ") & ", or \"pass\">" & aimField & "}")
   else:
     result.add("Respond with JSON: {\"say\": \"...\", \"shoot\": <one of " &
-      names.join(", ") & ">}")
+      names.join(", ") & ">" & aimField & "}")
 
 proc reactionInstruction(): string =
   "You are not IT right now. Say one short line to the table (max " &
@@ -283,7 +312,7 @@ proc userPrompt(
   if header.len > 0:
     result.add(header & "\n\n")
   result.add("Seats at the table:\n" & sim.renderSeats() &
-    "\n\nWhat has happened this round:\n" & sim.renderHistory() & "\n\n")
+    "\n\nWhat has happened this round:\n" & sim.renderHistory(seat) & "\n\n")
   let me = sim.seats[seat]
   if me.friend >= 0 and me.enemy >= 0:
     result.add("Your SECRET cards this round: FRIEND = " &
@@ -414,6 +443,11 @@ proc decide*(
             not sim.seats[decision.target].alive:
           raise newException(ParleyError,
             "illegal target: " & targetName)
+        ## Aim defaults to the head: a model that omits the field, or asks
+        ## for a hip-shot it no longer has, still fires a legal shot.
+        if payload{"aim"}.getStr().strip().toLowerAscii() == "hip" and
+            sim.hipShotsLeft(seat) > 0:
+          decision.aim = aimHip
       return decision
     except CatchableError as error:
       echo "parley llm: seat ", seat, " attempt ", attempt, " failed: ",

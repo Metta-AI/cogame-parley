@@ -6,6 +6,13 @@
 ## The shot cog loses 1 hp and becomes "it" — unless the shot kills it, in
 ## which case the shooter keeps the gun.
 ##
+## Aim: a HEAD-SHOT always lands. A HIP-SHOT misses two times in three, but
+## the target takes the gun either way — so a hip-shot is how a cog hands the
+## gun to a friend with a good chance of leaving them unhurt, or fakes a
+## grudge. Which aim was chosen is the shooter's secret: the table sees only
+## hit or miss. Each seat gets `maxHipShots` hip-shots per round, which is
+## what keeps a round finite (misses remove no hp).
+##
 ## Cards: every round each cog is secretly dealt a FRIEND and an ENEMY
 ## (two distinct other cogs). Round points: 3 for being last cog standing,
 ## 1 for fatally shooting your enemy, 1 if your friend is last standing.
@@ -46,6 +53,8 @@ const
   EpisodeCallBudget* = 240
   ## Total spectator-pacing sleep an episode may spend, in milliseconds.
   PacingBudgetMs* = 60_000
+  ## A hip-shot lands one time in `HipShotOdds`.
+  HipShotOdds* = 3
 
 type
   Sim* = object
@@ -59,6 +68,7 @@ type
     done*: bool
     deathCount*: int
     events*: seq[GameEvent]
+    rng: Rand       ## hip-shot dice, seeded from seed + round so re-runs agree
 
   Match* = object
     ## A full episode: `config.rounds` rounds with cumulative scoring.
@@ -93,7 +103,9 @@ proc addEvent(
   hpAfter = -1,
   friend = -1,
   enemy = -1,
-  points = 0
+  points = 0,
+  aim = aimHead,
+  miss = false
 ) =
   sim.events.add(GameEvent(
     kind: kind,
@@ -103,6 +115,8 @@ proc addEvent(
     target: target,
     text: text,
     hpAfter: hpAfter,
+    aim: aim,
+    miss: miss,
     friend: friend,
     enemy: enemy,
     points: points
@@ -170,15 +184,18 @@ proc tableNames*(players: seq[PlayerConfig], seed: int): seq[string] =
     else:
       result.add("Cog " & $(index + 1))
 
-proc roundTurnBound*(seats, hitPoints, survivors: int): int =
-  ## The most shots a round can possibly take. Every turn removes exactly one
+proc roundTurnBound*(seats, hitPoints, survivors, hipShots: int): int =
+  ## The most shots a round can possibly take. Every HIT removes exactly one
   ## hp from a living cog and the round ends the moment only `survivors` are
-  ## left standing, so the longest round is the one where the doomed cogs are
-  ## drained dry AND every survivor is walked down to its last hp:
+  ## left standing, so the most hits a round holds is the one where the doomed
+  ## cogs are drained dry AND every survivor is walked down to its last hp:
   ##   (seats - survivors) * hp   +   survivors * (hp - 1)   =   seats*hp - survivors
-  ## Exact, not an estimate — random play reaches it, which is what makes it
-  ## safe to price an episode off.
-  max(seats * max(hitPoints, 1) - max(survivors, 1), 1)
+  ## A hip-shot may MISS, removing nothing, and each seat has `hipShots` of
+  ## them per round — so at worst every one of them misses on top of that.
+  ## Exact, not an estimate — play reaches it, which is what makes it safe to
+  ## price an episode off.
+  max(seats * max(hitPoints, 1) - max(survivors, 1), 1) +
+    seats * max(hipShots, 0)
 
 proc talkAllowance(rounds, maxReactions, maxSkips: int): (int, int) =
   ## Reactions and passes are table flavour rather than the game itself, so a
@@ -189,15 +206,15 @@ proc talkAllowance(rounds, maxReactions, maxSkips: int): (int, int) =
   elif rounds <= 10: (min(maxReactions, 1), min(maxSkips, 1))
   else: (0, 0)
 
-proc episodeCallCost*(rounds, seats, hitPoints, survivors,
+proc episodeCallCost*(rounds, seats, hitPoints, survivors, hipShots,
     reactions, skips: int): int =
   ## Every model call an episode can spend. A turn costs one call for IT plus
   ## one per reacting cog; a pass buys the same chatter without advancing the
   ## round, so it is priced identically.
-  rounds * (roundTurnBound(seats, hitPoints, survivors) + skips) *
+  rounds * (roundTurnBound(seats, hitPoints, survivors, hipShots) + skips) *
     (1 + reactions)
 
-proc affordRounds*(drawnRounds, seats, hitPoints, survivors,
+proc affordRounds*(drawnRounds, seats, hitPoints, survivors, hipShots,
     maxReactions, maxSkips: int): tuple[rounds, reactions, skips: int] =
   ## The longest table at or below `drawnRounds` that fits the call budget,
   ## with the richest chatter allowance that still fits alongside it.
@@ -229,7 +246,7 @@ proc affordRounds*(drawnRounds, seats, hitPoints, survivors,
       (min(ladderReactions, 1), min(ladderSkips, 1)),
       (0, 0)
     ]:
-      if episodeCallCost(candidate, seats, hitPoints, survivors,
+      if episodeCallCost(candidate, seats, hitPoints, survivors, hipShots,
           reactions, skips) <= EpisodeCallBudget:
         return (candidate, reactions, skips)
 
@@ -261,15 +278,15 @@ proc sampleEpisode*(config: GameConfig): GameConfig =
   let costSeats = max(seats, 2)
   (result.rounds, result.maxReactions, result.maxSkips) = affordRounds(
     result.rounds, costSeats, result.hitPoints, result.survivors,
-    config.maxReactions, config.maxSkips)
+    config.maxHipShots, config.maxReactions, config.maxSkips)
   result.reactions = result.maxReactions > 0
 
   ## Spectator pacing is a fixed sleep per turn, so on a long table it stops
   ## being pacing and becomes most of the episode's wall clock. Spread a fixed
   ## allowance across the turns this table can actually play.
   let plannedTurns = max(result.rounds *
-    (roundTurnBound(costSeats, result.hitPoints, result.survivors) +
-     result.maxSkips), 1)
+    (roundTurnBound(costSeats, result.hitPoints, result.survivors,
+       config.maxHipShots) + result.maxSkips), 1)
   result.turnDelayMs =
     min(config.turnDelayMs, PacingBudgetMs div plannedTurns)
   result.sampled = true
@@ -278,6 +295,8 @@ proc initSim*(config: GameConfig, round = 0): Sim =
   if config.players.len < 2:
     raise newException(ParleyError, "parley needs at least 2 players")
   result = Sim(config: config, round: round)
+  ## Separate stream from the deal so the cards and the dice never correlate.
+  result.rng = initRand(int64(config.seed) * 3571 + int64(round) * 15485863 + 101)
   let names = tableNames(config.players, config.seed)
   for index, player in config.players:
     result.seats.add(Seat(
@@ -354,8 +373,16 @@ proc applySkip*(sim: var Sim, shooter: int) =
   inc sim.skips
   sim.addEvent(evSkip, shooter)
 
-proc applyShot*(sim: var Sim, shooter, target: int) =
+proc hipShotsLeft*(sim: Sim, seat: int): int =
+  max(sim.config.maxHipShots - sim.seats[seat].hipShots, 0)
+
+proc applyShot*(sim: var Sim, shooter, target: int, aim = aimHead) =
   ## One turn: "it" shoots a living cog. Raises on illegal shots.
+  ##
+  ## A head-shot always lands. A hip-shot rolls the round's dice and misses
+  ## `HipShotOdds - 1` times in `HipShotOdds`; a miss still spends the turn
+  ## and still hands the gun to the target — the table cannot tell a missed
+  ## hip-shot from a gift.
   if sim.done:
     raise newException(ParleyError, "round is over")
   if shooter != sim.itSeat:
@@ -366,10 +393,18 @@ proc applyShot*(sim: var Sim, shooter, target: int) =
     raise newException(ParleyError, "cannot shoot yourself")
   if not sim.seats[target].alive:
     raise newException(ParleyError, "target is already out")
+  if aim == aimHip and sim.hipShotsLeft(shooter) <= 0:
+    raise newException(ParleyError, "no hip-shots left this round")
 
   inc sim.turn
-  dec sim.seats[target].hp
-  sim.addEvent(evShot, shooter, target, hpAfter = sim.seats[target].hp)
+  var miss = false
+  if aim == aimHip:
+    inc sim.seats[shooter].hipShots
+    miss = sim.rng.rand(HipShotOdds - 1) != 0
+  if not miss:
+    dec sim.seats[target].hp
+  sim.addEvent(evShot, shooter, target, hpAfter = sim.seats[target].hp,
+    aim = aim, miss = miss)
 
   if sim.seats[target].hp <= 0:
     sim.seats[target].alive = false
@@ -387,8 +422,9 @@ proc applyShot*(sim: var Sim, shooter, target: int) =
     sim.addEvent(evIt, target)
 
   ## The survivor count is the ONLY thing that ends a round. There is no turn
-  ## ceiling: every shot removes an hp and hp is finite, so the round always
-  ## terminates on its own within `roundTurnBound` shots.
+  ## ceiling: every hit removes an hp, misses are rationed per seat, and hp is
+  ## finite, so the round always terminates on its own within
+  ## `roundTurnBound` shots.
   if sim.aliveCount() <= max(sim.config.survivors, 1):
     sim.done = true
 
@@ -534,8 +570,33 @@ proc seatStates*(sim: Sim, totals: seq[float], roundWins: seq[int]): JsonNode =
       "roundWins": if index < roundWins.len: roundWins[index] else: 0,
       "friend": seat.friend,
       "enemy": seat.enemy,
-      "enemyDone": seat.enemyKill
+      "enemyDone": seat.enemyKill,
+      "hipShotsLeft": sim.hipShotsLeft(index)
     })
+
+proc redactSecrets*(snapshot: JsonNode, slot: int) =
+  ## What a PLAYER may see of a snapshot. Cards are secret: a player sees only
+  ## its own friend/enemy pair. So is the AIM of a shot: a player sees hit or
+  ## miss, and how IT aimed only for its own shots. The global viewer keeps
+  ## everything (that is the spectator's edge).
+  for index, seat in snapshot["seats"].getElems():
+    if index != slot:
+      seat["friend"] = %(-1)
+      seat["enemy"] = %(-1)
+      if seat.hasKey("hipShotsLeft"):
+        seat.delete("hipShotsLeft")
+  var visible = newJArray()
+  for event in snapshot["events"]:
+    if event{"kind"}.getStr() == "deal" and event{"seat"}.getInt() != slot:
+      continue
+    if event{"kind"}.getStr() == "shot" and event{"seat"}.getInt() != slot:
+      var public = event.copy()
+      if public.hasKey("aim"):
+        public.delete("aim")
+      visible.add(public)
+      continue
+    visible.add(event)
+  snapshot["events"] = visible
 
 type
   ReplayFrame* = object
@@ -578,6 +639,7 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[ReplayFrame] 
         frame.sim.seats[index].friend = -1
         frame.sim.seats[index].enemy = -1
         frame.sim.seats[index].enemyKill = false
+        frame.sim.seats[index].hipShots = 0
       frame.sim.deathCount = 0
       frame.sim.skips = 0
       frame.sim.done = false
@@ -593,6 +655,8 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[ReplayFrame] 
       frame.sim.itSeat = event.seat
     of evShot:
       frame.sim.seats[event.target].hp = event.hpAfter
+      if event.aim == aimHip:
+        inc frame.sim.seats[event.seat].hipShots
     of evDeath:
       frame.sim.seats[event.seat].alive = false
       frame.sim.seats[event.seat].deathIndex = frame.sim.deathCount
@@ -621,6 +685,10 @@ proc eventToJson*(event: GameEvent): JsonNode =
     result["text"] = %event.text
   if event.hpAfter >= 0:
     result["hpAfter"] = %event.hpAfter
+  if event.aim != aimHead:
+    result["aim"] = %($event.aim)
+  if event.miss:
+    result["miss"] = %true
   if event.friend >= 0:
     result["friend"] = %event.friend
   if event.enemy >= 0:
@@ -637,6 +705,8 @@ proc eventFromJson*(node: JsonNode): GameEvent =
     target: node{"target"}.getInt(-1),
     text: node{"text"}.getStr(""),
     hpAfter: node{"hpAfter"}.getInt(-1),
+    aim: (if node{"aim"}.getStr("head") == "hip": aimHip else: aimHead),
+    miss: node{"miss"}.getBool(false),
     friend: node{"friend"}.getInt(-1),
     enemy: node{"enemy"}.getInt(-1),
     points: node{"points"}.getInt(0)

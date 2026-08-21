@@ -44,7 +44,9 @@ when isMainModule:
       " survivors=", config.survivors,
       (if config.survivorsKnown: "" else: " (hidden)"),
       " hp=", config.hitPoints,
+      " hipShots=", config.maxHipShots,
       " turnsPerRound<=", roundTurnBound(
-        config.players.len, config.hitPoints, config.survivors),
+        config.players.len, config.hitPoints, config.survivors,
+        config.maxHipShots),
       " model=", config.model
     runGameServer(config, runtimeConfig)

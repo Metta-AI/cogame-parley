@@ -13,6 +13,14 @@ proc fixtureConfig(players: int, hp = 3, rounds = 1,
     result.players.add(PlayerConfig(name: "P" & $(index + 1)))
     result.tokens.add("token-" & $index)
 
+proc lastShot(sim: Sim): GameEvent =
+  ## The most recent shot event (the gun hand-over and any death/score events
+  ## land after it).
+  for index in countdown(sim.events.high, 0):
+    if sim.events[index].kind == evShot:
+      return sim.events[index]
+  raise newException(ParleyError, "no shot yet")
+
 suite "parley sim":
   test "seed picks the starting it":
     var config = fixtureConfig(4)
@@ -91,7 +99,7 @@ suite "parley sim":
           var sim = initSim(fixtureConfig(seats, hp = hp, survivors = survivors))
           while not sim.done:
             sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[^1])
-          check sim.turn <= roundTurnBound(seats, hp, survivors)
+          check sim.turn <= roundTurnBound(seats, hp, survivors, 0)
           check sim.aliveCount() <= survivors
 
   test "match plays rounds and accumulates":
@@ -298,8 +306,8 @@ suite "parley sim":
         let drawn = sampleEpisode(config)
         check drawn.rounds >= 1
         check episodeCallCost(drawn.rounds, seats, drawn.hitPoints,
-          drawn.survivors, drawn.maxReactions, drawn.maxSkips) <=
-          EpisodeCallBudget
+          drawn.survivors, drawn.maxHipShots, drawn.maxReactions,
+          drawn.maxSkips) <= EpisodeCallBudget
 
   test "the budget buys as many whole rounds as it can afford":
     ## Spending down to one round when a longer table fits would quietly throw
@@ -308,11 +316,11 @@ suite "parley sim":
     for drawnRounds in RoundsMin .. RoundsMax:
       for hp in HitPointsMin .. HitPointsMax:
         for survivors in 1 .. 3:
-          let got = affordRounds(drawnRounds, 5, hp, survivors, 3, 3)
+          let got = affordRounds(drawnRounds, 5, hp, survivors, 2, 3, 3)
           ## What it picked is affordable, and never more than was drawn.
           check got.rounds >= 1
           check got.rounds <= drawnRounds
-          check episodeCallCost(got.rounds, 5, hp, survivors,
+          check episodeCallCost(got.rounds, 5, hp, survivors, 2,
             got.reactions, got.skips) <= EpisodeCallBudget
           ## ...and nothing larger, up to the drawn count, was affordable.
           for candidate in got.rounds + 1 .. drawnRounds:
@@ -320,7 +328,7 @@ suite "parley sim":
               if candidate <= 5: (3, 3)
               elif candidate <= 10: (1, 1)
               else: (0, 0)
-            check episodeCallCost(candidate, 5, hp, survivors,
+            check episodeCallCost(candidate, 5, hp, survivors, 2,
               reactions, skips) > EpisodeCallBudget
 
   test "fatally shooting your enemy scores the bonus":
@@ -380,7 +388,7 @@ suite "parley sim":
         match.sim.applyShot(shooter, targets[rng.rand(targets.len - 1)])
         guard.inc
         check guard <= drawn.rounds *
-          roundTurnBound(5, drawn.hitPoints, drawn.survivors)
+          roundTurnBound(5, drawn.hitPoints, drawn.survivors, drawn.maxHipShots)
         if match.sim.done:
           ## The round stopped because the table reached its survivor count,
           ## never because a turn counter ran out.
@@ -468,3 +476,188 @@ suite "parley sim":
       let roundTripped = eventFromJson(event.eventToJson())
       check roundTripped == event
       check roundTripped.round == 1
+
+  test "a hip-shot hits one time in three and always hands over the gun":
+    ## Deterministic from the seed, so the split is exact for a given table;
+    ## over many seeds it sits at the published third.
+    var hits, misses = 0
+    for seed in 0 ..< 300:
+      var config = fixtureConfig(3, hp = 5)
+      config.seed = seed
+      var sim = initSim(config)
+      let it = sim.itSeat
+      let target = sim.validTargets(it)[0]
+      sim.applyShot(it, target, aimHip)
+      let event = sim.lastShot()
+      check event.aim == aimHip
+      if event.miss:
+        inc misses
+        check sim.seats[target].hp == 5
+        check event.hpAfter == 5
+      else:
+        inc hits
+        check sim.seats[target].hp == 4
+      ## Hit or miss, a hip-shot is a turn and the target takes the gun.
+      check sim.turn == 1
+      check sim.itSeat == target
+      check sim.seats[it].hipShots == 1
+    check hits + misses == 300
+    check hits in 70 .. 130
+    check misses in 170 .. 230
+
+  test "a head-shot never misses":
+    for seed in 0 ..< 50:
+      var config = fixtureConfig(3)
+      config.seed = seed
+      var sim = initSim(config)
+      let it = sim.itSeat
+      let target = sim.validTargets(it)[0]
+      sim.applyShot(it, target)
+      check sim.lastShot().aim == aimHead
+      check not sim.lastShot().miss
+      check sim.seats[target].hp == 2
+      check sim.seats[it].hipShots == 0
+
+  test "a fatal hip-shot keeps the gun and scores the foe point":
+    var found = false
+    for seed in 0 ..< 100:
+      var config = fixtureConfig(3, hp = 1)
+      config.seed = seed
+      var sim = initSim(config)
+      let it = sim.itSeat
+      let target = sim.seats[it].enemy
+      sim.applyShot(it, target, aimHip)
+      if sim.lastShot().miss:
+        check sim.itSeat == target
+        check sim.seats[target].alive
+        continue
+      found = true
+      check not sim.seats[target].alive
+      check sim.itSeat == it
+      check sim.seats[it].enemyKill
+      check sim.events[^1].kind == evScore
+    check found
+
+  test "each seat gets maxHipShots hip-shots per round, then must aim for the head":
+    var config = fixtureConfig(3, hp = 9)
+    config.maxHipShots = 1
+    var sim = initSim(config)
+    let it = sim.itSeat
+    let other = sim.validTargets(it)[0]
+    check sim.hipShotsLeft(it) == 1
+    sim.applyShot(it, other, aimHip)
+    check sim.hipShotsLeft(it) == 0
+    ## The gun moved; the other seat still has its own allowance.
+    check sim.hipShotsLeft(other) == 1
+    sim.applyShot(other, it, aimHip)
+    expect ParleyError:
+      sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[0], aimHip)
+    ## A head-shot is still fine.
+    sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[0])
+
+  test "the hip-shot allowance resets every round":
+    var config = fixtureConfig(2, hp = 1, rounds = 2)
+    config.maxHipShots = 1
+    var match = initMatch(config)
+    let it = match.sim.itSeat
+    let other = match.sim.validTargets(it)[0]
+    match.sim.applyShot(it, other, aimHip)
+    if not match.sim.done:
+      ## Missed: finish the round with head-shots.
+      while not match.sim.done:
+        match.sim.applyShot(match.sim.itSeat,
+          match.sim.validTargets(match.sim.itSeat)[0])
+    match.finishRound()
+    check match.sim.hipShotsLeft(it) == 1
+
+  test "a round never outruns its turn bound with hip-shots in play":
+    ## Misses do not remove hp, so the bound has to carry the allowance.
+    for seats in 3 .. 5:
+      for hp in 1 .. 3:
+        for survivors in 1 .. seats - 1:
+          for hipShots in 0 .. 2:
+            var config = fixtureConfig(seats, hp = hp, survivors = survivors)
+            config.maxHipShots = hipShots
+            var sim = initSim(config)
+            while not sim.done:
+              let it = sim.itSeat
+              let aim = if sim.hipShotsLeft(it) > 0: aimHip else: aimHead
+              sim.applyShot(it, sim.validTargets(it)[^1], aim)
+            check sim.turn <= roundTurnBound(seats, hp, survivors, hipShots)
+
+  test "hip-shot events replay and round-trip, and are deterministic":
+    var config = fixtureConfig(4, hp = 2)
+    config.seed = 11
+    var sim = initSim(config)
+    while not sim.done:
+      let it = sim.itSeat
+      let aim = if sim.hipShotsLeft(it) > 0: aimHip else: aimHead
+      sim.applyShot(it, sim.validTargets(it)[0], aim)
+    var sawMiss = false
+    for event in sim.events:
+      check eventFromJson(event.eventToJson()) == event
+      if event.kind == evShot and event.miss:
+        sawMiss = true
+        check event.eventToJson()["miss"].getBool()
+        check event.eventToJson()["aim"].getStr() == "hip"
+    check sawMiss
+    let frames = replayMatch(config, sim.events)
+    for index in 0 ..< 4:
+      check frames[^1].sim.seats[index].hp == sim.seats[index].hp
+      check frames[^1].sim.seats[index].alive == sim.seats[index].alive
+      check frames[^1].sim.seats[index].hipShots == sim.seats[index].hipShots
+    ## Same seed, same table: the misses land on the same turns.
+    var again = initSim(config)
+    for event in sim.events:
+      if event.kind == evShot:
+        again.applyShot(event.seat, event.target, event.aim)
+        check again.lastShot().miss == event.miss
+
+  test "old replays without aim fields read as head-shot hits":
+    let node = %*{"kind": "shot", "turn": 1, "seat": 0, "target": 1,
+                  "hpAfter": 2}
+    let event = eventFromJson(node)
+    check event.aim == aimHead
+    check not event.miss
+    ## Head-shot hits do not spend bytes on the defaults.
+    check not event.eventToJson().hasKey("aim")
+    check not event.eventToJson().hasKey("miss")
+
+  test "players never see another seat's aim, only the outcome":
+    var config = fixtureConfig(4, hp = 3)
+    config.seed = 11
+    var sim = initSim(config)
+    while not sim.done:
+      let it = sim.itSeat
+      let aim = if sim.hipShotsLeft(it) > 0: aimHip else: aimHead
+      sim.applyShot(it, sim.validTargets(it)[0], aim)
+    var events = newJArray()
+    for event in sim.events:
+      events.add(event.eventToJson())
+    for slot in 0 ..< 4:
+      var snapshot = %*{
+        "seats": sim.seatStates(newSeq[float](4), newSeq[int](4)),
+        "events": events.copy()
+      }
+      snapshot.redactSecrets(slot)
+      var ownShots, otherShots, misses = 0
+      for event in snapshot["events"]:
+        if event["kind"].getStr() != "shot": continue
+        if event{"miss"}.getBool(false): inc misses
+        if event["seat"].getInt() == slot:
+          inc ownShots
+          ## A seat is reminded how it aimed its own shots.
+          check event.hasKey("aim") == (event{"aim"}.getStr("head") == "hip")
+        else:
+          inc otherShots
+          check not event.hasKey("aim")
+      check ownShots > 0
+      check otherShots > 0
+      ## The outcome stays public.
+      check misses > 0
+      for index, seat in snapshot["seats"].getElems():
+        if index != slot:
+          check not seat.hasKey("hipShotsLeft")
+          check seat["friend"].getInt() == -1
+        else:
+          check seat.hasKey("hipShotsLeft")

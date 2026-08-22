@@ -806,6 +806,10 @@
     // replays. The server omits the aim on head-shots, so a missing aim on
     // the view's OWN shot means "head"; on anyone else's it means withheld.
     var absorbOwnSeat = -1;
+    // true for a live socket: the server withholds the aim of every shot on
+    // the live feed (a player container could read it), so a missing aim
+    // there means "withheld", not "head". Replays carry it.
+    var absorbLive = false;
     var bubbles = [];
     var splats = [];
     var shot = null;
@@ -814,9 +818,10 @@
       // prevSeats is the seat state from just BEFORE the newly absorbed
       // events; while the paintball is in flight the viewers keep drawing
       // it so hp, deaths, and the IT marker only change on impact.
-      absorb: function (events, prevSeats, ownSeat) {
+      absorb: function (events, prevSeats, ownSeat, live) {
         var now = Date.now();
         if (typeof ownSeat === "number") absorbOwnSeat = ownSeat;
+        if (typeof live === "boolean") absorbLive = live;
         for (; seen < events.length; seen++) {
           var event = events[seen];
           if (event.kind === "say") {
@@ -826,10 +831,11 @@
             shot = {
               from: event.seat, to: event.target, at: now,
               miss: !!event.miss,
-              // "head" / "hip" for spectators; undefined when the server
-              // withheld it (another seat's shot, seen as a player).
+              // "head" / "hip" when known (replays, or the view's own shot
+              // live); undefined when the server withheld it (every other
+              // shot on a live feed).
               aim: event.aim ||
-                ((absorbOwnSeat < 0 || event.seat === absorbOwnSeat) ? "head" : undefined)
+                ((absorbLive ? event.seat === absorbOwnSeat : true) ? "head" : undefined)
             };
             if (prevSeats) {
               hold = { seats: prevSeats, until: now + SHOT_MS };
@@ -1025,7 +1031,7 @@
             if (latest) {
               nameMap = makeNameMap(seatNames(latest), latest.policyNames);
               effects.absorb(latest.events || [], prevSeats,
-                typeof latest.slot === "number" ? latest.slot : -1);
+                typeof latest.slot === "number" ? latest.slot : -1, true);
             }
             if (options.feed && latest) {
               renderFeed(options.feed, latest.events || [],

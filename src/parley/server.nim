@@ -105,7 +105,9 @@ proc snapshotJson(gs: GameState): JsonNode =
 
 proc broadcastLocked(gs: GameState) =
   ## Callers hold stateLock.
-  let payload = $gs.snapshotJson()
+  var live = gs.snapshotJson()
+  live.redactAim()
+  let payload = $live
   for socket in gs.globalSockets:
     socket.send(payload)
   for slot, socket in gs.playerSockets:

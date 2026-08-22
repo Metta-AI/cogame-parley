@@ -515,6 +515,16 @@ proc redactSecrets*(snapshot: JsonNode, slot: int) =
     visible.add(event)
   snapshot["events"] = visible
 
+proc redactAim*(snapshot: JsonNode) =
+  ## The LIVE feed never carries the aim of any shot. Player containers can
+  ## reach the game's spectator socket and may re-send their prompt mid-game,
+  ## so anything on the live feed is something a player could be told; the
+  ## aim is the one secret the whole game turns on. It is revealed only in
+  ## the replay, written after the match is over.
+  for event in snapshot["events"]:
+    if event{"kind"}.getStr() == "shot" and event.hasKey("aim"):
+      event.delete("aim")
+
 type
   ReplayFrame* = object
     ## One scrub position: the reconstructed round state plus cumulative

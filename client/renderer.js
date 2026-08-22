@@ -28,6 +28,8 @@
   var BUBBLE_MS = 5200;
   var SHOT_MS = 900;
   var SPLAT_MS = 2600;
+  // How long the HIT / MISS verdict hangs over the target after impact.
+  var VERDICT_MS = 1400;
 
   function assetUrl(base, name) {
     return base.replace(/\/$/, "") + "/" + name;
@@ -67,6 +69,19 @@
 
   function makeRenderer(canvas, assetBase, onReady) {
     var ctx = canvas.getContext("2d");
+    // Pointer position in canvas pixels (the canvas may be CSS-scaled), or
+    // null when the pointer is off the table. Hovering a cog lights up the
+    // two cogs on its secret cards.
+    var hover = null;
+    canvas.addEventListener("pointermove", function (evt) {
+      var rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      hover = {
+        x: (evt.clientX - rect.left) * canvas.width / rect.width,
+        y: (evt.clientY - rect.top) * canvas.height / rect.height
+      };
+    });
+    canvas.addEventListener("pointerleave", function () { hover = null; });
     var names = [];
     COLORS.forEach(function (c) {
       if (TINTED_FROM[c]) return;
@@ -84,7 +99,7 @@
         });
       });
       onReady({
-        draw: function (view) { draw(ctx, canvas, images, view); }
+        draw: function (view) { draw(ctx, canvas, images, view, hover); }
       });
     });
   }
@@ -203,13 +218,120 @@
     return blobs;
   }
 
-  function draw(ctx, canvas, images, view) {
+  function hoveredSeat(seats, count, layout, hover) {
+    if (!hover) return -1;
+    var best = -1, bestD = Infinity;
+    seats.forEach(function (seat, index) {
+      var pos = seatPosition(index, count, layout);
+      var d = Math.hypot(hover.x - pos.x, hover.y - pos.y);
+      if (d < layout.size * 0.7 && d < bestD) { best = index; bestD = d; }
+    });
+    return best;
+  }
+
+  function drawSpotlight(ctx, pos, size, color, label, scale) {
+    // A coloured pool of light under the cog plus a ring and a tag, so the
+    // relationship reads at a glance from across the room.
+    var r = size * 0.78;
+    ctx.save();
+    var glow = ctx.createRadialGradient(pos.x, pos.y, size * 0.2, pos.x, pos.y, r);
+    glow.addColorStop(0, color + "66");
+    glow.addColorStop(1, color + "00");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, size * 0.66, 0, Math.PI * 2);
+    ctx.stroke();
+    if (label) {
+      ctx.font = "700 " + Math.round(12 * scale) + "px 'rajdhani', system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      var tw = ctx.measureText(label).width + 12 * scale;
+      var ty = pos.y - size * 0.66 - 10 * scale;
+      ctx.fillStyle = color;
+      roundRect(ctx, pos.x - tw / 2, ty - 8 * scale, tw, 16 * scale, 3);
+      ctx.fill();
+      ctx.fillStyle = INK;
+      ctx.fillText(label, pos.x, ty);
+    }
+    ctx.restore();
+  }
+
+  function drawReticle(ctx, pos, size, aim, t) {
+    // Where the shooter is aiming, drawn on the target while the ball is in
+    // flight: a tight crosshair on the head for a head-shot, a loose dashed
+    // ring wobbling around the hip for a hip-shot. With the aim withheld
+    // (a player's view of someone else's shot) a neutral ring sits centre.
+    var y = pos.y;
+    var r = size * 0.22;
+    if (aim === "head") { y = pos.y - size * 0.24; r = size * 0.17; }
+    else if (aim === "hip") {
+      y = pos.y + size * 0.18 + Math.sin(t * 23) * size * 0.05;
+      r = size * 0.32 + Math.cos(t * 17) * size * 0.04;
+    }
+    var x = pos.x + (aim === "hip" ? Math.cos(t * 19) * size * 0.06 : 0);
+    ctx.save();
+    ctx.strokeStyle = aim === "hip" ? AMBER : "#ff3b2f";
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = "rgba(0,0,0,0.7)";
+    ctx.shadowBlur = 3;
+    if (aim === "hip") ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    var gap = r * 0.45, arm = r * 1.45;
+    [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
+      ctx.beginPath();
+      ctx.moveTo(x + d[0] * gap, y + d[1] * gap);
+      ctx.lineTo(x + d[0] * arm, y + d[1] * arm);
+      ctx.stroke();
+    });
+    if (aim) {
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.font = "700 " + Math.round(size * 0.14) + "px 'rajdhani', system-ui, sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(aim.toUpperCase(), x + arm + 4, y);
+    }
+    ctx.restore();
+  }
+
+  function drawVerdict(ctx, pos, size, miss, age, scale) {
+    // HIT / MISS stamped over the target after the ball lands; it lifts and
+    // fades so the next shot's reticle never competes with it.
+    var k = Math.min(age / VERDICT_MS, 1);
+    var alpha = k < 0.75 ? 1 : (1 - k) / 0.25;
+    var text = miss ? "MISS" : "HIT";
+    var color = miss ? PAPER : "#ff3b2f";
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(pos.x, pos.y - size * 0.45 - k * 22 * scale);
+    ctx.rotate(miss ? -0.12 : 0.1);
+    ctx.font = "900 " + Math.round(26 * scale) + "px 'rajdhani', system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = INK;
+    ctx.lineJoin = "round";
+    ctx.strokeText(text, 0, 0);
+    ctx.fillStyle = color;
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  }
+
+  function draw(ctx, canvas, images, view, hover) {
     var w = canvas.width;
     var h = canvas.height;
     var seats = view.seats || [];
     var count = Math.max(seats.length, 2);
     var now = view.now || Date.now();
     var layout = computeLayout(w, h, count);
+    var hovered = hoveredSeat(seats, count, layout, hover);
 
     // Floor.
     var floor = images["arena_floor.png"];
@@ -268,6 +390,23 @@
       ctx.arc(bx - (to.x - from.x) * 0.04, by - (to.y - from.y) * 0.04, 5, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
+    }
+
+    // Hover: the cog under the pointer and the two on its cards. Only views
+    // that know the cards (spectators; a player for its own seat) can light
+    // anything, since a redacted seat carries -1 for both.
+    if (hovered >= 0) {
+      var hs = seats[hovered];
+      var hpos = seatPosition(hovered, count, layout);
+      drawSpotlight(ctx, hpos, layout.size, PAPER, null, layout.scale);
+      if (hs.friend >= 0 && hs.friend < seats.length) {
+        drawSpotlight(ctx, seatPosition(hs.friend, count, layout), layout.size,
+          COLOR_HEX.green, "FRIEND", layout.scale);
+      }
+      if (hs.enemy >= 0 && hs.enemy < seats.length) {
+        drawSpotlight(ctx, seatPosition(hs.enemy, count, layout), layout.size,
+          COLOR_HEX.red, "ENEMY", layout.scale);
+      }
     }
 
     // Cogs.
@@ -350,6 +489,19 @@
           seat.enemy, "#e0523a", "\u2715", 0.05, seat.enemyDone, scale);
       }
     });
+
+    // Aim and verdict on the target: the reticle rides the ball's flight,
+    // then HIT or MISS lands with it.
+    if (view.shot) {
+      var shotAge = now - view.shot.at;
+      var tpos = seatPosition(view.shot.to, count, layout);
+      if (shotAge < SHOT_MS) {
+        drawReticle(ctx, tpos, layout.size, view.shot.aim, shotAge / 120);
+      } else if (shotAge < SHOT_MS + VERDICT_MS) {
+        drawVerdict(ctx, tpos, layout.size, view.shot.miss, shotAge - SHOT_MS,
+          layout.scale);
+      }
+    }
 
     // Speech bubbles (drawn last, on top).
     (view.bubbles || []).forEach(function (bubble) {
@@ -650,6 +802,10 @@
   // Turns a monotonically-growing event list into transient view effects.
   function makeEffects() {
     var seen = 0;
+    // The seat this view plays as (player view), or -1 for spectators and
+    // replays. The server omits the aim on head-shots, so a missing aim on
+    // the view's OWN shot means "head"; on anyone else's it means withheld.
+    var absorbOwnSeat = -1;
     var bubbles = [];
     var splats = [];
     var shot = null;
@@ -658,15 +814,23 @@
       // prevSeats is the seat state from just BEFORE the newly absorbed
       // events; while the paintball is in flight the viewers keep drawing
       // it so hp, deaths, and the IT marker only change on impact.
-      absorb: function (events, prevSeats) {
+      absorb: function (events, prevSeats, ownSeat) {
         var now = Date.now();
+        if (typeof ownSeat === "number") absorbOwnSeat = ownSeat;
         for (; seen < events.length; seen++) {
           var event = events[seen];
           if (event.kind === "say") {
             bubbles = bubbles.filter(function (b) { return b.seat !== event.seat; });
             bubbles.push({ seat: event.seat, text: event.text, at: now });
           } else if (event.kind === "shot") {
-            shot = { from: event.seat, to: event.target, at: now, miss: !!event.miss };
+            shot = {
+              from: event.seat, to: event.target, at: now,
+              miss: !!event.miss,
+              // "head" / "hip" for spectators; undefined when the server
+              // withheld it (another seat's shot, seen as a player).
+              aim: event.aim ||
+                ((absorbOwnSeat < 0 || event.seat === absorbOwnSeat) ? "head" : undefined)
+            };
             if (prevSeats) {
               hold = { seats: prevSeats, until: now + SHOT_MS };
             }
@@ -860,7 +1024,8 @@
             if (data.type === "state") latest = data;
             if (latest) {
               nameMap = makeNameMap(seatNames(latest), latest.policyNames);
-              effects.absorb(latest.events || [], prevSeats);
+              effects.absorb(latest.events || [], prevSeats,
+                typeof latest.slot === "number" ? latest.slot : -1);
             }
             if (options.feed && latest) {
               renderFeed(options.feed, latest.events || [],

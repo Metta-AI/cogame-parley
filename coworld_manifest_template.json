@@ -7,6 +7,7 @@
     "paintball",
     "turn-based"
   ],
+  "episode_timeout_minutes": 20,
   "game": {
     "name": "parley",
     "replay_viewer": {
@@ -91,6 +92,12 @@
           "minimum": 0,
           "maximum": 8,
           "default": 3
+        },
+        "episodeTimeoutSeconds": {
+          "description": "The platform's wall clock for this episode, in seconds. Rounds are never cut short, but no new round starts once 60% of this has elapsed, so the match always lands its results and replay before the platform kills it. Defaults to the manifest's episode_timeout_minutes.",
+          "type": "number",
+          "minimum": 60,
+          "default": 1200
         },
         "maxSkips": {
           "description": "Times per round IT may pass (hold fire) instead of shooting, buying the table extra conversation turns.",

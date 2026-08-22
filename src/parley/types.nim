@@ -23,6 +23,11 @@ type
     maxReactions*: int
     turnDelayMs*: int
     playerConnectTimeoutSeconds*: float
+    ## The platform's wall clock for one hosted episode. The platform hands
+    ## COWORLD_TIMEOUT_SECONDS to its worker container, NOT to the game, so
+    ## the game has to know its own kill time: this default mirrors the
+    ## manifest's episode_timeout_minutes and the env overrides it if present.
+    episodeTimeoutSeconds*: float
     model*: string
     maxOutputTokens*: int
     llmTimeoutSeconds*: int
@@ -82,6 +87,7 @@ proc defaultGameConfig*(): GameConfig =
     maxReactions: 3,
     turnDelayMs: 1200,
     playerConnectTimeoutSeconds: 180,
+    episodeTimeoutSeconds: 20 * 60,
     model: "claude-sonnet-5",
     maxOutputTokens: 300,
     llmTimeoutSeconds: 45
@@ -127,6 +133,8 @@ proc update*(config: var GameConfig, configJson: string) =
   if node.hasKey("player_connect_timeout_seconds"):
     config.playerConnectTimeoutSeconds =
       node["player_connect_timeout_seconds"].getFloat()
+  if node.hasKey("episodeTimeoutSeconds"):
+    config.episodeTimeoutSeconds = node["episodeTimeoutSeconds"].getFloat()
   if node.hasKey("model"):
     config.model = node["model"].getStr()
   if node.hasKey("maxOutputTokens"):

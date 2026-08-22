@@ -565,3 +565,12 @@ suite "parley sim":
       for index, seat in snapshot["seats"].getElems():
         if index != slot:
           check seat["friend"].getInt() == -1
+
+  test "the episode clock is carried by the config and defaults to the platform's":
+    ## The hosted platform never tells the game container its kill time, so
+    ## the config has to: without this the between-rounds deadline is dead
+    ## code on the platform and an 18-round draw overruns the 20 minutes.
+    var config = defaultGameConfig()
+    check config.episodeTimeoutSeconds == 1200.0
+    config.update("""{"episodeTimeoutSeconds": 900}""")
+    check config.episodeTimeoutSeconds == 900.0

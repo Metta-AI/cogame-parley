@@ -246,15 +246,16 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
     let client = newLlmClient(config)
 
-    ## The platform hands the container its own kill time. Play inside a
-    ## fraction of it so results and the replay are written with room to
-    ## spare — an episode that overruns is discarded whole, so the deadline
-    ## has to be the game's problem, not the platform's.
+    ## The platform kills the episode at its wall clock and keeps NOTHING of
+    ## one that overruns, so the deadline has to be the game's problem. The
+    ## platform does not tell the game container that clock (it only sets
+    ## COWORLD_TIMEOUT_SECONDS on its own worker), so the config carries it;
+    ## the env still wins whenever it is present.
     let hostedTimeout = getEnv("COWORLD_TIMEOUT_SECONDS", "").strip()
     let timeoutSeconds =
       if hostedTimeout.len > 0:
-        try: parseFloat(hostedTimeout) except ValueError: 0.0
-      else: 0.0
+        try: parseFloat(hostedTimeout) except ValueError: config.episodeTimeoutSeconds
+      else: config.episodeTimeoutSeconds
     let playDeadline =
       if timeoutSeconds > 0.0: gameStart + timeoutSeconds * PlayBudgetFraction
       else: 0.0

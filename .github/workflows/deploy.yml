@@ -1,0 +1,189 @@
+# Deploy the parley Coworld: coworld build -> coworld certify -> (optional) coworld upload-coworld.
+#
+# Destination: Metta-AI/cogame-parley/.github/workflows/deploy.yml
+#
+# Required repository secret:
+#   SOFTMAX_TOKEN  Softmax platform bearer token. Only read when dry_run is false; a dry run needs
+#                  no secrets at all.
+#
+# Toolchain: Docker only. tools/build_replay_viewer.sh (the `coworld build` replay-viewer hook)
+# builds the wasm viewer inside Dockerfile.replay-viewer (emscripten/emsdk:4.0.15) whenever emcc or
+# nim is missing, which is the case on ubuntu-latest, so no Nim/emsdk setup is needed here.
+# Certification runs without LLM credentials: src/parley/llm.nim falls back to the scripted
+# baseline so offline certification completes.
+name: Deploy Coworld
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Coworld version to build, e.g. 0.3.10. Must be newer than the latest uploaded parley."
+        required: true
+        type: string
+      dry_run:
+        description: "Build and certify only (no upload, no Softmax token used)."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  COWORLD_CLI_VERSION: "0.1.47" # PyPI `coworld`; pinned so CI never depends on a metta checkout
+  COWORLD_NAME: parley # game.name in coworld_manifest_template.json (not the repo name)
+  COWORLD_PROJECT: .
+  SOFTMAX_API_SERVER: https://softmax.com/api
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        env:
+          VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          SOFTMAX_TOKEN: ${{ secrets.SOFTMAX_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+            echo "::error::version must be dotted numbers (e.g. 0.3.10), got: $VERSION"
+            exit 1
+          fi
+          if [ "$DRY_RUN" != "true" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::Real uploads must run from main (got $GITHUB_REF). Use dry_run for other refs."
+              exit 1
+            fi
+            if [ -z "$SOFTMAX_TOKEN" ]; then
+              echo "::error::SOFTMAX_TOKEN secret is not set; required when dry_run is false."
+              exit 1
+            fi
+          fi
+          echo "Deploying $COWORLD_NAME $VERSION from $GITHUB_SHA (dry_run=$DRY_RUN)"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install coworld CLI
+        run: |
+          set -euo pipefail
+          uv tool install --python 3.12 "coworld==${COWORLD_CLI_VERSION}"
+          uv tool dir --bin >> "$GITHUB_PATH"
+          "$(uv tool dir --bin)/coworld" --help >/dev/null
+
+      # Credentials are materialised before the long build so a bad token fails in seconds.
+      # The CLI (softmax.auth, softmax-cli 0.26.34) reads ~/.softmax/credentials.yaml with
+      # yaml.safe_load and looks up tokens["https://softmax.com/api"]. JSON is valid YAML, and
+      # json.dump quotes any token characters. The token only travels via env, never argv/stdout.
+      - name: Write Softmax credentials
+        if: ${{ !inputs.dry_run }}
+        env:
+          SOFTMAX_TOKEN: ${{ secrets.SOFTMAX_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib
+          token = os.environ["SOFTMAX_TOKEN"].strip()
+          server = os.environ["SOFTMAX_API_SERVER"].rstrip("/")
+          path = pathlib.Path.home() / ".softmax" / "credentials.yaml"
+          path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+          with os.fdopen(fd, "w") as f:
+              json.dump({"tokens": {server: token}}, f)
+          os.chmod(path, 0o600)
+          PY
+
+      - name: Check token and version against the platform
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          next="$(coworld next-version "$COWORLD_NAME" --server "$SOFTMAX_API_SERVER")"
+          echo "Platform suggests next version: $next"
+          "$(uv tool dir)/coworld/bin/python" - "$VERSION" "$next" <<'PY'
+          import sys
+          from packaging.version import Version
+          requested, suggested = map(Version, sys.argv[1:])
+          if requested < suggested:
+              sys.exit(f"::error::version {requested} is not newer than the latest uploaded version (next is {suggested})")
+          PY
+
+      - name: coworld build
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          command -v docker
+          docker compose version
+          coworld build --project "$COWORLD_PROJECT" --version "$VERSION"
+          test -f "$COWORLD_PROJECT/dist/static-replay-viewer/index.html"
+
+      - name: coworld certify
+        run: |
+          set -euo pipefail
+          coworld certify "$COWORLD_PROJECT/dist/coworld_manifest.json" \
+            --no-open-report --timeout-seconds 900 2>&1 | tee "$RUNNER_TEMP/certify.log"
+          grep -q "^Certified " "$RUNNER_TEMP/certify.log"
+          grep -q "Replay liveness: skipped (static replay bundle declared" "$RUNNER_TEMP/certify.log"
+
+      - name: coworld upload-coworld
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # Exit 2 = certification failure we control; exit 3 = platform failure/timeout (retryable).
+          coworld upload-coworld "$COWORLD_PROJECT/dist/coworld_manifest.json" \
+            --server "$SOFTMAX_API_SERVER" \
+            --timeout-seconds 900 \
+            --wait-hosted-smoke --hosted-smoke-timeout-seconds 1800 \
+            --wait-certification --certification-timeout-seconds 1800 \
+            2>&1 | tee "$RUNNER_TEMP/upload.log"
+
+      - name: Verify canonical promotion
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          cow_id="$(sed -n 's/^Coworld: \(cow_[0-9a-f-]*\)$/\1/p' "$RUNNER_TEMP/upload.log" | tail -1)"
+          if [ -z "$cow_id" ]; then
+            echo "::error::could not find the uploaded Coworld id in the upload log"
+            exit 1
+          fi
+          for attempt in $(seq 1 20); do
+            if coworld status "$cow_id" --json --server "$SOFTMAX_API_SERVER" \
+              | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["coworld"]["canonical"] else 1)'; then
+              echo "$COWORLD_NAME $cow_id is canonical"
+              echo "Uploaded \`$COWORLD_NAME\` as \`$cow_id\` (canonical)." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "not canonical yet (attempt $attempt/20)"
+            sleep 15
+          done
+          echo "::error::$cow_id uploaded but is not canonical"
+          exit 1
+
+      - name: Remove Softmax credentials
+        if: ${{ always() }}
+        run: rm -f "$HOME/.softmax/credentials.yaml"
+
+      - name: Keep manifest and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coworld-${{ inputs.version }}
+          path: |
+            dist/coworld_manifest.json
+            ${{ runner.temp }}/certify.log
+            ${{ runner.temp }}/upload.log
+          if-no-files-found: ignore

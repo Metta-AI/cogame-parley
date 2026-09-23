@@ -246,7 +246,7 @@ proc tableRules(sim: Sim): string =
       "How many rounds this match runs is NOT known to the table - it could end after any round."
   survivorText & "\n- " & roundText
 
-proc systemPrompt(sim: Sim, seat: int): string =
+proc systemPrompt*(sim: Sim, seat: int): string =
   """You are """ & sim.seatName(seat) &
     """, a cog seated at a round table in a game of Parley.
 
@@ -304,7 +304,7 @@ proc reactionInstruction(): string =
     $MaxSayLen & " chars) - plead, deflect, scheme, or stir the pot.\n" &
     "Respond with JSON: {\"say\": \"...\"}"
 
-proc userPrompt(
+proc userPrompt*(
   sim: Sim, seat: int, prompt: string, wantShot: bool, header: string
 ): string =
   if header.len > 0:
@@ -404,6 +404,21 @@ proc cleanSay(text: string): string =
     result.setLen(space)
   result.add("…")
 
+proc parseDecision*(sim: Sim, seat: int, payload: JsonNode,
+    wantShot: bool): Decision =
+  result = Decision(say: cleanSay(payload{"say"}.getStr()), target: -1)
+  if wantShot:
+    let targetName = payload{"shoot"}.getStr().strip()
+    if targetName.toLowerAscii() == "pass" and sim.skipsLeft() > 0:
+      result.skip = true
+      return
+    result.target = sim.seatByName(targetName)
+    if result.target < 0 or result.target == seat or
+        not sim.seats[result.target].alive:
+      raise newException(ParleyError, "illegal target: " & targetName)
+    if payload{"aim"}.getStr().strip().toLowerAscii() == "hip":
+      result.aim = aimHip
+
 proc decide*(
   client: LlmClient,
   sim: Sim,
@@ -427,25 +442,7 @@ proc decide*(
         "requested JSON object and a legal target.")
     try:
       let payload = extractJsonObject(client.completeText(system, user))
-      var decision = Decision(
-        say: cleanSay(payload{"say"}.getStr()),
-        target: -1
-      )
-      if wantShot:
-        let targetName = payload{"shoot"}.getStr().strip()
-        if targetName.toLowerAscii() == "pass" and sim.skipsLeft() > 0:
-          decision.skip = true
-          return decision
-        decision.target = sim.seatByName(targetName)
-        if decision.target < 0 or decision.target == seat or
-            not sim.seats[decision.target].alive:
-          raise newException(ParleyError,
-            "illegal target: " & targetName)
-        ## Aim defaults to the head: a model that omits the field still
-        ## fires a legal shot.
-        if payload{"aim"}.getStr().strip().toLowerAscii() == "hip":
-          decision.aim = aimHip
-      return decision
+      return parseDecision(sim, seat, payload, wantShot)
     except CatchableError as error:
       echo "parley llm: seat ", seat, " attempt ", attempt, " failed: ",
         error.msg

@@ -117,6 +117,11 @@ the Haiku calls cost about $0.06063. These are price proxies, not invoices;
 different numbers of turns and calls contribute to the cost gap. Five seeds
 do not establish a strength ranking.
 
+The canonical certification fixture seats four prompt players and the declared
+scripted baseline. It contains no Jev seat. The final image and manifest passed
+all ten local Coworld checks with `coworld[auth]==0.1.53`, including player
+startup, results, and replay.
+
 ### Superseded game-side pilot
 
 The following figures used game-side Jev calls and the old shared scripted

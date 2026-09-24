@@ -21,9 +21,9 @@ is the champion". The spectator and replay viewers map the aliases back to
 policy names when rendering; results are reported under policy names.
 
 **A policy can use a prompt, Jev choices, or the scripted baseline.** A prompt
-seat asks Claude for its speech and shot. A Jev seat ranks legal target/aim,
-pass, and reaction choices from its private view; speech uses fixed templates.
-Player containers register the policy setting over the websocket. With no
+seat asks Claude for its speech and shot. A Jev player ranks legal target/aim,
+pass, and reaction choices from its private view, then sends a normal action.
+Its speech uses fixed templates. With no
 model credentials the game uses its always-legal scripted baseline.
 
 ## Layout
@@ -69,10 +69,13 @@ uv run coworld upload-policy <parley image> --name my-parley \
 
 Set `PLAYER_JEV=1` to rank bounded choices with Jev. Its argument and reaction
 lines are templates, so this does not test free-form persuasion. Set
-`PLAYER_SCRIPTED=1` for the no-model comparator. The game server uses the
-Coworld sidecar or a direct `TYPESAFE_API_KEY` for Jev.
+`PLAYER_SCRIPTED=1` for the no-model comparator. The Jev player uses the
+Coworld sidecar or a direct `TYPESAFE_API_KEY`.
 
 ## Local Jev comparison
+
+The figures below describe the earlier game-side pilot. Rerun the comparison
+with the player-side policy before using them to judge this revision.
 
 Run `nimby --global sync nimby.lock`, compile the native game and player, then
 run paired episodes with approved

@@ -12,7 +12,7 @@
 ## certification still completes - this fallback is load-bearing.
 
 import
-  std/[json, os, random, strutils, times],
+  std/[json, options, os, random, strutils],
   bitworld/runtime,
   curly,
   sim
@@ -48,9 +48,6 @@ type
     timeoutSeconds: int
     disabled: bool    ## true once credentials are known-unavailable
     rand: Rand
-    jevEndpoint: string
-    jevKey: string
-    jevModel: string
 
 proc resolveApiKey(): string =
   result = getEnv("ANTHROPIC_API_KEY").strip()
@@ -109,24 +106,6 @@ proc newLlmClient*(config: GameConfig): LlmClient =
   ## a real AWS_BEARER_TOKEN_BEDROCK against the public endpoint also works.
   let bedrockEndpoint = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip()
   let bedrockToken = getEnv("AWS_BEARER_TOKEN_BEDROCK").strip()
-  let captureUrl = getEnv("METTA_CAPTURE_URL").strip()
-  let typesafeKey = getEnv("TYPESAFE_API_KEY").strip()
-  if captureUrl.len > 0:
-    result.jevEndpoint = captureUrl.strip(chars = {'/'}, leading = false)
-    result.jevKey = getEnv("METTA_CAPTURE_KEY").strip()
-    if result.jevKey.len == 0:
-      raise newException(ParleyError, "METTA_CAPTURE_KEY is required")
-    result.jevModel = getEnv("METTA_CAPTURE_MODEL", "jev-latest")
-  elif bedrockEndpoint.len > 0:
-    result.jevEndpoint = bedrockEndpoint.strip(chars = {'/'}, leading = false)
-    result.jevModel = "typesafe/jev-1.13"
-  elif typesafeKey.len > 0:
-    result.jevEndpoint = getEnv("TYPESAFE_BASE_URL",
-      "https://api.typesafe.ai").strip(chars = {'/'}, leading = false)
-    result.jevKey = typesafeKey
-    result.jevModel = getEnv("TYPESAFE_DEFAULT_MODEL", "jev-latest")
-  if result.jevEndpoint.len > 0:
-    result.curl = newCurly()
   if bedrockEndpoint.len > 0 or bedrockToken.len > 0:
     let region = getEnv("AWS_REGION", getEnv("AWS_DEFAULT_REGION", "us-west-2"))
     let endpoint =
@@ -370,15 +349,13 @@ proc completeText(client: LlmClient, system, user: string): string =
     url = client.bedrockUrl()
   else:
     body["model"] = %client.model
+    body["output_config"] = %*{"effort": "low"}
     headers["x-api-key"] = client.apiKey
     headers["anthropic-version"] = AnthropicVersion
     url = AnthropicUrl
-  let started = epochTime()
   let response = client.curl.post(
     url, headers, $body, client.timeoutSeconds
   )
-  echo "parley anthropic: latency_ms ",
-    ((epochTime() - started) * 1000).int, " http ", response.code
   if response.code == 401 or response.code == 403:
     ## Bedrock answers "this account has no Marketplace subscription for that
     ## model" with the same 403 it uses for bad credentials, so distinguish
@@ -400,9 +377,6 @@ proc completeText(client: LlmClient, system, user: string): string =
     raise newException(ParleyError,
       "anthropic error " & $response.code & ": " & response.body[0 .. min(response.body.high, 300)])
   let payload = parseJson(response.body)
-  echo "parley anthropic: model ", payload{"model"}.getStr(),
-    " input_tokens ", payload["usage"]{"input_tokens"}.getInt(),
-    " output_tokens ", payload["usage"]{"output_tokens"}.getInt()
   if payload{"stop_reason"}.getStr() == "refusal":
     raise newException(ParleyError, "anthropic refusal")
   for contentBlock in payload["content"]:
@@ -445,112 +419,17 @@ proc parseDecision*(sim: Sim, seat: int, payload: JsonNode,
     if payload{"aim"}.getStr().strip().toLowerAscii() == "hip":
       result.aim = aimHip
 
-proc jevCriteria*(sim: Sim, seat: int, wantShot: bool): JsonNode =
-  result = newJObject()
-  if wantShot:
-    if sim.skipsLeft() > 0:
-      result["pass"] = %"Hold the gun and let the table speak before shooting"
-    for target in sim.validTargets(seat):
-      for aim in ["head", "hip"]:
-        result[$target & "-" & aim] = %("Shoot " & sim.seats[target].name &
-          " (" & $sim.seats[target].hp & " hp) with a " & aim &
-          " shot; head always hits, hip usually misses but transfers the gun")
-  else:
-    result["plead"] = %"Ask the table not to shoot you"
-    result["deflect"] = %"Suggest they question the current shooter"
-    result["warn"] = %"Warn that attacking you will create an enemy"
-    result["silence"] = %"Say nothing this turn"
-
-proc jevDecision*(sim: Sim, seat: int, payload, criteria: JsonNode,
-    wantShot: bool): Decision =
-  let answer = payload["answers"]["decision"]
-  let probabilities = answer["probabilities"]
-  let reported = answer["choice"].getStr()
-  if answer["type"].getStr() != "choice" or
-      not criteria.hasKey(reported) or probabilities.len != criteria.len:
-    raise newException(ParleyError, "Jev returned the wrong choice set")
-  let confidence = answer["confidence"].getFloat()
-  if confidence < 0 or confidence > 1:
-    raise newException(ParleyError, "Jev confidence is outside [0, 1]")
-  var total = 0.0
-  var best = -1.0
-  var choice = ""
-  for name, probability in probabilities.pairs:
-    if not criteria.hasKey(name):
-      raise newException(ParleyError, "Jev returned an unknown choice")
-    let value = probability.getFloat()
-    if value < 0 or value > 1:
-      raise newException(ParleyError, "Jev probability is outside [0, 1]")
-    total += value
-    if value > best:
-      best = value
-      choice = name
-  if abs(total - 1) > probabilities.len.float * 0.005 + 1e-6:
-    raise newException(ParleyError, "Jev probabilities do not sum to one")
-  result.target = -1
-  if wantShot:
-    if choice == "pass":
-      result.skip = true
-      result.say = "Let's hear the table first."
-    else:
-      let parts = choice.split('-')
-      result.target = parseInt(parts[0])
-      result.aim = (if parts[1] == "hip": aimHip else: aimHead)
-      result.say = "Your turn, " & sim.seats[result.target].name & "."
-  else:
-    result.say = case choice
-      of "plead": "Keep me in the game; there are bigger threats here."
-      of "deflect": "Ask who benefits from the shooter's next move."
-      of "warn": "Shoot me and you make an enemy of the table."
-      else: ""
-  echo "parley jev: seat ", seat, " choice ", choice,
-    " reported ", reported, " confidence ", confidence,
-    " model ", payload{"model"}.getStr(),
-    " input_tokens ", payload["usage"]{"input_tokens"}.getInt(),
-    " output_tokens ", payload["usage"]{"output_tokens"}.getInt()
-
-proc completeJev(client: LlmClient, sim: Sim, seat: int, prompt: string,
-    wantShot: bool, header: string): Decision =
-  let criteria = sim.jevCriteria(seat, wantShot)
-  var headers: HttpHeaders
-  headers["content-type"] = "application/json"
-  if client.jevKey.len > 0:
-    headers["authorization"] = "Bearer " & client.jevKey
-  else:
-    headers["x-coworld-player-slot"] = $seat
-  let body = %*{
-    "model": client.jevModel,
-    "state": sim.systemPrompt(seat) & "\n\n" &
-      sim.userPrompt(seat, prompt, wantShot, header),
-    "questions": {"decision": {
-      "type": "choice",
-      "instructions": "Choose the legal action that maximizes your own match points. Survive, protect your secret friend, eliminate your secret enemy when possible, and account for what other cogs have said.",
-      "criteria": criteria
-    }}
-  }
-  let started = epochTime()
-  let response = client.curl.post(client.jevEndpoint & "/v1/systemone",
-    headers, $body, client.timeoutSeconds)
-  echo "parley jev: latency_ms ", ((epochTime() - started) * 1000).int,
-    " http ", response.code
-  if response.code < 200 or response.code >= 300:
-    raise newException(ParleyError, "Jev HTTP " & $response.code)
-  sim.jevDecision(seat, parseJson(response.body), criteria, wantShot)
-
 proc decide*(
   client: LlmClient,
   sim: Sim,
   seat: int,
   prompt: string,
   wantShot: bool,
-  header = "",
-  jev = false,
-  scripted = false
+  header = ""
 ): Decision =
   ## One decision for one seat. Never raises: any failure falls back to the
   ## scripted baseline so the game always advances.
-  if scripted or (jev and client.jevEndpoint.len == 0) or
-      (not jev and client.disabled):
+  if client.disabled:
     return
       if wantShot: client.scriptedShot(sim, seat)
       else: client.scriptedReaction(sim, seat)
@@ -562,8 +441,6 @@ proc decide*(
       user.add("\nYour previous reply was invalid. Respond with ONLY the " &
         "requested JSON object and a legal target.")
     try:
-      if jev:
-        return client.completeJev(sim, seat, prompt, wantShot, header)
       let payload = extractJsonObject(client.completeText(system, user))
       return parseDecision(sim, seat, payload, wantShot)
     except CatchableError as error:

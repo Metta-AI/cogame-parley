@@ -52,7 +52,7 @@ def main() -> None:
                             "trace_id": trace_id,
                             "trajectory_id": f"parley-container-{args.seed}",
                             "workload": "parley",
-                            "schema_revision": "parley.player.v1-jev-choice",
+                            "schema_revision": "parley.player.v2-external-action",
                             "started_at": datetime.now(timezone.utc).isoformat(),
                             "request": payload,
                         }
@@ -109,7 +109,8 @@ def main() -> None:
         manifest = json.loads(args.manifest.read_text())
         game_env = manifest["game"]["runnable"]["env"]
         game_env.pop("ANTHROPIC_API_KEY_URI", None)
-        game_env.update(
+        next(player for player in manifest["player"]
+             if player["id"] == "parley-jev")["env"].update(
             {
                 "METTA_CAPTURE_URL": f"http://host.docker.internal:{proxy.server_port}",
                 "METTA_CAPTURE_KEY": capture_key,

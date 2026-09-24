@@ -11,11 +11,16 @@
 ##   WS  /global                     - spectator snapshots
 ##   WS  /replay                     - replay payload (replay mode)
 ##
-## Player protocol (parley.player.v1), all JSON text frames:
+## Player protocol (parley.player.v2), all JSON text frames:
 ##   game -> player: {"type":"welcome","slot":N,"name":...}
 ##                   {"type":"state",...} after every event batch
 ##                   {"type":"final","scores":[...],"win":[...]}
 ##   player -> game: {"type":"prompt","prompt":"..."} (max 4000 chars)
+##   player -> game: {"type":"register","control":"external"}
+##   game -> external player: {"type":"observation","id":N,
+##                   "observation":<seat-private state>,"phase":"shot"|"reaction",
+##                   "legalActions":[...]}
+##   external player -> game: {"type":"action","id":N,"action":{...}}
 
 import
   std/[json, locks, os, sets, strutils, tables, times],
@@ -35,9 +40,15 @@ type
     config: GameConfig
     match: Match
     prompts: seq[string]
-    jev: seq[bool]
+    external: seq[bool]
     scripted: seq[bool]
     promptSet: seq[bool]
+    nextDecisionId: int
+    awaitingSeat: int
+    awaitingId: int
+    awaitingShot: bool
+    pendingDecision: Decision
+    hasPendingDecision: bool
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -105,6 +116,12 @@ proc snapshotJson(gs: GameState): JsonNode =
     "connected": connected
   }
 
+proc playerFrameJson(gs: GameState, slot: int): JsonNode =
+  result = gs.snapshotJson()
+  result["slot"] = %slot
+  result.redactSecrets(slot)
+  result.delete("policyNames")
+
 proc broadcastLocked(gs: GameState) =
   ## Callers hold stateLock.
   var live = gs.snapshotJson()
@@ -113,14 +130,51 @@ proc broadcastLocked(gs: GameState) =
   for socket in gs.globalSockets:
     socket.send(payload)
   for slot, socket in gs.playerSockets:
-    var observation = gs.snapshotJson()
-    observation["type"] = %"state"
-    observation["slot"] = %slot
-    observation.redactSecrets(slot)
-    ## Players never learn who is behind a seat — that is the whole point of
-    ## the aliases — so the policy-name map is spectator-only.
-    observation.delete("policyNames")
-    socket.send($observation)
+    socket.send($gs.playerFrameJson(slot))
+
+proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
+    wantShot: bool, header: string, scripted: bool): Decision =
+  var external = false
+  withLock stateLock:
+    external = state.external[seat] and state.playerSockets.hasKey(seat)
+    if external:
+      inc state.nextDecisionId
+      state.awaitingSeat = seat
+      state.awaitingId = state.nextDecisionId
+      state.awaitingShot = wantShot
+      state.hasPendingDecision = false
+      var legalActions = newJArray()
+      if wantShot:
+        if sim.skipsLeft() > 0:
+          legalActions.add(%*{"shoot": "pass"})
+        for target in sim.validTargets(seat):
+          for aim in ["head", "hip"]:
+            legalActions.add(%*{"shoot": sim.seats[target].name, "aim": aim})
+      state.playerSockets[seat].send($ %*{
+        "type": "observation", "id": state.awaitingId,
+        "phase": (if wantShot: "shot" else: "reaction"),
+        "observation": state.playerFrameJson(seat),
+        "legalActions": legalActions})
+  if not external:
+    if scripted:
+      return
+        if wantShot: client.scriptedShot(sim, seat)
+        else: client.scriptedReaction(sim, seat)
+    return client.decide(sim, seat, prompt, wantShot, header)
+  let deadline = epochTime() + state.config.llmTimeoutSeconds.float
+  while epochTime() < deadline:
+    var ready = false
+    withLock stateLock:
+      ready = state.hasPendingDecision
+    if ready:
+      break
+    sleep(20)
+  withLock stateLock:
+    state.awaitingSeat = -1
+    if state.hasPendingDecision:
+      return state.pendingDecision
+  if wantShot: client.scriptedShot(sim, seat)
+  else: client.scriptedReaction(sim, seat)
 
 proc broadcast() =
   withLock stateLock:
@@ -281,7 +335,6 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var simCopy: Sim
       var itSeat: int
       var itPrompt: string
-      var itJev: bool
       var itScripted: bool
       var header: string
       withLock stateLock:
@@ -290,14 +343,13 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         simCopy = state.match.sim
         itSeat = state.match.sim.itSeat
         itPrompt = state.prompts[itSeat]
-        itJev = state.jev[itSeat]
         itScripted = state.scripted[itSeat]
         header = matchHeader()
 
       ## The slow part (Sonnet) runs outside the lock on a snapshot; only
       ## this thread mutates the match, so the snapshot cannot go stale.
-      let shot = client.decide(simCopy, itSeat, itPrompt, wantShot = true,
-        header = header, jev = itJev, scripted = itScripted)
+      let shot = client.decideSeat(simCopy, itSeat, itPrompt,
+        wantShot = true, header = header, scripted = itScripted)
 
       var roundEnded = false
       withLock stateLock:
@@ -359,19 +411,14 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         for seat in speakers:
           var reactionCopy: Sim
           var reactionPrompt: string
-          var reactionJev: bool
           var reactionScripted: bool
           withLock stateLock:
             reactionCopy = state.match.sim
             reactionPrompt = state.prompts[seat]
-            reactionJev = state.jev[seat]
             reactionScripted = state.scripted[seat]
             header = matchHeader()
-          let reaction = client.decide(
-            reactionCopy, seat, reactionPrompt, wantShot = false,
-            header = header, jev = reactionJev,
-            scripted = reactionScripted
-          )
+          let reaction = client.decideSeat(reactionCopy, seat, reactionPrompt,
+            wantShot = false, header = header, scripted = reactionScripted)
           if reaction.say.len > 0:
             withLock stateLock:
               state.match.sim.recordSay(seat, reaction.say)
@@ -452,7 +499,7 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         state.playerSockets.len, "/", state.config.tokens.len, ")"
       websocket.send($ %*{
         "type": "welcome",
-        "protocol": "parley.player.v1",
+        "protocol": "parley.player.v2",
         "slot": slot,
         "name": state.match.sim.seats[slot].name,
         "hitPoints": state.config.hitPoints,
@@ -502,20 +549,34 @@ proc websocketHandler(
         return
       try:
         let payload = parseJson(message.data)
+        if payload{"type"}.getStr() == "register":
+          if payload["control"].getStr() != "external":
+            raise newException(ParleyError, "unknown player control")
+          withLock stateLock:
+            state.external[slot] = true
+            state.promptSet[slot] = true
+          return
+        if payload{"type"}.getStr() == "action":
+          withLock stateLock:
+            if state.external[slot] and state.awaitingSeat == slot and
+                state.awaitingId == payload["id"].getInt() and
+                not state.hasPendingDecision:
+              state.pendingDecision = parseDecision(state.match.sim, slot,
+                payload["action"], state.awaitingShot)
+              state.hasPendingDecision = true
+          return
         if payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()
-          let jev = payload{"jev"}.getBool()
           let scripted = payload{"scripted"}.getBool()
           if prompt.len > MaxPromptLen:
             prompt = prompt[0 ..< MaxPromptLen]
           withLock stateLock:
             state.prompts[slot] = prompt
-            state.jev[slot] = jev
+            state.external[slot] = false
             state.scripted[slot] = scripted
             state.promptSet[slot] = true
           echo "parley: slot ", slot, " delivered a prompt (",
             prompt.len, " chars",
-            (if jev: ", Jev choices" else: ""),
             (if scripted: ", scripted" else: ""), ")"
       except CatchableError as error:
         echo "parley: ignoring bad player frame: ", error.msg
@@ -583,7 +644,8 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.config = config
   state.match = initMatch(config)
   state.prompts = newSeq[string](config.players.len)
-  state.jev = newSeq[bool](config.players.len)
+  state.external = newSeq[bool](config.players.len)
+  state.awaitingSeat = -1
   state.scripted = newSeq[bool](config.players.len)
   state.promptSet = newSeq[bool](config.players.len)
   runtimeConfigGlobal = runtimeConfig

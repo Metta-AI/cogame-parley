@@ -80,7 +80,7 @@ def main() -> None:
                                             "trace_id": trace_id,
                                             "trajectory_id": f"parley-{seed}",
                                             "workload": "parley",
-                                            "schema_revision": "parley.player.v1-jev-choice",
+                                            "schema_revision": "parley.player.v2-external-action",
                                             "started_at": datetime.now(
                                                 timezone.utc
                                             ).isoformat(),
@@ -194,14 +194,6 @@ def main() -> None:
                     "COGAME_RESULTS_URI": (output / "results.json").as_uri(),
                     "COGAME_SAVE_REPLAY_URI": (output / "replay.json").as_uri(),
                 }
-                if arm == "jev":
-                    game_env.update(
-                        {
-                            "METTA_CAPTURE_URL": f"http://127.0.0.1:{proxy.server_port}",
-                            "METTA_CAPTURE_KEY": capture_key,
-                            "METTA_CAPTURE_MODEL": "jev-latest",
-                        }
-                    )
                 if arm == "haiku":
                     game_env["ANTHROPIC_API_KEY"] = os.environ["ANTHROPIC_API_KEY"]
                 game_log = (output / "game.log").open("w")
@@ -237,6 +229,14 @@ def main() -> None:
                             if seat == 0 and arm == "haiku"
                             else {"PLAYER_SCRIPTED": "1"}
                         )
+                        if seat == 0 and arm == "jev":
+                            player_env.update(
+                                {
+                                    "METTA_CAPTURE_URL": f"http://127.0.0.1:{proxy.server_port}",
+                                    "METTA_CAPTURE_KEY": capture_key,
+                                    "METTA_CAPTURE_MODEL": "jev-latest",
+                                }
+                            )
                         log = (output / f"player-{seat}.log").open("w")
                         player_logs.append(log)
                         players.append(

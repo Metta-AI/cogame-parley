@@ -1,16 +1,16 @@
-## Parley player: a policy is just a prompt.
+## Parley player: prompt, scripted, or external action policy.
 ##
-## Connects to the game, delivers its prompt (from PLAYER_PROMPT, or a
-## default table-talk personality), then idles until the final frame. All of
-## the actual decision making happens inside the game server, which sends
-## this seat's prompt to Sonnet each turn.
+## Prompt policies deliver PLAYER_PROMPT to the game's Sonnet adapter.
+## PLAYER_JEV=1 receives a seat-private observation and legal shots, calls
+## System One here, and returns a normal action to the game.
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <parley-image> --name my-parley \
 ##     --run /bin/parley-player --secret-env PLAYER_PROMPT="<your strategy>"
 
 import
-  std/[json, options, os],
+  std/[json, options, os, strutils],
+  parley/jev_policy,
   whisky
 
 const DefaultPrompt = """
@@ -30,16 +30,24 @@ when isMainModule:
   let url = getEnv("COWORLD_PLAYER_WS_URL")
   if url.len == 0:
     quit("COWORLD_PLAYER_WS_URL is not set", 1)
-  let jev = getEnv("PLAYER_JEV") == "1"
-  let scripted = getEnv("PLAYER_SCRIPTED") == "1"
+  let jevRequested = getEnv("PLAYER_JEV") == "1"
+  let jev = jevRequested and (
+    getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip().len > 0 or
+    getEnv("METTA_CAPTURE_URL").strip().len > 0 or
+    getEnv("TYPESAFE_API_KEY").strip().len > 0)
+  let scripted = getEnv("PLAYER_SCRIPTED") == "1" or
+    (jevRequested and not jev)
   var prompt = getEnv("PLAYER_PROMPT")
   if prompt.len == 0 and not jev and not scripted:
     prompt = DefaultPrompt
 
   echo "parley player: connecting to game"
   let socket = newWebSocket(url)
-  socket.send($ %*{"type": "prompt", "prompt": prompt,
-    "jev": jev, "scripted": scripted})
+  proc registration(): string =
+    if jev: $ %*{"type": "register", "control": "external"}
+    else: $ %*{"type": "prompt", "prompt": prompt,
+      "scripted": scripted}
+  socket.send(registration())
   echo "parley player: prompt delivered (", prompt.len, " chars)"
 
   while true:
@@ -58,8 +66,13 @@ when isMainModule:
           payload{"slot"}.getInt(), " as ", payload{"name"}.getStr()
         ## Re-deliver the prompt after the welcome, in case the first send
         ## raced the server's slot registration.
-        socket.send($ %*{"type": "prompt", "prompt": prompt,
-          "jev": jev, "scripted": scripted})
+        socket.send(registration())
+      of "observation":
+        if jev:
+          let action = chooseAction(payload["observation"],
+            payload["legalActions"], payload["phase"].getStr(), prompt)
+          socket.send($ %*{"type": "action", "id": payload["id"],
+            "action": action})
       of "final":
         echo "parley player: final scores ", payload{"scores"}
         break

@@ -440,10 +440,10 @@
     },
     "players": [
       {
-        "player_id": "parley-jev"
+        "player_id": "parley-player"
       },
       {
-        "player_id": "parley-scripted"
+        "player_id": "parley-player"
       },
       {
         "player_id": "parley-player"

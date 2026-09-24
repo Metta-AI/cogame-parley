@@ -35,6 +35,8 @@ type
     config: GameConfig
     match: Match
     prompts: seq[string]
+    jev: seq[bool]
+    scripted: seq[bool]
     promptSet: seq[bool]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
@@ -279,6 +281,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var simCopy: Sim
       var itSeat: int
       var itPrompt: string
+      var itJev: bool
+      var itScripted: bool
       var header: string
       withLock stateLock:
         if state.match.done:
@@ -286,12 +290,14 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         simCopy = state.match.sim
         itSeat = state.match.sim.itSeat
         itPrompt = state.prompts[itSeat]
+        itJev = state.jev[itSeat]
+        itScripted = state.scripted[itSeat]
         header = matchHeader()
 
       ## The slow part (Sonnet) runs outside the lock on a snapshot; only
       ## this thread mutates the match, so the snapshot cannot go stale.
       let shot = client.decide(simCopy, itSeat, itPrompt, wantShot = true,
-        header = header)
+        header = header, jev = itJev, scripted = itScripted)
 
       var roundEnded = false
       withLock stateLock:
@@ -353,13 +359,18 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         for seat in speakers:
           var reactionCopy: Sim
           var reactionPrompt: string
+          var reactionJev: bool
+          var reactionScripted: bool
           withLock stateLock:
             reactionCopy = state.match.sim
             reactionPrompt = state.prompts[seat]
+            reactionJev = state.jev[seat]
+            reactionScripted = state.scripted[seat]
             header = matchHeader()
           let reaction = client.decide(
             reactionCopy, seat, reactionPrompt, wantShot = false,
-            header = header
+            header = header, jev = reactionJev,
+            scripted = reactionScripted
           )
           if reaction.say.len > 0:
             withLock stateLock:
@@ -493,13 +504,19 @@ proc websocketHandler(
         let payload = parseJson(message.data)
         if payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()
+          let jev = payload{"jev"}.getBool()
+          let scripted = payload{"scripted"}.getBool()
           if prompt.len > MaxPromptLen:
             prompt = prompt[0 ..< MaxPromptLen]
           withLock stateLock:
             state.prompts[slot] = prompt
+            state.jev[slot] = jev
+            state.scripted[slot] = scripted
             state.promptSet[slot] = true
           echo "parley: slot ", slot, " delivered a prompt (",
-            prompt.len, " chars)"
+            prompt.len, " chars",
+            (if jev: ", Jev choices" else: ""),
+            (if scripted: ", scripted" else: ""), ")"
       except CatchableError as error:
         echo "parley: ignoring bad player frame: ", error.msg
     of ErrorEvent:
@@ -566,6 +583,8 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.config = config
   state.match = initMatch(config)
   state.prompts = newSeq[string](config.players.len)
+  state.jev = newSeq[bool](config.players.len)
+  state.scripted = newSeq[bool](config.players.len)
   state.promptSet = newSeq[bool](config.players.len)
   runtimeConfigGlobal = runtimeConfig
 

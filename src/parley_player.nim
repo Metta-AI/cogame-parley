@@ -30,13 +30,16 @@ when isMainModule:
   let url = getEnv("COWORLD_PLAYER_WS_URL")
   if url.len == 0:
     quit("COWORLD_PLAYER_WS_URL is not set", 1)
+  let jev = getEnv("PLAYER_JEV") == "1"
+  let scripted = getEnv("PLAYER_SCRIPTED") == "1"
   var prompt = getEnv("PLAYER_PROMPT")
-  if prompt.len == 0:
+  if prompt.len == 0 and not jev and not scripted:
     prompt = DefaultPrompt
 
   echo "parley player: connecting to game"
   let socket = newWebSocket(url)
-  socket.send($ %*{"type": "prompt", "prompt": prompt})
+  socket.send($ %*{"type": "prompt", "prompt": prompt,
+    "jev": jev, "scripted": scripted})
   echo "parley player: prompt delivered (", prompt.len, " chars)"
 
   while true:
@@ -55,7 +58,8 @@ when isMainModule:
           payload{"slot"}.getInt(), " as ", payload{"name"}.getStr()
         ## Re-deliver the prompt after the welcome, in case the first send
         ## raced the server's slot registration.
-        socket.send($ %*{"type": "prompt", "prompt": prompt})
+        socket.send($ %*{"type": "prompt", "prompt": prompt,
+          "jev": jev, "scripted": scripted})
       of "final":
         echo "parley player: final scores ", payload{"scores"}
         break

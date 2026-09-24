@@ -26,6 +26,8 @@ def main() -> None:
     parser.add_argument("--player-binary", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--seeds", type=int, nargs="+", default=[5, 7])
+    parser.add_argument("--hit-points", type=int, default=1)
+    parser.add_argument("--survivors", type=int, default=3)
     parser.add_argument(
         "--arms",
         nargs="+",
@@ -163,8 +165,8 @@ def main() -> None:
                     "tokens": [f"local-token-{i}" for i in range(5)],
                     "seed": seed,
                     "rounds": 1,
-                    "survivors": 3,
-                    "hitPoints": 1,
+                    "survivors": args.survivors,
+                    "hitPoints": args.hit_points,
                     "maxSkips": 0,
                     "reactions": True,
                     "maxReactions": 4,

@@ -47,7 +47,7 @@ type
     maxOutputTokens: int
     timeoutSeconds: int
     disabled: bool    ## true once credentials are known-unavailable
-    rand: Rand
+    rand: seq[Rand]         ## independent scripted stream per seat
 
 proc resolveApiKey(): string =
   result = getEnv("ANTHROPIC_API_KEY").strip()
@@ -99,8 +99,11 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     model: config.model,
     maxOutputTokens: config.maxOutputTokens,
     timeoutSeconds: config.llmTimeoutSeconds,
-    rand: initRand(config.seed xor 0x5EED)
+    rand: newSeq[Rand](config.players.len)
   )
+  for seat in 0 ..< config.players.len:
+    result.rand[seat] = initRand(config.seed xor 0x5EED xor
+      ((seat + 1) shl 16))
   ## Preferred transport: Bedrock. Hosted pods get a platform sidecar
   ## (AWS_ENDPOINT_URL_BEDROCK_RUNTIME + a dummy bearer token it re-signs);
   ## a real AWS_BEARER_TOKEN_BEDROCK against the public endpoint also works.
@@ -152,16 +155,16 @@ proc scriptedShot*(client: LlmClient, sim: Sim, seat: int): Decision =
   ## goes from the hip, so the gun moves on with a good chance of no harm
   ## done; everything else is a head-shot.
   let targets = sim.validTargets(seat)
-  let target = targets[client.rand.rand(targets.high)]
+  let target = targets[client.rand[seat].rand(targets.high)]
   Decision(
-    say: CannedTaunts[client.rand.rand(CannedTaunts.high)],
+    say: CannedTaunts[client.rand[seat].rand(CannedTaunts.high)],
     target: target,
     aim: (if target == sim.seats[seat].friend: aimHip else: aimHead)
   )
 
 proc scriptedReaction*(client: LlmClient, sim: Sim, seat: int): Decision =
   Decision(
-    say: CannedReactions[client.rand.rand(CannedReactions.high)],
+    say: CannedReactions[client.rand[seat].rand(CannedReactions.high)],
     target: -1
   )
 
@@ -349,7 +352,6 @@ proc completeText(client: LlmClient, system, user: string): string =
     url = client.bedrockUrl()
   else:
     body["model"] = %client.model
-    body["output_config"] = %*{"effort": "low"}
     headers["x-api-key"] = client.apiKey
     headers["anthropic-version"] = AnthropicVersion
     url = AnthropicUrl
@@ -377,6 +379,9 @@ proc completeText(client: LlmClient, system, user: string): string =
     raise newException(ParleyError,
       "anthropic error " & $response.code & ": " & response.body[0 .. min(response.body.high, 300)])
   let payload = parseJson(response.body)
+  echo "parley llm: usage model ", payload["model"].getStr(),
+    " input_tokens ", payload["usage"]["input_tokens"].getInt(),
+    " output_tokens ", payload["usage"]["output_tokens"].getInt()
   if payload{"stop_reason"}.getStr() == "refusal":
     raise newException(ParleyError, "anthropic refusal")
   for contentBlock in payload["content"]:

@@ -74,9 +74,6 @@ Coworld sidecar or a direct `TYPESAFE_API_KEY`.
 
 ## Local Jev comparison
 
-The figures below describe the earlier game-side pilot. Rerun the comparison
-with the player-side policy before using them to judge this revision.
-
 Run `nimby --global sync nimby.lock`, compile the native game and player, then
 run paired episodes with approved
 `TYPESAFE_API_KEY` and `ANTHROPIC_API_KEY` environment variables:
@@ -87,13 +84,43 @@ tools/nim_local.sh c -d:release -o:/tmp/parley-eval-player src/parley_player.nim
 uv run --with httpx python tools/eval_jev.py \
   --game-binary /tmp/parley-eval-game \
   --player-binary /tmp/parley-eval-player \
-  --output-dir dist/parley-eval-new --seeds 5 6 8
+  --output-dir dist/parley-eval-new --seeds 5 6 7 8 9 \
+  --hit-points 2 --survivors 1
 ```
 
-Each arm uses seat 0, four scripted opponents, one round, three survivors,
-one hit point, and the same seed. The evaluator holds the TypeSafe key in a
+Each arm uses seat 0, four scripted opponents, one round, one survivor,
+two hit points, and the same seed. The evaluator holds the TypeSafe key in a
 local proxy and writes owner-only SystemOne request/response traces. These are
 research data, not approved training labels.
+
+| Seed | Scripted score | Player-side Jev score | Haiku 4.5 score |
+| --- | ---: | ---: | ---: |
+| 5 | 0.0 | 0.2 | 0.4 |
+| 6 | 0.0 | 0.2 | 0.8 |
+| 7 | 0.2 | 0.0 | 0.2 |
+| 8 | 0.8 | 0.8 | 0.8 |
+| 9 | 0.6 | 0.6 | 0.6 |
+| Mean | 0.32 | 0.36 | 0.56 |
+
+The game now gives each scripted seat an independent seeded random stream.
+Before that fix, Jev's reactions changed the opponents' later random shots,
+confounding the paired scores. The Haiku client also sent an unsupported
+`effort` parameter, so its earlier corrected-path runs fell back to scripted
+play. The table above used the fixed game binary: all 32 Jev requests returned
+HTTP 200; all 40 Haiku calls succeeded without fallback. Jev used 43,788 input
+and 1,662 output tokens; Haiku used 49,786 input and 2,168 output tokens.
+Median Jev provider response latency was 148 ms. At
+[OpenRouter's Jev 1.13 list rate](https://openrouter.ai/typesafe/jev-1.13/api),
+the Jev calls cost about $0.00184. At
+[Anthropic's Haiku 4.5 list rate](https://www.anthropic.com/claude/haiku),
+the Haiku calls cost about $0.06063. These are price proxies, not invoices;
+different numbers of turns and calls contribute to the cost gap. Five seeds
+do not establish a strength ranking.
+
+### Superseded game-side pilot
+
+The following figures used game-side Jev calls and the old shared scripted
+random stream. They do not evaluate the corrected player-side integration.
 
 | Seed | Scripted score | Jev score / calls | Haiku 4.5 score / calls |
 | --- | ---: | ---: | ---: |

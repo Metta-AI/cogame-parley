@@ -20,12 +20,11 @@ names never reach the agents' transcripts, so nobody can meta-game "that seat
 is the champion". The spectator and replay viewers map the aliases back to
 policy names when rendering; results are reported under policy names.
 
-**The game is LLM-driven and a policy is just a prompt.** Every turn the game
-server sends the acting seat's policy prompt plus the full public transcript
-to Claude Sonnet, which answers with what the cog says (and, for IT, who it
-shoots). Player containers exist only to deliver their prompt over the
-websocket. With no LLM credentials the game degrades to an always-legal
-scripted baseline so episodes (and offline certification) always complete.
+**A policy can use a prompt, Jev choices, or the scripted baseline.** A prompt
+seat asks Claude for its speech and shot. A Jev player ranks legal target/aim,
+pass, and reaction choices from its private view, then sends a normal action.
+Its speech uses fixed templates. With no
+model credentials the game uses its always-legal scripted baseline.
 
 ## Layout
 
@@ -33,7 +32,8 @@ scripted baseline so episodes (and offline certification) always complete.
 - `src/parley/sim.nim` — pure rules; shared by server, tests, and wasm viewer
 - `src/parley/llm.nim` — Sonnet client + scripted fallback
 - `src/parley/server.nim` — mummy HTTP/WS server (player, global, replay)
-- `src/parley_player.nim` — the prompt-delivery player (`PLAYER_PROMPT` env)
+- `src/parley_player.nim` — registers `PLAYER_PROMPT`, `PLAYER_JEV`, or `PLAYER_SCRIPTED`
+- `tools/eval_jev.py` — paired local Jev/Haiku/scripted episodes and private traces
 - `client/` — shared canvas renderer + global/player/replay pages
 - `replay-viewer/` — CTF-style static wasm replay viewer (`?replay=<url>`)
 - `tools/build_replay_viewer.sh` — Coworld replay-viewer build hook
@@ -65,4 +65,90 @@ uv run coworld secret put parley anthropic_api_key <keyfile>   # hosted Sonnet
 uv run coworld upload-policy <parley image> --name my-parley \
   --run /bin/parley-player \
   --secret-env PLAYER_PROMPT="Your table-talk strategy here."
+```
+
+Set `PLAYER_JEV=1` to rank bounded choices with Jev. Its argument and reaction
+lines are templates, so this does not test free-form persuasion. Set
+`PLAYER_SCRIPTED=1` for the no-model comparator. The Jev player uses the
+Coworld sidecar or a direct `TYPESAFE_API_KEY`.
+
+## Local Jev comparison
+
+Run `nimby --global sync nimby.lock`, compile the native game and player, then
+run paired episodes with approved
+`TYPESAFE_API_KEY` and `ANTHROPIC_API_KEY` environment variables:
+
+```bash
+tools/nim_local.sh c -d:release -o:/tmp/parley-eval-game src/parley.nim
+tools/nim_local.sh c -d:release -o:/tmp/parley-eval-player src/parley_player.nim
+uv run --with httpx python tools/eval_jev.py \
+  --game-binary /tmp/parley-eval-game \
+  --player-binary /tmp/parley-eval-player \
+  --output-dir dist/parley-eval-new --seeds 5 6 7 8 9 \
+  --hit-points 2 --survivors 1
+```
+
+Each arm uses seat 0, four scripted opponents, one round, one survivor,
+two hit points, and the same seed. The evaluator holds the TypeSafe key in a
+local proxy and writes owner-only SystemOne request/response traces. These are
+research data, not approved training labels.
+
+| Seed | Scripted score | Player-side Jev score | Haiku 4.5 score |
+| --- | ---: | ---: | ---: |
+| 5 | 0.0 | 0.2 | 0.4 |
+| 6 | 0.0 | 0.2 | 0.8 |
+| 7 | 0.2 | 0.0 | 0.2 |
+| 8 | 0.8 | 0.8 | 0.8 |
+| 9 | 0.6 | 0.6 | 0.6 |
+| Mean | 0.32 | 0.36 | 0.56 |
+
+The game now gives each scripted seat an independent seeded random stream.
+Before that fix, Jev's reactions changed the opponents' later random shots,
+confounding the paired scores. The Haiku client also sent an unsupported
+`effort` parameter, so its earlier corrected-path runs fell back to scripted
+play. The table above used the fixed game binary: all 32 Jev requests returned
+HTTP 200; all 40 Haiku calls succeeded without fallback. Jev used 43,788 input
+and 1,662 output tokens; Haiku used 49,786 input and 2,168 output tokens.
+Median Jev provider response latency was 148 ms. At
+[OpenRouter's Jev 1.13 list rate](https://openrouter.ai/typesafe/jev-1.13/api),
+the Jev calls cost about $0.00184. At
+[Anthropic's Haiku 4.5 list rate](https://www.anthropic.com/claude/haiku),
+the Haiku calls cost about $0.06063. These are price proxies, not invoices;
+different numbers of turns and calls contribute to the cost gap. Five seeds
+do not establish a strength ranking.
+
+The canonical certification fixture seats four prompt players and the declared
+scripted baseline. It contains no Jev seat. The final image and manifest passed
+all ten local Coworld checks with `coworld[auth]==0.1.53`, including player
+startup, results, and replay.
+
+### Superseded game-side pilot
+
+The following figures used game-side Jev calls and the old shared scripted
+random stream. They do not evaluate the corrected player-side integration.
+
+| Seed | Scripted score | Jev score / calls | Haiku 4.5 score / calls |
+| --- | ---: | ---: | ---: |
+| 5 | 0.8 | 1.0 / 2 | 1.0 / 2 |
+| 6 | 0.8 | 0.2 / 1 | 0.2 / 1 |
+| 8 | 0.8 | 0.6 / 1 | 0.6 / 1 |
+
+All eight model calls succeeded without fallback. Jev used 4,784 input and
+253 output tokens, with 210 ms mean proxy latency. Haiku used 3,409 input and
+194 output tokens, with 1,157 ms mean API latency. At
+[OpenRouter's Jev 1.13 list rate](https://openrouter.ai/typesafe/jev-1.13/api),
+the Jev input implies $0.000201. At
+[Anthropic's Haiku 4.5 list rate](https://www.anthropic.com/news/claude-haiku-4-5),
+Haiku implies $0.004379. These are price proxies, not provider invoices.
+Three short seeds cannot establish a win-rate or social-intelligence gain.
+
+The `linux/amd64` Coworld package passed ten certification checks. A separate
+local Coworld container episode at seed 5 made two accepted Jev calls, produced
+results and replay, and passed replay verification. Reproduce it after
+`coworld build --project . --version 0.1.5` with:
+
+```bash
+uv run --with httpx python tools/container_jev_smoke.py \
+  --manifest dist/coworld_manifest.json \
+  --output-dir dist/parley-container-new --seed 5
 ```

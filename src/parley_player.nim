@@ -1,16 +1,13 @@
-## Parley player: prompt, scripted, or external action policy.
+## Parley prompt and scripted player.
 ##
 ## Prompt policies deliver PLAYER_PROMPT to the game's Sonnet adapter.
-## PLAYER_JEV=1 receives a seat-private observation and legal shots, calls
-## System One here, and returns a normal action to the game.
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <parley-image> --name my-parley \
 ##     --run /bin/parley-player --secret-env PLAYER_PROMPT="<your strategy>"
 
 import
-  std/[json, options, os, strutils],
-  parley/jev_policy,
+  std/[json, options, os],
   whisky
 
 const DefaultPrompt = """
@@ -30,23 +27,15 @@ when isMainModule:
   let url = getEnv("COWORLD_PLAYER_WS_URL")
   if url.len == 0:
     quit("COWORLD_PLAYER_WS_URL is not set", 1)
-  let jevRequested = getEnv("PLAYER_JEV") == "1"
-  let jev = jevRequested and (
-    getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip().len > 0 or
-    getEnv("METTA_CAPTURE_URL").strip().len > 0 or
-    getEnv("TYPESAFE_API_KEY").strip().len > 0)
-  let scripted = getEnv("PLAYER_SCRIPTED") == "1" or
-    (jevRequested and not jev)
+  let scripted = getEnv("PLAYER_SCRIPTED") == "1"
   var prompt = getEnv("PLAYER_PROMPT")
-  if prompt.len == 0 and not jev and not scripted:
+  if prompt.len == 0 and not scripted:
     prompt = DefaultPrompt
 
   echo "parley player: connecting to game"
   let socket = newWebSocket(url)
   proc registration(): string =
-    if jev: $ %*{"type": "register", "control": "external"}
-    else: $ %*{"type": "prompt", "prompt": prompt,
-      "scripted": scripted}
+    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
   socket.send(registration())
   echo "parley player: prompt delivered (", prompt.len, " chars)"
 
@@ -67,12 +56,6 @@ when isMainModule:
         ## Re-deliver the prompt after the welcome, in case the first send
         ## raced the server's slot registration.
         socket.send(registration())
-      of "observation":
-        if jev:
-          let action = chooseAction(payload["observation"],
-            payload["legalActions"], payload["phase"].getStr(), prompt)
-          socket.send($ %*{"type": "action", "id": payload["id"],
-            "action": action})
       of "final":
         echo "parley player: final scores ", payload{"scores"}
         break

@@ -13,7 +13,7 @@
     "replay_viewer": {
       "bundle": "static-replay-viewer"
     },
-    "description": "Parley: a talkative last-cog-standing party game. Five cogs sit around a table; one holds the paintgun and is IT. Each turn IT says something to the table, then shoots one living cog, choosing its AIM in secret: a head-shot always hits, a hip-shot misses 2 times in 3. A hit costs the target 1 hp; the target takes the gun hit or miss; a knockout (0 hp) leaves the gun with the shooter. The table only ever sees hit or miss, never the aim, so a hip-shot can hand the gun to a friend while probably leaving them unhurt, or fake a grudge. Between shots the other cogs plead, scheme, bluff, and bargain in table-wide chat. CARDS: every round each cog is secretly dealt a FRIEND and an ENEMY (two distinct other cogs; only that cog knows its own cards; spectators see everything; the deal reshuffles every round). Round scoring: 3 points for being last cog standing, 1 point for fatally shooting your enemy, 1 point if your friend is last standing. A match is several rounds (default 3) and round points accumulate into the match result, so grudges and reputations carry across rounds.",
+    "description": "Parley is a talkative paintball game played across multiple rounds. IT speaks, then shoots another living cog or passes. A headshot always hits; a hipshot hits with probability 1/3. A hit removes 1 hp. A living target takes the gun, hit or miss; a fatal hit leaves it with the shooter. All cogs return alive at full health each round. Ordinary episodes sample 3–20 rounds, 2–5 hp, and 1–3 survivors, capped below the seat count. Round and survivor counts may be withheld. A round ends at its survivor count; every survivor earns 3 points. Private friend/enemy cards reshuffle each round: earn 1 point for fatally shooting your enemy and 1 if your friend survives. Points accumulate; the highest total wins, with ties allowed. Platform scores are raw points divided by five times completed rounds. Passes are shared across the table and reset each round. Default passes and reactions are three for matches up to five rounds, one for six to ten rounds, and zero for longer matches. Conversation remains available across rounds. Live views use anonymous cog names; private views reveal only the seat's own cards and aim. The public spectator socket reveals no cards, aim, hidden rules, or policy identities. Completed replays reveal these to spectators. The match may stop at a completed-round boundary after 60% of its episode timeout; results and replay report completed rounds.",
     "owner": "daveey@gmail.com",
     "runnable": {
       "type": "game",
@@ -65,7 +65,7 @@
           }
         },
         "num_agents": {
-          "description": "Seat count; injected by the commissioner.",
+          "description": "Seat count supplied by the episode configuration.",
           "type": "integer",
           "minimum": 5,
           "maximum": 5
@@ -75,7 +75,7 @@
           "type": "integer"
         },
         "hitPoints": {
-          "description": "Starting hp per cog.",
+          "description": "Starting hp for every cog each round when sampled is true; otherwise sampled from 2–5.",
           "type": "integer",
           "minimum": 1,
           "maximum": 9,
@@ -94,7 +94,7 @@
           "default": 3
         },
         "episodeTimeoutSeconds": {
-          "description": "The platform's wall clock for this episode, in seconds. Rounds are never cut short, but no new round starts once 60% of this has elapsed, so the match always lands its results and replay before the platform kills it. Defaults to the manifest's episode_timeout_minutes.",
+          "description": "Episode timeout in seconds. After each completed round and its pacing delay, the game stops if 60% has elapsed. Rounds are never truncated. Results and replay are then saved; finishing before the platform deadline depends on round duration.",
           "type": "number",
           "minimum": 60,
           "default": 1200
@@ -136,11 +136,33 @@
           "default": 180
         },
         "rounds": {
-          "description": "Rounds per match; placement scores accumulate across rounds.",
+          "description": "Rounds per match when sampled is true; otherwise the episode samples 3–20 rounds. Raw points accumulate across the match.",
           "type": "integer",
           "minimum": 1,
           "maximum": 20,
           "default": 3
+        },
+        "sampled": {
+          "description": "Set true to pin hitPoints, rounds, survivors, and known flags instead of sampling them from the seed.",
+          "type": "boolean",
+          "default": false
+        },
+        "survivors": {
+          "description": "Cogs left alive to end a round when sampled is true; otherwise sampled from 1–3 and capped below the seat count.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "default": 1
+        },
+        "roundsKnown": {
+          "description": "Whether players are told the round count when sampled is true; otherwise sampled independently.",
+          "type": "boolean",
+          "default": true
+        },
+        "survivorsKnown": {
+          "description": "Whether players are told the survivor count when sampled is true; otherwise sampled independently.",
+          "type": "boolean",
+          "default": true
         }
       }
     },
@@ -186,7 +208,7 @@
           }
         },
         "win": {
-          "description": "True for the winning seat(s): the surviving cogs on maximal hp when the game ends.",
+          "description": "True for every seat tied for the highest accumulated raw point total, regardless of final-round survival or hp.",
           "type": "array",
           "minItems": 5,
           "maxItems": 5,
@@ -220,7 +242,7 @@
           "minimum": 0
         },
         "roundWins": {
-          "description": "Rounds won per seat.",
+          "description": "Rounds survived per seat; every surviving cog wins the round.",
           "type": "array",
           "minItems": 5,
           "maxItems": 5,
@@ -235,7 +257,7 @@
           "minimum": 1
         },
         "friendPoints": {
-          "description": "Points earned from the seat's secret friend being last standing (1 per round).",
+          "description": "Points earned when the seat's secret friend survives the round (1 per round), even if this seat was eliminated.",
           "type": "array",
           "minItems": 5,
           "maxItems": 5,
@@ -263,7 +285,7 @@
         },
         "pointsAvailable": {
           "type": "number",
-          "description": "Every point one seat could have banked this episode (5 per round); scores are the share of this."
+          "description": "Five times the completed round count; scores are rawScores divided by this ceiling."
         },
         "survivors": {
           "type": "integer",
@@ -286,17 +308,17 @@
     "protocols": {
       "player": {
         "type": "text",
-        "value": "parley.player.v2 - JSON text frames over COWORLD_PLAYER_WS_URL. The game sends welcome, seat-private state, and final frames. Prompt policies register with {\"type\":\"prompt\",\"prompt\":str,\"scripted\":bool}. External policies register with {\"type\":\"register\",\"control\":\"external\"}. For each decision, the game sends {\"type\":\"observation\",\"id\":N,\"phase\":\"shot\"|\"reaction\",\"observation\":<seat-private state>,\"legalActions\":[...]}; the player returns {\"type\":\"action\",\"id\":N,\"action\":{...}}. The game validates shot targets, passes, speech length, results, and replay. A player sees only its own FRIEND and ENEMY cards and its own shot aims. Policy names remain spectator-only. PLAYER_SCRIPTED=1 registers the baseline."
+        "value": "parley.player.v2 uses JSON text frames over COWORLD_PLAYER_WS_URL. The game sends welcome, seat-private state, and final frames. Prompt policies register with {\"type\":\"prompt\",\"prompt\":str,\"scripted\":bool}; PLAYER_SCRIPTED=1 registers the baseline. External policies register with {\"type\":\"register\",\"control\":\"external\"}. Each decision receives {\"type\":\"observation\",\"id\":N,\"phase\":\"shot\"|\"reaction\",\"observation\":<seat-private state>,\"legalActions\":[...]}; reply with {\"type\":\"action\",\"id\":N,\"action\":{...}}. The game validates targets, passes, and speech length. A seat sees its own friend/enemy cards and shot aims, plus full public match history. Hidden rounds and survivors are null. Final frames contain normalized scores, rawScores, win flags, and scoring components under anonymous names. Policy names appear only in platform results and completed replays."
       },
       "global": {
         "type": "text",
-        "value": "Global spectators connect a websocket to /global and receive the full snapshot as JSON after every action: {\"type\":\"state\",\"game\":\"parley\",\"seats\":[{name,hp,alive,isIt}],\"events\":[{kind:roundStart|deal|it|say|skip|shot|death|score|roundEnd,round,turn,seat,target?,text?,hpAfter?,aim?,miss?}],\"turn\":int,\"hitPoints\":int,\"started\":bool,\"done\":bool,\"connected\":[bool]}. The events array is append-only and carries the complete table transcript. Shot events carry aim (hip; omitted for head-shots) and miss (true when a hip-shot did no damage); the aim is spectator-only and is stripped from players' observations except for their own shots. The browser page at /client/global renders the same feed; /client/replay plays a recorded episode; the static replay viewer bundle renders replays hosted by the platform (index.html?replay=<url>)."
+        "value": "Spectators connect to /global and receive public JSON state on connection and after each action: anonymous seat names, hp, alive/isIt, public score and roundWins, the complete append-only public event transcript, turn, current round, hitPoints, started/done, and connected seats. Cards are -1, deal events and shot aim are omitted, and policyNames is omitted. A shot includes hpAfter and optional miss:true. Hidden rounds and survivors are null; announced values are integers. Player containers can access this socket, so it never exposes private information. /client/global renders this feed. Completed replays reveal cards, aim, hidden rules, and policyNames. /client/replay plays recorded episodes; the static replay bundle renders platform replays with index.html?replay=<url>."
       }
     },
     "docs": {
       "readme": {
         "type": "text",
-        "value": "Parley is a table-talk elimination game for five cogs. One cog is IT and holds the paintgun; each turn IT speaks, then shoots another living cog with a secret aim - a head-shot always hits, a hip-shot misses 2 in 3 - and the target takes the gun hit or miss (a hit costs 1 hp; a knockout leaves the gun with the shooter; the table sees only hit or miss). Everyone else talks between shots. Last cog standing wins; results are elimination placements. Player policies receive a private seat observation and return actions for game validation; legacy prompt and scripted adapters remain available. The game sends each external policy its private view and validates returned actions. Missing model credentials fall back to scripted play."
+        "value": "Parley is a table-talk game across multiple rounds. IT speaks, then shoots another living cog or passes. A headshot always hits; a hipshot hits one-third of the time. Hits cost 1 hp, surviving targets take the gun even on misses, and fatal hits leave it with the shooter. Every cog returns at full health next round. A round ends at its sampled survivor count. Survivors earn 3 points, killing your secret enemy earns 1, and your secret friend surviving earns 1. The highest accumulated point total wins, with ties allowed. Platform scores normalize by five times completed rounds. Private observations reveal the seat's own cards and aim; live spectators receive public information, while completed replays reveal private information. Prompt, scripted, and external policies share these rules."
       },
       "pages": [
         {
@@ -304,7 +326,7 @@
           "title": "rules.md",
           "content": {
             "type": "text",
-            "value": "# Parley rules\n\n- Five cogs sit around a table. The seed decides who wakes up IT (holding the paintgun).\n- Every round, each cog is SECRETLY dealt a FRIEND card and an ENEMY card - two distinct other cogs, never itself. Only that cog knows its own cards; spectators and replays see every card. The AIM of a shot is shown to nobody while the match is live - not to other players, not on the live spectator view - and only the replay reveals it afterwards. The deal reshuffles every round.\n- On its turn, IT says one line to the table, then shoots exactly one other living cog, choosing its AIM in secret: a HEAD-SHOT always hits; a HIP-SHOT misses 2 times in 3. Hip-shots are unlimited.\n- Nobody is told which aim was chosen - the table sees only whether the shot landed. A hip-shot is how a cog hands the gun to a friend while probably leaving them unhurt, or fakes a grudge.\n- IT may instead PASS a limited number of times per round (default 3): the gun stays put and the table keeps talking.\n- The target becomes IT, hit or miss. A hit costs it 1 hp; if that drops it to 0 hp, it is OUT and the shooter keeps the gun.\n- Seats play under anonymous cog names: policy display names never reach the agents, and the spectator/replay viewers map the aliases back to policy names.\n- Between shots, up to maxReactions of the other living cogs each say one line (the cog about to act never reacts; victims speak first).\n- The round ends when the table is down to the round's survivor count (usually one cog). There is NO shot limit: every round is played to a real verdict (every shot has a real chance to land, so it always arrives), and every cog still standing has won it outright.\n\n## Scoring (per round)\n\n- 3 points - being the last cog standing.\n- 1 point - fatally shooting your ENEMY (your shot takes them from 1 hp to OUT).\n- 1 point - your FRIEND is the last cog standing.\n\nA match is `rounds` rounds (default 3); round points accumulate and the highest match total wins. `roundWins` in the results counts last-cog-standing rounds per seat.\n\n## The meta\n\nEach policy sees the public transcript and only its own secret cards. There is no other hidden state: the game is persuasion, threat assessment, and timing. Steer shots toward your enemy and away from your friend without giving your cards away - prompts that give the table reasons to do their dirty work for them tend to win. The aim is the one private move: a hip-shot moves the gun with a 2-in-3 chance of no damage, and a miss is all anyone sees."
+            "value": "# Parley rules\n\nCogs sit around a table. One is **IT** and holds the paintgun. Each turn\nIT speaks to the table, then shoots one other living cog or passes.\n\n## Rules\n\n- **Health:** every cog starts each round alive at full health. Hits remove\n  exactly 1 hp. A cog at 0 hp is out for that round and returns next round.\n- **Aim:** a headshot always hits. A hipshot hits with probability 1/3.\n  Shots are unlimited. A surviving target takes the gun, hit or miss.\n  A fatal hit leaves the gun with the shooter, including a fatal hipshot.\n  The shooter knows its aim; everyone else sees only the outcome.\n- **Passes:** IT can hold fire and keep the gun. The allowance is shared\n  across the table and resets each round; it is not a per-cog allowance.\n- **Cards:** each cog privately draws a friend and a different enemy,\n  neither itself. Every cog appears on exactly one friend card and one\n  enemy card. Cards reshuffle each round. Tables with two seats have no cards.\n- **Round end:** the round ends when the configured number of cogs remains\n  alive. Every survivor wins the round, regardless of remaining hp.\n  There is no turn limit.\n- **Points:** each survivor earns 3 points. A cog earns 1 point if its own\n  shot eliminates its enemy and 1 point if its friend survives.\n  Eliminated cogs still earn earned enemy and friend points.\n- **Match winner:** raw points accumulate across rounds; the highest total\n  wins, with ties allowed. Viewers show raw points. Platform scores divide\n  raw points by `5 × completed rounds` so different matches are comparable.\n- **Conversation:** table talk and shot outcomes remain in the match\n  transcript across rounds. Health, cards, and pass allowances reset;\n  previous bargains and grudges remain available to players.\n\nOrdinary episodes sample 3–20 rounds, 2–5 hp, and 1–3 survivors from the seed.\nThe survivor count is capped below the seat count. Round and survivor counts\nare independently announced or withheld from players. For fixed local rules,\nset `sampled: true` and provide the desired configuration.\n\nWith the default talk configuration, matches of up to five rounds allow\nthree shared passes and three reactions between actions. Matches of six to\nten rounds allow at most one of each. Longer matches allow neither.\nA match can stop after a completed round when 60% of the episode timeout\nhas elapsed, including round-ending pacing; it never truncates a round.\nResults and replay report completed rounds.\n\nSeats use **anonymous cog names** (Sprocket, Gizmo, …). Private player views\nreveal only that seat's cards and aim, plus announced rules and public history.\nThe live spectator socket is accessible to player containers, so it receives\npublic information only: anonymous names, no cards or aim, and no hidden rules.\nCompleted replays reveal cards, aim, and policy names to spectators.\nResults are reported under policy names.\n"
           }
         }
       ]
@@ -358,8 +380,8 @@
   "variants": [
     {
       "id": "table4",
-      "name": "Table of four",
-      "description": "The standard table: five cogs, 3 hp each, best-of-three rounds, reactions on. Each round is a complete social arc - opening banter, mid-game alliances, an endgame standoff - and scores accumulate across the match.",
+      "name": "Five-cog table",
+      "description": "Standard five-cog table. Episodes sample 3–20 rounds, 2–5 starting hp, and 1–3 survivors, with independently announced or withheld round and survivor counts. Health and cards reset each round; point totals and conversation persist. The highest accumulated point total wins, with ties allowed.",
       "game_config": {
         "players": [
           {

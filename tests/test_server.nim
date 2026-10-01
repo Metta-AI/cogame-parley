@@ -16,6 +16,9 @@ suite "player state":
     while not game.match.sim.done:
       game.match.sim.applyShot(game.match.sim.itSeat,
         game.match.sim.validTargets(game.match.sim.itSeat)[0])
+    let beforeVerdict = game.snapshotJson()
+    for index in 0 ..< config.players.len:
+      check beforeVerdict["seats"][index]["score"].getFloat() == float(game.match.sim.seats[index].enemyKill)
     game.match.finishRound()
     let snapshot = game.snapshotJson()
     for index, total in game.match.totals:
@@ -28,7 +31,7 @@ suite "player state":
     for index in 0 ..< 4:
       config.players.add(PlayerConfig(name: "Policy" & $index))
     let game = GameState(config: config, match: initMatch(config))
-    let snapshot = game.playerFrameJson(0)
+    let snapshot = game.liveFrameJson(0)
     check snapshot["rounds"].kind == JNull
     check snapshot["survivors"].kind == JNull
     check not snapshot.hasKey("policyNames")
@@ -38,3 +41,30 @@ suite "player state":
       check snapshot["seats"][index]["enemy"].getInt() == -1
     for event in snapshot["events"]:
       check event["kind"].getStr() != "deal" or event["seat"].getInt() == 0
+
+  test "spectator state cannot bypass private player rules":
+    var config = defaultGameConfig()
+    config.roundsKnown = false
+    config.survivorsKnown = false
+    config.hitPoints = 3
+    for index in 0 ..< 4:
+      config.players.add(PlayerConfig(name: "Policy" & $index))
+    var game = GameState(config: config, match: initMatch(config))
+    game.match.sim.applyShot(game.match.sim.itSeat,
+      game.match.sim.validTargets(game.match.sim.itSeat)[0], aimHip)
+    let snapshot = game.liveFrameJson()
+    check snapshot["rounds"].kind == JNull
+    check snapshot["survivors"].kind == JNull
+    check not snapshot.hasKey("policyNames")
+    for seat in snapshot["seats"]:
+      check seat["friend"].getInt() == -1
+      check seat["enemy"].getInt() == -1
+    for event in snapshot["events"]:
+      check event["kind"].getStr() != "deal"
+      check not event.hasKey("aim")
+      if event["kind"].getStr() == "shot":
+        check event.hasKey("hpAfter")
+    let private = game.snapshotJson()
+    check private.hasKey("policyNames")
+    check private["seats"][0]["friend"].getInt() >= 0
+    check private["events"][^2]["aim"].getStr() == "hip"

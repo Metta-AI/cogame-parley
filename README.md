@@ -3,22 +3,53 @@
 A talkative last-cog-standing party game for the Softmax Coworld platform.
 Parley: negotiation before the paint flies.
 
-Four cogs sit around a table. One is **IT** and holds the paintgun. Each turn
-IT says something to the table, then shoots one living cog — a hit costs the
-target 1 hp, and the target takes the gun; a knockout (0 hp) leaves the gun
-with the shooter. IT picks its **aim** in secret: a **head-shot** always
-hits; a **hip-shot** misses 2 times in 3, but the target takes the gun
-either way, and the table only ever sees hit or miss — so a hip-shot can hand
-the gun to a friend while probably leaving them unhurt, or fake a grudge.
-IT may instead
-**pass** a few times per round (default 3), holding its fire to let the table
-keep talking. Between shots the other cogs plead,
-scheme, and bargain in table-wide chat. Last cog standing wins.
+Cogs sit around a table. One is **IT** and holds the paintgun. Each turn
+IT speaks to the table, then shoots one other living cog or passes.
 
-Seats play under **anonymous cog names** (Sprocket, Gizmo, …): policy display
-names never reach the agents' transcripts, so nobody can meta-game "that seat
-is the champion". The spectator and replay viewers map the aliases back to
-policy names when rendering; results are reported under policy names.
+## Rules
+
+- **Health:** every cog starts each round alive at full health. Hits remove
+  exactly 1 hp. A cog at 0 hp is out for that round and returns next round.
+- **Aim:** a headshot always hits. A hipshot hits with probability 1/3.
+  Shots are unlimited. A surviving target takes the gun, hit or miss.
+  A fatal hit leaves the gun with the shooter, including a fatal hipshot.
+  The shooter knows its aim; everyone else sees only the outcome.
+- **Passes:** IT can hold fire and keep the gun. The allowance is shared
+  across the table and resets each round; it is not a per-cog allowance.
+- **Cards:** each cog privately draws a friend and a different enemy,
+  neither itself. Every cog appears on exactly one friend card and one
+  enemy card. Cards reshuffle each round. Tables with two seats have no cards.
+- **Round end:** the round ends when the configured number of cogs remains
+  alive. Every survivor wins the round, regardless of remaining hp.
+  There is no turn limit.
+- **Points:** each survivor earns 3 points. A cog earns 1 point if its own
+  shot eliminates its enemy and 1 point if its friend survives.
+  Eliminated cogs still earn earned enemy and friend points.
+- **Match winner:** raw points accumulate across rounds; the highest total
+  wins, with ties allowed. Viewers show raw points. Platform scores divide
+  raw points by `5 × completed rounds` so different matches are comparable.
+- **Conversation:** table talk and shot outcomes remain in the match
+  transcript across rounds. Health, cards, and pass allowances reset;
+  previous bargains and grudges remain available to players.
+
+Ordinary episodes sample 3–20 rounds, 2–5 hp, and 1–3 survivors from the seed.
+The survivor count is capped below the seat count. Round and survivor counts
+are independently announced or withheld from players. For fixed local rules,
+set `sampled: true` and provide the desired configuration.
+
+With the default talk configuration, matches of up to five rounds allow
+three shared passes and three reactions between actions. Matches of six to
+ten rounds allow at most one of each. Longer matches allow neither.
+A match can stop after a completed round when 60% of the episode timeout
+has elapsed, including round-ending pacing; it never truncates a round.
+Results and replay report completed rounds.
+
+Seats use **anonymous cog names** (Sprocket, Gizmo, …). Private player views
+reveal only that seat's cards and aim, plus announced rules and public history.
+The live spectator socket is accessible to player containers, so it receives
+public information only: anonymous names, no cards or aim, and no hidden rules.
+Completed replays reveal cards, aim, and policy names to spectators.
+Results are reported under policy names.
 
 **A policy can use a prompt, a scripted baseline, or the general external action interface.**
 External players receive private seat views and submit complete speech, shot,

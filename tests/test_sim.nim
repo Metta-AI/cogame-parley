@@ -377,6 +377,16 @@ suite "parley sim":
       ## Same seed, same table - a replay re-reads rather than re-rolls.
       check sampleEpisode(config) == drawn
 
+  test "disabling reactions survives episode sampling":
+    var config = fixtureConfig(5)
+    config.sampled = false
+    config.reactions = false
+    for seed in 0 ..< 50:
+      config.seed = seed
+      let drawn = sampleEpisode(config)
+      check not drawn.reactions
+      check drawn.maxReactions == 0
+
   test "a drawn table is never re-drawn":
     var config = fixtureConfig(5)
     config.sampled = false
@@ -596,24 +606,3 @@ suite "parley sim":
     check config.episodeTimeoutSeconds == 1200.0
     config.update("""{"episodeTimeoutSeconds": 900}""")
     check config.episodeTimeoutSeconds == 900.0
-
-  test "the live feed carries no aim at all":
-    var config = fixtureConfig(4, hp = 3)
-    config.seed = 11
-    var sim = initSim(config)
-    while not sim.done:
-      let it = sim.itSeat
-      sim.applyShot(it, sim.validTargets(it)[0], aimHip)
-    var events = newJArray()
-    for event in sim.events:
-      events.add(event.eventToJson())
-    var snapshot = %*{"events": events}
-    var withAim = 0
-    for event in snapshot["events"]:
-      if event.hasKey("aim"): inc withAim
-    check withAim > 0
-    snapshot.redactAim()
-    for event in snapshot["events"]:
-      check not event.hasKey("aim")
-      ## The outcome stays: hit or miss is public.
-      if event["kind"].getStr() == "shot": check event.hasKey("hpAfter")

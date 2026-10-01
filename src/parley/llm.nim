@@ -266,7 +266,10 @@ Rules of Parley:
   whether the shot landed - so a hip-shot can pass the gun to a friend
   while probably leaving them unhurt, or fake a grudge.
 - IT may PASS instead of shooting, a limited number of times per round:
-  the gun stays put and the table keeps talking.
+  the gun stays put and the table keeps talking. The allowance is shared
+  by the whole table and resets each round.
+- HEALTH: all cogs return alive with """ & $sim.config.hitPoints & """ hp at the
+  start of every round.
 - CARDS: every round each cog is secretly dealt a FRIEND and an ENEMY
   (never itself, never the same cog). Nobody else knows your cards, and
   the deal reshuffles every round.
@@ -324,11 +327,11 @@ proc userPrompt*(
   if header.len > 0:
     result.add(header & "\n\n")
   result.add("Seats at the table:\n" & sim.renderSeats() &
-    "\n\nWhat has happened this round:\n" & sim.renderHistory(seat) & "\n\n")
+    "\n\nWhat has happened at the table:\n" & sim.renderHistory(seat) & "\n\n")
   let me = sim.seats[seat]
   if me.friend >= 0 and me.enemy >= 0:
     result.add("Your SECRET cards this round: FRIEND = " &
-      sim.seatName(me.friend) & " (1 pt to you if they are last standing)" &
+      sim.seatName(me.friend) & " (1 pt to you if they survive the round)" &
       ", ENEMY = " & sim.seatName(me.enemy) &
       " (1 pt to you if YOUR shot takes them out). Keep them secret.\n\n")
   if prompt.len > 0:

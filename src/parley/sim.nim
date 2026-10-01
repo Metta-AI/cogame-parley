@@ -3,7 +3,7 @@
 ##
 ## Rules: N cogs sit around a table. One cog is "it" and holds the paintgun.
 ## Each turn "it" says something to the table and shoots another living cog.
-## The shot cog loses 1 hp and becomes "it" — unless the shot kills it, in
+## A hit costs the target 1 hp. A living target becomes "it" — unless it dies, in
 ## which case the shooter keeps the gun.
 ##
 ## Aim: a HEAD-SHOT always lands. A HIP-SHOT misses two times in three, but
@@ -14,10 +14,11 @@
 ## of landing, so a round always ends — it just may take a few more turns.
 ##
 ## Cards: every round each cog is secretly dealt a FRIEND and an ENEMY
-## (two distinct other cogs). Round points: 3 for being last cog standing,
-## 1 for fatally shooting your enemy, 1 if your friend is last standing.
+## (two distinct other cogs). Round points: 3 for surviving the round,
+## 1 for fatally shooting your enemy, 1 if your friend survives. A round
+## ends at the configured survivor count; every survivor earns the 3 points.
 ## A match is `rounds` rounds; the deal reshuffles every round and match
-## scores are the round points summed.
+## scores are the round points summed. All seats return at full hp each round.
 
 import std/[json, random, sequtils, strutils], types
 
@@ -208,7 +209,8 @@ proc sampleEpisode*(config: GameConfig): GameConfig =
   ## flavour, so a long match spends its time on rounds rather than on more
   ## talk per shot.
   (result.maxReactions, result.maxSkips) =
-    talkAllowance(result.rounds, config.maxReactions, config.maxSkips)
+    talkAllowance(result.rounds,
+      (if config.reactions: config.maxReactions else: 0), config.maxSkips)
   result.reactions = result.maxReactions > 0
 
   ## Spectator pacing is a fixed sleep per turn, so on a long table it stops
@@ -367,6 +369,11 @@ proc initMatch*(config: GameConfig): Match =
 proc allEvents*(match: Match): seq[GameEvent] =
   match.history & match.sim.events
 
+proc decisionSim*(match: Match): Sim =
+  ## Current table and the full match transcript, so past bargains survive resets.
+  result = match.sim
+  result.events = match.allEvents()
+
 proc finishRound*(match: var Match, endMatch = false) =
   ## Scores the finished round, emits its winner events, and either deals
   ## the next round or ends the match. Call when `match.sim.done`.
@@ -492,7 +499,8 @@ proc redactSecrets*(snapshot: JsonNode, slot: int) =
   ## What a PLAYER may see of a snapshot. Cards are secret: a player sees only
   ## its own friend/enemy pair. So is the AIM of a shot: a player sees hit or
   ## miss, and how IT aimed only for its own shots. The global viewer keeps
-  ## everything (that is the spectator's edge).
+  ## everything only in the replay. A live spectator uses slot -1 and sees
+  ## no private cards or aim.
   for index, seat in snapshot["seats"].getElems():
     if index != slot:
       seat["friend"] = %(-1)
@@ -509,16 +517,6 @@ proc redactSecrets*(snapshot: JsonNode, slot: int) =
       continue
     visible.add(event)
   snapshot["events"] = visible
-
-proc redactAim*(snapshot: JsonNode) =
-  ## The LIVE feed never carries the aim of any shot. Player containers can
-  ## reach the game's spectator socket and may re-send their prompt mid-game,
-  ## so anything on the live feed is something a player could be told; the
-  ## aim is the one secret the whole game turns on. It is revealed only in
-  ## the replay, written after the match is over.
-  for event in snapshot["events"]:
-    if event{"kind"}.getStr() == "shot" and event.hasKey("aim"):
-      event.delete("aim")
 
 type
   ReplayFrame* = object

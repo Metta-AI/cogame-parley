@@ -413,6 +413,8 @@
   "certification": {
     "game_config": {
       "sampled": true,
+      "episodeTimeoutSeconds": 120,
+      "llmTimeoutSeconds": 5,
       "players": [
         {
           "name": "Sprocket"

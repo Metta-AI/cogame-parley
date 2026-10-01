@@ -2,6 +2,23 @@ import std/unittest
 include ../src/parley/server
 
 suite "player state":
+  test "disconnected external seats never switch to the internal model":
+    var config = defaultGameConfig()
+    config.seed = 17
+    for index in 0 ..< 5:
+      config.players.add(PlayerConfig(name: "Policy" & $index))
+    state = GameState(config: config, match: initMatch(config),
+      prompts: newSeq[string](5), external: newSeq[bool](5),
+      promptSet: newSeq[bool](5))
+    let sim = state.match.decisionSim()
+    let seat = sim.itSeat
+    state.registerExternal(seat, "Protect my friend")
+    let outcome = decideSeat(newLlmClient(config), sim, seat,
+      state.prompts[seat], true, matchHeader(state.match), false, 0.0)
+    check outcome.origin == "scripted_after_external_disconnect"
+    check outcome.input.kind == JNull
+    check outcome.response.kind == JNull
+
   test "external decisions receive the same private prompt as hosted models":
     var config = defaultGameConfig()
     config.seed = 17

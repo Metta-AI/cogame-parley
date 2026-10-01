@@ -174,9 +174,11 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
     result.response = newJNull()
     return
   var external = false
+  var registeredExternal = false
   var observation: JsonNode
   withLock stateLock:
-    external = state.external[seat] and state.playerSockets.hasKey(seat)
+    registeredExternal = state.external[seat]
+    external = registeredExternal and state.playerSockets.hasKey(seat)
     if external:
       inc state.nextDecisionId
       state.awaitingSeat = seat
@@ -188,6 +190,14 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
         header, state.awaitingId)
       state.playerSockets[seat].send($observation)
   if not external:
+    if registeredExternal:
+      result.decision =
+        if wantShot: client.scriptedShot(sim, seat)
+        else: client.scriptedReaction(sim, seat)
+      result.origin = "scripted_after_external_disconnect"
+      result.input = newJNull()
+      result.response = newJNull()
+      return
     if scripted:
       result.decision =
         if wantShot: client.scriptedShot(sim, seat)

@@ -26,7 +26,9 @@ or the submitted action frame for external players. A model trained on external
 frames must use that same frame format during evaluation.
 External player observations now include `input.system` and `input.user`,
 rendered by the same server functions as hosted prompt-player calls. A Qwen
-player can use those messages directly and submit its parsed action frame.
+player registers with `{"type":"register","control":"external","prompt":"..."}`,
+where `prompt` is the operator guidance used for the SFT comparison. The
+player can then use those messages directly and submit its parsed action frame.
 This preserves the training prompt without reimplementing the game rules in
 the player. Compare captured external packets to hosted prompt logs before
 claiming end-to-end inference parity.

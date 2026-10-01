@@ -16,7 +16,7 @@
 ##                   {"type":"state",...} after every event batch
 ##                   {"type":"final","scores":[...],"win":[...]}
 ##   player -> game: {"type":"prompt","prompt":"..."} (max 4000 chars)
-##   player -> game: {"type":"register","control":"external"}
+##   player -> game: {"type":"register","control":"external","prompt":"..."}
 ##   game -> external player: {"type":"observation","id":N,
 ##                   "observation":<seat-private state>,"phase":"shot"|"reaction",
 ##                   "input":{"system":...,"user":...},"legalActions":[...]}
@@ -154,6 +154,13 @@ proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
     "input": {"system": systemPrompt(sim, seat),
               "user": userPrompt(sim, seat, prompt, wantShot, header)},
     "legalActions": legalActions}
+
+proc registerExternal(gs: var GameState, slot: int, prompt: string) =
+  if prompt.len > MaxPromptLen:
+    raise newException(ParleyError, "external operator prompt exceeds limit")
+  gs.prompts[slot] = prompt
+  gs.external[slot] = true
+  gs.promptSet[slot] = true
 
 proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
     wantShot: bool, header: string, scripted: bool, playDeadline: float): DecisionResult =
@@ -617,8 +624,7 @@ proc websocketHandler(
           if payload["control"].getStr() != "external":
             raise newException(ParleyError, "unknown player control")
           withLock stateLock:
-            state.external[slot] = true
-            state.promptSet[slot] = true
+            state.registerExternal(slot, payload{"prompt"}.getStr())
           return
         if payload{"type"}.getStr() == "action":
           withLock stateLock:

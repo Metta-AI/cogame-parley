@@ -136,7 +136,12 @@ proc broadcastLocked(gs: GameState) =
     socket.send($gs.liveFrameJson(slot))
 
 proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
-    wantShot: bool, header: string, scripted: bool): Decision =
+    wantShot: bool, header: string, scripted: bool, playDeadline: float): Decision =
+  ## Finish the current round without more model/player waits after the play budget.
+  if playDeadline > 0.0 and epochTime() >= playDeadline:
+    return
+      if wantShot: client.scriptedShot(sim, seat)
+      else: client.scriptedReaction(sim, seat)
   var external = false
   withLock stateLock:
     external = state.external[seat] and state.playerSockets.hasKey(seat)
@@ -343,7 +348,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       ## The slow part (Sonnet) runs outside the lock on a snapshot; only
       ## this thread mutates the match, so the snapshot cannot go stale.
       let shot = client.decideSeat(simCopy, itSeat, itPrompt,
-        wantShot = true, header = header, scripted = itScripted)
+        wantShot = true, header = header, scripted = itScripted, playDeadline = playDeadline)
 
       var roundEnded = false
       withLock stateLock:
@@ -362,7 +367,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         roundEnded = state.match.sim.done
         state.broadcastLocked()
 
-      if config.turnDelayMs > 0:
+      if config.turnDelayMs > 0 and
+          (playDeadline == 0.0 or epochTime() < playDeadline):
         sleep(config.turnDelayMs)
 
       if roundEnded:
@@ -377,7 +383,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           state.broadcastLocked()
         continue
 
-      if config.reactions:
+      if config.reactions and (playDeadline == 0.0 or epochTime() < playDeadline):
         ## Table talk between shots: the new "it" acts next turn, so let a
         ## few of the other living cogs speak, in seat order after the new IT.
         var speakers: seq[int]
@@ -390,6 +396,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         if speakers.len > config.maxReactions:
           speakers.setLen(config.maxReactions)
         for seat in speakers:
+          if playDeadline > 0.0 and epochTime() >= playDeadline:
+            break
           var reactionCopy: Sim
           var reactionPrompt: string
           var reactionScripted: bool
@@ -399,12 +407,13 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             reactionScripted = state.scripted[seat]
             header = state.match.matchHeader()
           let reaction = client.decideSeat(reactionCopy, seat, reactionPrompt,
-            wantShot = false, header = header, scripted = reactionScripted)
+            wantShot = false, header = header, scripted = reactionScripted, playDeadline = playDeadline)
           if reaction.say.len > 0:
             withLock stateLock:
               state.match.sim.recordSay(seat, reaction.say)
               state.broadcastLocked()
-          if config.turnDelayMs > 0:
+          if config.turnDelayMs > 0 and
+              (playDeadline == 0.0 or epochTime() < playDeadline):
             sleep(config.turnDelayMs div 2)
 
     finishEpisode(runtimeConfig)

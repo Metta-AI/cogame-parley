@@ -32,7 +32,11 @@ if "===== container: game =====" in log:
         .split("===== container:", 1)[0]
         .strip()
     )
-    log = ast.literal_eval(section).decode()
+    log = (
+        ast.literal_eval(section).decode()
+        if section.startswith(("b'", 'b"'))
+        else section
+    )
 evidence = [
     json.loads(line.removeprefix("parley training: "))
     for line in log.splitlines()

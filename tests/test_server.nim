@@ -68,3 +68,33 @@ suite "player state":
     check private.hasKey("policyNames")
     check private["seats"][0]["friend"].getInt() >= 0
     check private["events"][^2]["aim"].getStr() == "hip"
+
+  test "replay joins accepted decisions without publishing private prompts":
+    var config = defaultGameConfig()
+    config.seed = 7
+    config.rounds = 1
+    for index in 0 ..< 5:
+      config.players.add(PlayerConfig(name: "Policy" & $index))
+    var game = GameState(config: config, match: initMatch(config))
+    let seat = game.match.sim.itSeat
+    let target = game.match.sim.validTargets(seat)[0]
+    let before = game.match.allEvents().len
+    let context = game.match.decisionSim()
+    let outcome = DecisionResult(
+      decision: Decision(say: "Truce?", target: target, aim: aimHip),
+      origin: "model",
+      input: %*{"system": "private rules", "user": "secret operator prompt"},
+      response: %*{"raw": "model response"}
+    )
+    game.match.sim.recordSay(seat, outcome.decision.say)
+    game.match.sim.applyShot(seat, target, outcome.decision.aim)
+    game.recordDecision(context, seat, true, outcome, before, true)
+    let replay = parseJson(game.replayPayload(game.match.resultsJson()))
+    let reference = replay["decisionRefs"][0]
+    check reference["eventBefore"].getInt() == before
+    check reference["eventAfter"].getInt() == replay["events"].len
+    check reference["action"]["aim"].getStr() == "hip"
+    check "secret operator prompt" notin $replay
+    let privateEvidence = evidenceJson(reference, outcome)
+    check privateEvidence["input"]["user"].getStr() == "secret operator prompt"
+    check privateEvidence["response"]["raw"].getStr() == "model response"

@@ -33,7 +33,7 @@ import
 
 const
   MaxPromptLen = 4000
-  ReplayVersion = 2
+  ReplayVersion = 3
 
 type
   GameState = object
@@ -48,7 +48,10 @@ type
     awaitingId: int
     awaitingShot: bool
     pendingDecision: Decision
+    pendingRawAction: JsonNode
+    pendingRejected: seq[JsonNode]
     hasPendingDecision: bool
+    decisionRefs: seq[JsonNode]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -136,13 +139,18 @@ proc broadcastLocked(gs: GameState) =
     socket.send($gs.liveFrameJson(slot))
 
 proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
-    wantShot: bool, header: string, scripted: bool, playDeadline: float): Decision =
+    wantShot: bool, header: string, scripted: bool, playDeadline: float): DecisionResult =
   ## Finish the current round without more model/player waits after the play budget.
   if playDeadline > 0.0 and epochTime() >= playDeadline:
-    return
+    result.decision =
       if wantShot: client.scriptedShot(sim, seat)
       else: client.scriptedReaction(sim, seat)
+    result.origin = "scripted_after_deadline"
+    result.input = newJNull()
+    result.response = newJNull()
+    return
   var external = false
+  var observation: JsonNode
   withLock stateLock:
     external = state.external[seat] and state.playerSockets.hasKey(seat)
     if external:
@@ -151,6 +159,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
       state.awaitingId = state.nextDecisionId
       state.awaitingShot = wantShot
       state.hasPendingDecision = false
+      state.pendingRejected = @[]
       var legalActions = newJArray()
       if wantShot:
         if sim.skipsLeft() > 0:
@@ -158,16 +167,21 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
         for target in sim.validTargets(seat):
           for aim in ["head", "hip"]:
             legalActions.add(%*{"shoot": sim.seats[target].name, "aim": aim})
-      state.playerSockets[seat].send($ %*{
+      observation = %*{
         "type": "observation", "id": state.awaitingId,
         "phase": (if wantShot: "shot" else: "reaction"),
         "observation": state.liveFrameJson(seat),
-        "legalActions": legalActions})
+        "legalActions": legalActions}
+      state.playerSockets[seat].send($observation)
   if not external:
     if scripted:
-      return
+      result.decision =
         if wantShot: client.scriptedShot(sim, seat)
         else: client.scriptedReaction(sim, seat)
+      result.origin = "scripted_policy"
+      result.input = newJNull()
+      result.response = newJNull()
+      return
     return client.decide(sim, seat, prompt, wantShot, header)
   let deadline = epochTime() + state.config.llmTimeoutSeconds.float
   while epochTime() < deadline:
@@ -180,9 +194,49 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
   withLock stateLock:
     state.awaitingSeat = -1
     if state.hasPendingDecision:
-      return state.pendingDecision
-  if wantShot: client.scriptedShot(sim, seat)
-  else: client.scriptedReaction(sim, seat)
+      return DecisionResult(decision: state.pendingDecision,
+        origin: "external", input: %*{
+          "packet": observation, "wire": $observation},
+        response: state.pendingRawAction,
+        attempts: state.pendingRejected)
+  result.decision =
+    if wantShot: client.scriptedShot(sim, seat)
+    else: client.scriptedReaction(sim, seat)
+  result.origin = "scripted_after_external_timeout"
+  result.input = %*{"packet": observation, "wire": $observation}
+  result.response = newJNull()
+  result.attempts = state.pendingRejected
+
+proc evidenceJson(reference: JsonNode, outcome: DecisionResult): JsonNode =
+  %*{
+    "reference": reference,
+    "input": outcome.input,
+    "response": outcome.response,
+    "attempts": outcome.attempts
+  }
+
+proc recordDecision(gs: var GameState, sim: Sim, seat: int,
+    wantShot: bool, outcome: DecisionResult, beforeEvent: int,
+    accepted: bool) =
+  var action = %*{"say": outcome.decision.say}
+  if wantShot:
+    if outcome.decision.skip:
+      action["shoot"] = %"pass"
+    else:
+      action["shoot"] = %sim.seats[outcome.decision.target].name
+      action["aim"] = %($outcome.decision.aim)
+  let reference = %*{
+    "id": gs.decisionRefs.len + 1,
+    "seat": seat,
+    "phase": (if wantShot: "shot" else: "reaction"),
+    "origin": outcome.origin,
+    "accepted": accepted,
+    "eventBefore": beforeEvent,
+    "eventAfter": gs.match.allEvents().len,
+    "action": action
+  }
+  gs.decisionRefs.add(reference)
+  echo "parley training: ", $evidenceJson(reference, outcome)
 
 proc broadcast() =
   withLock stateLock:
@@ -218,13 +272,18 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
     "config": {
       "hitPoints": gs.config.hitPoints,
       "rounds": results["rounds"],
+      "plannedRounds": gs.config.rounds,
       "survivors": gs.config.survivors,
       "roundsKnown": gs.config.roundsKnown,
       "survivorsKnown": gs.config.survivorsKnown,
+      "reactions": gs.config.reactions,
+      "maxReactions": gs.config.maxReactions,
+      "maxSkips": gs.config.maxSkips,
       "sampled": true,
       "seed": gs.config.seed
     },
     "events": events,
+    "decisionRefs": gs.decisionRefs,
     "results": results
   }
 
@@ -347,23 +406,29 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
       ## The slow part (Sonnet) runs outside the lock on a snapshot; only
       ## this thread mutates the match, so the snapshot cannot go stale.
-      let shot = client.decideSeat(simCopy, itSeat, itPrompt,
+      var shot = client.decideSeat(simCopy, itSeat, itPrompt,
         wantShot = true, header = header, scripted = itScripted, playDeadline = playDeadline)
 
       var roundEnded = false
       withLock stateLock:
-        state.match.sim.recordSay(itSeat, shot.say)
+        let beforeEvent = state.match.allEvents().len
+        state.match.sim.recordSay(itSeat, shot.decision.say)
+        var accepted = true
         try:
-          if shot.skip:
+          if shot.decision.skip:
             ## "It" holds fire: the gun stays put, the reaction chatter below
             ## still runs, and the same seat decides again next loop.
             state.match.sim.applySkip(itSeat)
           else:
-            state.match.sim.applyShot(itSeat, shot.target, shot.aim)
+            state.match.sim.applyShot(itSeat, shot.decision.target, shot.decision.aim)
         except ParleyError as error:
           echo "parley: llm action rejected (", error.msg, "); using fallback"
           let fallback = client.scriptedShot(state.match.sim, itSeat)
           state.match.sim.applyShot(itSeat, fallback.target, fallback.aim)
+          shot.decision = fallback
+          shot.origin = "scripted_after_rejected_action"
+          accepted = false
+        state.recordDecision(simCopy, itSeat, true, shot, beforeEvent, accepted)
         roundEnded = state.match.sim.done
         state.broadcastLocked()
 
@@ -408,10 +473,12 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             header = state.match.matchHeader()
           let reaction = client.decideSeat(reactionCopy, seat, reactionPrompt,
             wantShot = false, header = header, scripted = reactionScripted, playDeadline = playDeadline)
-          if reaction.say.len > 0:
-            withLock stateLock:
-              state.match.sim.recordSay(seat, reaction.say)
+          withLock stateLock:
+            let beforeEvent = state.match.allEvents().len
+            if reaction.decision.say.len > 0:
+              state.match.sim.recordSay(seat, reaction.decision.say)
               state.broadcastLocked()
+            state.recordDecision(reactionCopy, seat, false, reaction, beforeEvent, true)
           if config.turnDelayMs > 0 and
               (playDeadline == 0.0 or epochTime() < playDeadline):
             sleep(config.turnDelayMs div 2)
@@ -553,6 +620,8 @@ proc websocketHandler(
                 not state.hasPendingDecision:
               state.pendingDecision = parseDecision(state.match.sim, slot,
                 payload["action"], state.awaitingShot)
+              state.pendingRawAction = %*{
+                "wire": message.data, "action": payload["action"]}
               state.hasPendingDecision = true
           return
         if payload{"type"}.getStr() == "prompt":
@@ -569,6 +638,10 @@ proc websocketHandler(
             prompt.len, " chars",
             (if scripted: ", scripted" else: ""), ")"
       except CatchableError as error:
+        withLock stateLock:
+          if state.awaitingSeat == slot:
+            state.pendingRejected.add(%*{
+              "wire": message.data, "error": error.msg})
         echo "parley: ignoring bad player frame: ", error.msg
     of ErrorEvent:
       discard

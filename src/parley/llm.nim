@@ -12,7 +12,7 @@
 ## certification still completes - this fallback is load-bearing.
 
 import
-  std/[json, options, os, random, strutils],
+  std/[json, os, random, strutils],
   bitworld/runtime,
   curly,
   sim
@@ -31,6 +31,13 @@ type
     target*: int      ## seat index; -1 for pure table talk
     skip*: bool       ## "it" holds fire this turn instead of shooting
     aim*: ShotAim     ## head (always lands) or hip (gamble, gun still moves)
+
+  DecisionResult* = object
+    decision*: Decision
+    origin*: string
+    input*: JsonNode
+    response*: JsonNode
+    attempts*: seq[JsonNode]
 
   LlmTransport = enum
     ltNone, ltBedrock, ltAnthropic
@@ -445,13 +452,17 @@ proc decide*(
   prompt: string,
   wantShot: bool,
   header = ""
-): Decision =
+): DecisionResult =
   ## One decision for one seat. Never raises: any failure falls back to the
   ## scripted baseline so the game always advances.
   if client.disabled:
-    return
+    result.decision =
       if wantShot: client.scriptedShot(sim, seat)
       else: client.scriptedReaction(sim, seat)
+    result.origin = "scripted_no_credentials"
+    result.input = newJNull()
+    result.response = newJNull()
+    return
 
   let system = systemPrompt(sim, seat)
   for attempt in 0 .. 1:
@@ -459,14 +470,26 @@ proc decide*(
     if attempt > 0:
       user.add("\nYour previous reply was invalid. Respond with ONLY the " &
         "requested JSON object and a legal target.")
+    var raw = ""
     try:
-      let payload = extractJsonObject(client.completeText(system, user))
-      return parseDecision(sim, seat, payload, wantShot)
+      raw = client.completeText(system, user)
+      let payload = extractJsonObject(raw)
+      result.decision = parseDecision(sim, seat, payload, wantShot)
+      result.origin = "model"
+      result.input = %*{"system": system, "user": user}
+      result.response = %*{"raw": raw, "parsed": payload}
+      return
     except CatchableError as error:
+      result.attempts.add(%*{"system": system, "user": user,
+        "raw": raw, "error": error.msg})
       echo "parley llm: seat ", seat, " attempt ", attempt, " failed: ",
         error.msg
       if client.disabled:
         break
   echo "parley llm: seat ", seat, " falling back to scripted decision"
-  if wantShot: client.scriptedShot(sim, seat)
-  else: client.scriptedReaction(sim, seat)
+  result.decision =
+    if wantShot: client.scriptedShot(sim, seat)
+    else: client.scriptedReaction(sim, seat)
+  result.origin = "scripted_after_model_failure"
+  result.input = newJNull()
+  result.response = newJNull()

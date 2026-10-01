@@ -110,6 +110,20 @@ suite "parley sim":
     check match.turnsTotal == 3
     check match.matchWinners() == @[true, false]
 
+  test "a fresh round restores every cog's health in live play and replay":
+    let config = fixtureConfig(4, hp = 3, rounds = 2)
+    var match = initMatch(config)
+    while not match.sim.done:
+      match.sim.applyShot(match.sim.itSeat, match.sim.validTargets(match.sim.itSeat)[0])
+    match.finishRound()
+    check match.sim.round == 1
+    let frames = replayMatch(config, match.allEvents())
+    for index, seat in match.sim.seats:
+      check seat.alive
+      check seat.hp == config.hitPoints
+      check frames[^1].sim.seats[index].alive
+      check frames[^1].sim.seats[index].hp == config.hitPoints
+
   test "results json shape":
     var match = initMatch(fixtureConfig(2, hp = 1, rounds = 2))
     while not match.done:
@@ -403,10 +417,18 @@ suite "parley sim":
     for _ in 0 ..< 3:
       match.sim.applyShot(match.sim.itSeat,
         match.sim.validTargets(match.sim.itSeat)[0])
-      match.finishRound()
-    match.endMatchEarly()
+      match.finishRound(endMatch = match.sim.round == 2)
     check match.done
     check match.roundsPlayed == 3
+    check match.sim.round == 2
+    check match.sim.done
+    check match.allEvents()[^1].round == 2
+    check match.resultsJson()["rounds"].getInt() == 3
+    let frames = replayMatch(match.config, match.allEvents())
+    check frames[^1].sim.done
+    for index, seat in match.sim.seats:
+      check frames[^1].sim.seats[index].hp == seat.hp
+      check frames[^1].sim.seats[index].alive == seat.alive
     ## Three rounds played, so the ceiling is three rounds - not the twelve
     ## drawn. Dividing by the draw would punish a table for rounds the
     ## deadline took away from it.

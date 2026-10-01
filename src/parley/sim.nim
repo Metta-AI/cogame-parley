@@ -367,9 +367,10 @@ proc initMatch*(config: GameConfig): Match =
 proc allEvents*(match: Match): seq[GameEvent] =
   match.history & match.sim.events
 
-proc finishRound*(match: var Match) =
+proc finishRound*(match: var Match, endMatch = false) =
   ## Scores the finished round, emits its winner events, and either deals
   ## the next round or ends the match. Call when `match.sim.done`.
+  ## A deadline stop scores this round without dealing an unplayed next one.
   if not match.sim.done or match.done:
     raise newException(ParleyError, "no finished round to score")
   let roundScores = match.sim.scores()
@@ -397,17 +398,11 @@ proc finishRound*(match: var Match) =
   match.turnsTotal += match.sim.turn
   match.roundsPlayed.inc
 
-  if match.sim.round + 1 < match.config.rounds:
+  if not endMatch and match.sim.round + 1 < match.config.rounds:
     match.history.add(match.sim.events)
     match.sim = initSim(match.config, match.sim.round + 1)
   else:
     match.done = true
-
-proc endMatchEarly*(match: var Match) =
-  ## Stop after the round just scored. The hosted platform kills an episode
-  ## that outlives its timeout and keeps NOTHING — no results, no replay — so
-  ## a short honest match always beats a long one that never lands.
-  match.done = true
 
 proc matchWinners*(match: Match): seq[bool] =
   result = newSeq[bool](match.totals.len)
@@ -468,7 +463,7 @@ proc resultsJson*(match: Match): JsonNode =
     "foePoints": foeNode,
     "rawScores": rawNode,
     "pointsAvailable": available,
-    "rounds": match.config.rounds,
+    "rounds": match.roundsPlayed,
     "survivors": match.config.survivors,
     "hitPoints": match.config.hitPoints,
     "roundsKnown": match.config.roundsKnown,

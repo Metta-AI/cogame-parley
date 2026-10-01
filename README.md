@@ -40,7 +40,9 @@ pass, and reaction actions. The game validates each action and owns results and 
 
 ```bash
 export PATH="$HOME/.nimby/nim/bin:$PATH"
-nim r tests/test_sim.nim                      # rules tests
+bash tools/nim_local.sh r tests/test_sim.nim       # rules and replay tests
+bash tools/nim_local.sh r tests/test_scripted.nim  # player prompts
+bash tools/nim_local.sh r tests/test_server.nim    # private states and scoring
 nim c -d:release -o:bin/parley src/parley.nim
 nim c -d:release -o:bin/parley-player src/parley_player.nim
 # See tmp/config.json for a 4-seat fixture; run with COGAME_* env + 4 players.

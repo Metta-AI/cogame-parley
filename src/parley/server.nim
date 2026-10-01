@@ -96,7 +96,7 @@ proc snapshotJson(gs: GameState): JsonNode =
   ## (match.totals itself only folds them in at round end).
   var liveTotals = gs.match.totals
   for index in 0 ..< gs.match.sim.seats.len:
-    if gs.match.sim.seats[index].enemyKill:
+    if not gs.match.sim.done and gs.match.sim.seats[index].enemyKill:
       liveTotals[index] += 1
   return %*{
     "type": "state",
@@ -121,6 +121,10 @@ proc playerFrameJson(gs: GameState, slot: int): JsonNode =
   result["slot"] = %slot
   result.redactSecrets(slot)
   result.delete("policyNames")
+  if not gs.config.roundsKnown:
+    result["rounds"] = newJNull()
+  if not gs.config.survivorsKnown:
+    result["survivors"] = newJNull()
 
 proc broadcastLocked(gs: GameState) =
   ## Callers hold stateLock.
@@ -209,7 +213,7 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
     "policyNames": gs.policyNamesJson(),
     "config": {
       "hitPoints": gs.config.hitPoints,
-      "rounds": gs.config.rounds,
+      "rounds": results["rounds"],
       "survivors": gs.config.survivors,
       "roundsKnown": gs.config.roundsKnown,
       "survivorsKnown": gs.config.survivorsKnown,
@@ -250,6 +254,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
       "type": "final",
       "done": true,
       "scores": results["scores"],
+      "rawScores": results["rawScores"],
       "win": results["win"],
       "names": aliasNames,
       "kills": results["kills"],
@@ -321,16 +326,6 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",
         (timeoutSeconds * PlayBudgetFraction).int, "s"
 
-    proc matchHeader(): string =
-      ## Cross-round context for the model: standings and round position.
-      var standings: seq[string]
-      for index, seat in state.match.sim.seats:
-        standings.add(seat.name & "=" & $state.match.totals[index] &
-          " (" & $state.match.roundWins[index] & " round wins)")
-      "Round " & $(state.match.sim.round + 1) & " of " &
-        $state.config.rounds & ". Match standings so far: " &
-        standings.join(", ") & "."
-
     while true:
       var simCopy: Sim
       var itSeat: int
@@ -344,7 +339,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         itSeat = state.match.sim.itSeat
         itPrompt = state.prompts[itSeat]
         itScripted = state.scripted[itSeat]
-        header = matchHeader()
+        header = state.match.matchHeader()
 
       ## The slow part (Sonnet) runs outside the lock on a snapshot; only
       ## this thread mutates the match, so the snapshot cannot go stale.
@@ -364,9 +359,13 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         except ParleyError as error:
           echo "parley: llm action rejected (", error.msg, "); using fallback"
           let fallback = client.scriptedShot(state.match.sim, itSeat)
-          state.match.sim.applyShot(itSeat, fallback.target)
+          state.match.sim.applyShot(itSeat, fallback.target, fallback.aim)
         if state.match.sim.done:
-          state.match.finishRound()
+          let timedOut = playDeadline > 0.0 and epochTime() >= playDeadline
+          state.match.finishRound(endMatch = timedOut)
+          if timedOut:
+            echo "parley: episode deadline reached after ",
+              state.match.roundsPlayed, "/", config.rounds, " rounds"
           roundEnded = true
         state.broadcastLocked()
 
@@ -379,18 +378,6 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       if done:
         break
       if roundEnded:
-        ## The platform kills an episode that outruns its timeout and keeps
-        ## nothing at all, so give up rounds rather than the whole result.
-        ## Checked between rounds: a part-played round has no verdict to score.
-        if playDeadline > 0.0 and epochTime() > playDeadline:
-          withLock stateLock:
-            if not state.match.done:
-              echo "parley: episode deadline reached after ",
-                state.match.roundsPlayed, "/", config.rounds,
-                " rounds; ending the match here"
-              state.match.endMatchEarly()
-              state.broadcastLocked()
-          break
         ## Let the round verdict land before the next deal starts talking.
         if config.turnDelayMs > 0:
           sleep(config.turnDelayMs)
@@ -416,7 +403,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             reactionCopy = state.match.sim
             reactionPrompt = state.prompts[seat]
             reactionScripted = state.scripted[seat]
-            header = matchHeader()
+            header = state.match.matchHeader()
           let reaction = client.decideSeat(reactionCopy, seat, reactionPrompt,
             wantShot = false, header = header, scripted = reactionScripted)
           if reaction.say.len > 0:
@@ -516,7 +503,9 @@ proc globalUpgradeHandler(request: Request) {.gcsafe.} =
     let websocket = request.upgradeToWebSocket()
     withLock stateLock:
       state.globalSockets.incl(websocket)
-      websocket.send($state.snapshotJson())
+      var live = state.snapshotJson()
+      live.redactAim()
+      websocket.send($live)
 
 proc replayUpgradeHandler(request: Request) {.gcsafe.} =
   {.gcsafe.}:

@@ -307,6 +307,17 @@ proc reactionInstruction(): string =
     $MaxSayLen & " chars) - plead, deflect, scheme, or stir the pot.\n" &
     "Respond with JSON: {\"say\": \"...\"}"
 
+proc matchHeader*(match: Match): string =
+  ## Share standings without revealing a withheld match length.
+  var standings: seq[string]
+  for index, seat in match.sim.seats:
+    standings.add(seat.name & "=" & $match.totals[index] &
+      " (" & $match.roundWins[index] & " round wins)")
+  result = "Round " & $(match.sim.round + 1)
+  if match.config.roundsKnown:
+    result.add(" of " & $match.config.rounds)
+  result.add(". Match standings so far: " & standings.join(", ") & ".")
+
 proc userPrompt*(
   sim: Sim, seat: int, prompt: string, wantShot: bool, header: string
 ): string =

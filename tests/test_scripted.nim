@@ -1,4 +1,4 @@
-import std/unittest
+import std/[strutils, unittest]
 import parley/[llm, sim]
 
 suite "scripted seat randomness":
@@ -19,3 +19,17 @@ suite "scripted seat randomness":
       check actual.target == expected.target
       check actual.aim == expected.aim
       check actual.say == expected.say
+
+  test "hidden match length stays out of the model prompt":
+    var config = defaultGameConfig()
+    config.rounds = 17
+    config.roundsKnown = false
+    config.survivorsKnown = false
+    for seat in 0 ..< 4:
+      config.players.add(PlayerConfig(name: "P" & $seat))
+    let match = initMatch(config)
+    let prompt = userPrompt(match.sim, match.sim.itSeat, "", true, match.matchHeader())
+    check "of 17" notin prompt
+    check "NOT known" in systemPrompt(match.sim, match.sim.itSeat)
+    config.roundsKnown = true
+    check "of 17" in initMatch(config).matchHeader()

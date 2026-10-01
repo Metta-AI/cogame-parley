@@ -110,6 +110,20 @@ suite "parley sim":
     check match.turnsTotal == 3
     check match.matchWinners() == @[true, false]
 
+  test "a fresh round restores every cog's health in live play and replay":
+    let config = fixtureConfig(4, hp = 3, rounds = 2)
+    var match = initMatch(config)
+    while not match.sim.done:
+      match.sim.applyShot(match.sim.itSeat, match.sim.validTargets(match.sim.itSeat)[0])
+    match.finishRound()
+    check match.sim.round == 1
+    let frames = replayMatch(config, match.allEvents())
+    for index, seat in match.sim.seats:
+      check seat.alive
+      check seat.hp == config.hitPoints
+      check frames[^1].sim.seats[index].alive
+      check frames[^1].sim.seats[index].hp == config.hitPoints
+
   test "results json shape":
     var match = initMatch(fixtureConfig(2, hp = 1, rounds = 2))
     while not match.done:
@@ -363,6 +377,16 @@ suite "parley sim":
       ## Same seed, same table - a replay re-reads rather than re-rolls.
       check sampleEpisode(config) == drawn
 
+  test "disabling reactions survives episode sampling":
+    var config = fixtureConfig(5)
+    config.sampled = false
+    config.reactions = false
+    for seed in 0 ..< 50:
+      config.seed = seed
+      let drawn = sampleEpisode(config)
+      check not drawn.reactions
+      check drawn.maxReactions == 0
+
   test "a drawn table is never re-drawn":
     var config = fixtureConfig(5)
     config.sampled = false
@@ -403,10 +427,18 @@ suite "parley sim":
     for _ in 0 ..< 3:
       match.sim.applyShot(match.sim.itSeat,
         match.sim.validTargets(match.sim.itSeat)[0])
-      match.finishRound()
-    match.endMatchEarly()
+      match.finishRound(endMatch = match.sim.round == 2)
     check match.done
     check match.roundsPlayed == 3
+    check match.sim.round == 2
+    check match.sim.done
+    check match.allEvents()[^1].round == 2
+    check match.resultsJson()["rounds"].getInt() == 3
+    let frames = replayMatch(match.config, match.allEvents())
+    check frames[^1].sim.done
+    for index, seat in match.sim.seats:
+      check frames[^1].sim.seats[index].hp == seat.hp
+      check frames[^1].sim.seats[index].alive == seat.alive
     ## Three rounds played, so the ceiling is three rounds - not the twelve
     ## drawn. Dividing by the draw would punish a table for rounds the
     ## deadline took away from it.
@@ -574,24 +606,3 @@ suite "parley sim":
     check config.episodeTimeoutSeconds == 1200.0
     config.update("""{"episodeTimeoutSeconds": 900}""")
     check config.episodeTimeoutSeconds == 900.0
-
-  test "the live feed carries no aim at all":
-    var config = fixtureConfig(4, hp = 3)
-    config.seed = 11
-    var sim = initSim(config)
-    while not sim.done:
-      let it = sim.itSeat
-      sim.applyShot(it, sim.validTargets(it)[0], aimHip)
-    var events = newJArray()
-    for event in sim.events:
-      events.add(event.eventToJson())
-    var snapshot = %*{"events": events}
-    var withAim = 0
-    for event in snapshot["events"]:
-      if event.hasKey("aim"): inc withAim
-    check withAim > 0
-    snapshot.redactAim()
-    for event in snapshot["events"]:
-      check not event.hasKey("aim")
-      ## The outcome stays: hit or miss is public.
-      if event["kind"].getStr() == "shot": check event.hasKey("hpAfter")

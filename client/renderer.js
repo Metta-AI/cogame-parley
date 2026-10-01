@@ -886,8 +886,8 @@
   function matchHeader(config, round, turn) {
     var c = config || {};
     var hidden = function (known) { return known === false ? " (hidden)" : ""; };
-    var rounds = c.rounds || 1;
-    var survivors = c.survivors || 1;
+    var rounds = c.rounds == null ? "?" : c.rounds;
+    var survivors = c.survivors == null ? "?" : c.survivors;
     var parts = [
       "ROUND " + (round + 1) + " / " + rounds + hidden(c.roundsKnown),
       "TURN " + turn,
@@ -936,7 +936,7 @@
     });
     var order = names.map(function (_, i) { return i; });
     order.sort(function (a, b) {
-      return (results.scores[b] || 0) - (results.scores[a] || 0);
+      return results.rawScores[b] - results.rawScores[a];
     });
     var winners = [];
     names.forEach(function (name, i) {
@@ -969,7 +969,7 @@
         '<span class="end-cell name ' + seatColor(i) +
         (winner ? " end-row-winner" : "") + '">' + escapeHtml(names[i]) +
         "</span>" +
-        cell((results.scores[i] || 0).toFixed(2)) +
+        cell(results.rawScores[i]) +
         cell(((results.roundWins || [])[i] || 0) * 3) +
         cell((results.friendPoints || [])[i] || 0) +
         cell((results.foePoints || [])[i] || 0);

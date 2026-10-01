@@ -40,14 +40,9 @@ when isMainModule:
     let client = newLlmClient(config)
     var rows: seq[string]
     while not match.done:
-      let sim = match.sim
+      let sim = match.decisionSim()
       let seat = sim.itSeat
-      var standings: seq[string]
-      for index, player in sim.seats:
-        standings.add(player.name & "=" & $match.totals[index] &
-          " (" & $match.roundWins[index] & " round wins)")
-      let header = "Round " & $(sim.round + 1) & " of " & $config.rounds &
-        ". Match standings so far: " & standings.join(", ") & "."
+      let header = match.matchHeader()
       let shot = client.scriptedShot(sim, seat)
       let completion = %*{"say": shot.say,
         "shoot": sim.seats[shot.target].name,
@@ -92,8 +87,8 @@ when isMainModule:
             "decision_id": rows.len,
             "prompt": [
               {"role": "system", "content": systemPrompt(match.sim, other)},
-              {"role": "user", "content": userPrompt(match.sim, other,
-                OperatorPrompt, false, header)}
+              {"role": "user", "content": userPrompt(match.decisionSim(), other,
+                OperatorPrompt, false, match.matchHeader())}
             ],
             "completion": [{"role": "assistant", "content": $reply}],
             "game": "parley",

@@ -8,12 +8,16 @@ suite "player state":
     config.rounds = 2
     for index in 0 ..< 5:
       config.players.add(PlayerConfig(name: "Policy" & $index))
-    let game = GameState(config: config, match: initMatch(config))
+    var game = GameState(config: config, match: initMatch(config),
+      prompts: newSeq[string](5), external: newSeq[bool](5),
+      promptSet: newSeq[bool](5))
     let sim = game.match.decisionSim()
     let seat = sim.itSeat
     let header = matchHeader(game.match)
+    game.registerExternal(seat, "Protect my friend")
+    check game.external[seat] and game.promptSet[seat]
     for wantShot in [true, false]:
-      let packet = game.externalObservation(sim, seat, "Protect my friend", wantShot,
+      let packet = game.externalObservation(sim, seat, game.prompts[seat], wantShot,
         header, 7)
       check packet["input"]["system"].getStr() == systemPrompt(sim, seat)
       check packet["input"]["user"].getStr() ==

@@ -82,7 +82,7 @@ bash tools/nim_local.sh r tests/test_server.nim    # private states and scoring
 nim c -d:release -o:bin/parley src/parley.nim
 nim c -d:release -o:bin/parley-player src/parley_player.nim
 # See tmp/config.json for a 4-seat fixture; run with COGAME_* env + 4 players.
-# Export ANTHROPIC_API_KEY for real Sonnet play; omit for the scripted baseline.
+# Hosted games use COWORLD_LLM_ENDPOINT; local games can use ANTHROPIC_API_KEY.
 ```
 
 Coworld packaging (from a metta checkout):
@@ -91,7 +91,6 @@ Coworld packaging (from a metta checkout):
 uv run coworld build --project <this dir> --version 0.1.x
 uv run coworld certify <this dir>/dist/coworld_manifest.json
 uv run coworld upload-coworld <this dir>/dist/coworld_manifest.json
-uv run coworld secret put parley anthropic_api_key <keyfile>   # hosted Sonnet
 ```
 
 ## Fielding a policy

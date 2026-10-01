@@ -40,13 +40,14 @@ type
     attempts*: seq[JsonNode]
 
   LlmTransport = enum
-    ltNone, ltBedrock, ltAnthropic
+    ltNone, ltSidecar, ltBedrock, ltAnthropic
 
   LlmClient* = ref object
     curl: Curly
     transport: LlmTransport
     apiKey: string          ## anthropic transport
-    bedrockEndpoint: string ## bedrock transport: sidecar or public runtime host
+    bedrockEndpoint: string ## bedrock transport: local endpoint or public runtime host
+    sidecarEndpoint: string
     bedrockModels: seq[string]  ## candidates, tried in order on model-access denial
     bedrockModel: int           ## index into bedrockModels
     bedrockToken: string
@@ -111,9 +112,15 @@ proc newLlmClient*(config: GameConfig): LlmClient =
   for seat in 0 ..< config.players.len:
     result.rand[seat] = initRand(config.seed xor 0x5EED xor
       ((seat + 1) shl 16))
-  ## Preferred transport: Bedrock. Hosted pods get a platform sidecar
-  ## (AWS_ENDPOINT_URL_BEDROCK_RUNTIME + a dummy bearer token it re-signs);
-  ## a real AWS_BEARER_TOKEN_BEDROCK against the public endpoint also works.
+  let sidecarEndpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
+  if sidecarEndpoint.len > 0:
+    result.transport = ltSidecar
+    result.sidecarEndpoint = sidecarEndpoint.strip(chars = {'/'}, leading = false)
+    result.model = getEnv("COWORLD_LLM_MODEL", "anthropic/claude-sonnet-4.6")
+    result.curl = newCurly()
+    echo "parley llm: hosted sidecar transport, model ", result.model
+    return
+  ## Local Bedrock credentials remain available outside hosted episodes.
   let bedrockEndpoint = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip()
   let bedrockToken = getEnv("AWS_BEARER_TOKEN_BEDROCK").strip()
   if bedrockEndpoint.len > 0 or bedrockToken.len > 0:
@@ -357,7 +364,7 @@ proc extractJsonObject(text: string): JsonNode =
     raise newException(ParleyError, "no JSON object in response")
   parseJson(text[start .. stop])
 
-proc completeText(client: LlmClient, system, user: string): string =
+proc completeText(client: LlmClient, seat: int, system, user: string): string =
   var body = %*{
     "max_tokens": client.maxOutputTokens,
     "system": system,
@@ -371,6 +378,11 @@ proc completeText(client: LlmClient, system, user: string): string =
     if client.bedrockToken.len > 0:
       headers["authorization"] = "Bearer " & client.bedrockToken
     url = client.bedrockUrl()
+  elif client.transport == ltSidecar:
+    body["model"] = %client.model
+    headers["anthropic-version"] = AnthropicVersion
+    headers["x-coworld-player-slot"] = $seat
+    url = client.sidecarEndpoint & "/v1/messages"
   else:
     body["model"] = %client.model
     headers["x-api-key"] = client.apiKey
@@ -472,7 +484,7 @@ proc decide*(
         "requested JSON object and a legal target.")
     var raw = ""
     try:
-      raw = client.completeText(system, user)
+      raw = client.completeText(seat, system, user)
       let payload = extractJsonObject(raw)
       result.decision = parseDecision(sim, seat, payload, wantShot)
       result.origin = "model"

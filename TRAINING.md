@@ -1,5 +1,12 @@
 # Parley training
 
+Hosted prompt players call the Coworld LLM sidecar using the canonical
+`anthropic/claude-sonnet-4.6` model and attribute each call to its seat. The
+game uses the injected `COWORLD_LLM_ENDPOINT`; local play can still use
+`ANTHROPIC_API_KEY` or local Bedrock credentials. Do not add a provider secret
+to the hosted game manifest. Inspect `origin` in every v3 decision reference
+before using a rollout for training.
+
 ## Hosted decision evidence
 
 Replay protocol v3 records each decision's seat, phase, origin, canonical

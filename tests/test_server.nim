@@ -2,6 +2,25 @@ import std/unittest
 include ../src/parley/server
 
 suite "player state":
+  test "external decisions receive the same private prompt as hosted models":
+    var config = defaultGameConfig()
+    config.seed = 17
+    config.rounds = 2
+    for index in 0 ..< 5:
+      config.players.add(PlayerConfig(name: "Policy" & $index))
+    let game = GameState(config: config, match: initMatch(config))
+    let sim = game.match.decisionSim()
+    let seat = sim.itSeat
+    let header = matchHeader(game.match)
+    for wantShot in [true, false]:
+      let packet = game.externalObservation(sim, seat, "Protect my friend", wantShot,
+        header, 7)
+      check packet["input"]["system"].getStr() == systemPrompt(sim, seat)
+      check packet["input"]["user"].getStr() ==
+        userPrompt(sim, seat, "Protect my friend", wantShot, header)
+      check packet["observation"]["seats"][seat]["friend"].getInt() >= 0
+      check packet["id"].getInt() == 7
+
   test "foe points appear once before and after the final verdict":
     var config = defaultGameConfig()
     config.rounds = 1

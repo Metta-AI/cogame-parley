@@ -19,7 +19,7 @@
 ##   player -> game: {"type":"register","control":"external"}
 ##   game -> external player: {"type":"observation","id":N,
 ##                   "observation":<seat-private state>,"phase":"shot"|"reaction",
-##                   "legalActions":[...]}
+##                   "input":{"system":...,"user":...},"legalActions":[...]}
 ##   external player -> game: {"type":"action","id":N,"action":{...}}
 
 import
@@ -138,6 +138,23 @@ proc broadcastLocked(gs: GameState) =
   for slot, socket in gs.playerSockets:
     socket.send($gs.liveFrameJson(slot))
 
+proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
+    wantShot: bool, header: string, id: int): JsonNode =
+  var legalActions = newJArray()
+  if wantShot:
+    if sim.skipsLeft() > 0:
+      legalActions.add(%*{"shoot": "pass"})
+    for target in sim.validTargets(seat):
+      for aim in ["head", "hip"]:
+        legalActions.add(%*{"shoot": sim.seats[target].name, "aim": aim})
+  %*{
+    "type": "observation", "id": id,
+    "phase": (if wantShot: "shot" else: "reaction"),
+    "observation": gs.liveFrameJson(seat),
+    "input": {"system": systemPrompt(sim, seat),
+              "user": userPrompt(sim, seat, prompt, wantShot, header)},
+    "legalActions": legalActions}
+
 proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
     wantShot: bool, header: string, scripted: bool, playDeadline: float): DecisionResult =
   ## Finish the current round without more model/player waits after the play budget.
@@ -160,18 +177,8 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
       state.awaitingShot = wantShot
       state.hasPendingDecision = false
       state.pendingRejected = @[]
-      var legalActions = newJArray()
-      if wantShot:
-        if sim.skipsLeft() > 0:
-          legalActions.add(%*{"shoot": "pass"})
-        for target in sim.validTargets(seat):
-          for aim in ["head", "hip"]:
-            legalActions.add(%*{"shoot": sim.seats[target].name, "aim": aim})
-      observation = %*{
-        "type": "observation", "id": state.awaitingId,
-        "phase": (if wantShot: "shot" else: "reaction"),
-        "observation": state.liveFrameJson(seat),
-        "legalActions": legalActions}
+      observation = state.externalObservation(sim, seat, prompt, wantShot,
+        header, state.awaitingId)
       state.playerSockets[seat].send($observation)
   if not external:
     if scripted:

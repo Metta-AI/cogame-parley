@@ -26,6 +26,17 @@ opponents; leaderboard games used for SFT cannot be evaluation games. A replay
 alone is insufficient as a supervised label until its private log has been
 joined and verified.
 
+After downloading one hosted replay and its elevated game-log artifact, run:
+
+```bash
+python tools/export_hosted_posttrain.py --replay /private/replay.json \
+  --game-log /private/game.log --episode-id ereq_... \
+  --output /private/sft.jsonl
+```
+
+The exporter verifies the whole episode before writing rows. Omit `--output`
+to inspect fallback origins and schedule completion without creating data.
+
 ## Scripted local export
 
 Parley has a local simulator and hosted text players. Export complete matches

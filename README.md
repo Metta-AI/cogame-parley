@@ -42,6 +42,8 @@ three shared passes and three reactions between actions. Matches of six to
 ten rounds allow at most one of each. Longer matches allow neither.
 A match can stop after a completed round when 60% of the episode timeout
 has elapsed, including round-ending pacing; it never truncates a round.
+After that budget expires, the scripted fallback finishes the current round
+without further model/player waits, reactions, or spectator pacing.
 Results and replay report completed rounds.
 
 Seats use **anonymous cog names** (Sprocket, Gizmo, …). Private player views

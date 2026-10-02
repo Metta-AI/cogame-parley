@@ -156,3 +156,60 @@ suite "player state":
     check privateEvidence["attempts"][0]["response"].getStr() == "model response"
     check privateEvidence["executed_action"] == privateEvidence["attempts"][0]["parsed_action"]
     check privateEvidence["observation"] == privateObservation
+
+suite "external training authority":
+  test "player assertions cannot create teacher labels":
+    for origin in [aoTeacher, aoHuman]:
+      var config = defaultGameConfig()
+      config.seed = 17
+      for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
+      var game = GameState(config: config, match: initMatch(config), awaitingShot: true)
+      let seat = game.match.sim.itSeat
+      let target = game.match.sim.validTargets(seat)[0]
+      let action = %*{"shoot": game.match.sim.seats[target].name, "say": "public"}
+      var attempt = newDecisionAttempt("asserted-teacher", "external", origin)
+      attempt.response = %($action)
+      game.acceptExternalAction(seat, %*{"action": action,
+        "attempts": [attempt.attemptEvidenceJson()]}, "wire")
+      check game.pendingAttempts[0].origin == aoUnknown
+      check game.hasPendingDecision
+
+  test "model response and separately submitted action must agree":
+    var config = defaultGameConfig()
+    config.seed = 17
+    for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
+    var game = GameState(config: config, match: initMatch(config), awaitingShot: true)
+    let seat = game.match.sim.itSeat
+    let targets = game.match.sim.validTargets(seat)
+    let response = %*{"shoot": game.match.sim.seats[targets[0]].name, "say": "public"}
+    let submitted = %*{"shoot": game.match.sim.seats[targets[1]].name, "say": "public"}
+    var attempt = newDecisionAttempt("native-model", "model", aoModel)
+    attempt.response = %($response)
+    expect ParleyError:
+      game.acceptExternalAction(seat, %*{"action": submitted,
+        "attempts": [attempt.attemptEvidenceJson()]}, "wire")
+    check not game.hasPendingDecision
+    check not game.pendingAttempts[0].accepted
+    check game.pendingAttempts[0].parsedAction["shoot"] == response["shoot"]
+
+  test "executed action comes from engine events even after fallback":
+    var config = defaultGameConfig()
+    config.seed = 17
+    for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
+    var game = GameState(config: config, match: initMatch(config))
+    let before = game.match.sim
+    let seat = before.itSeat
+    let targets = before.validTargets(seat)
+    game.trajectory = some(newDecisionTrajectory("engine-fallback", "parley-17", "parley",
+      "source-test", repeat('a', 40)))
+    let start = game.match.allEvents().len
+    game.match.sim.recordSay(seat, "actually spoken")
+    game.match.sim.applyShot(seat, targets[1], aimHip)
+    let outcome = DecisionResult(origin: "scripted_after_rejected_action",
+      decision: Decision(target: targets[0], say: "unused proposal", aim: aimHead))
+    game.recordDecision(before, seat, true, outcome, start, false, newJObject())
+    game.trajectory.get().finish(esCompleted, newJObject(), newJObject())
+    let executed = parseJson(game.trajectory.get().eventsJsonl().splitLines()[0])["executed_action"]
+    check executed["shoot"].getStr() == before.seats[targets[1]].name
+    check executed["say"].getStr() == "actually spoken"
+    check executed["aim"].getStr() == $aimHip

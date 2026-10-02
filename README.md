@@ -34,8 +34,9 @@ IT speaks to the table, then shoots one other living cog or passes.
 
 Ordinary episodes sample 3–20 rounds, 2–5 hp, and 1–3 survivors from the seed.
 The survivor count is capped below the seat count. Round and survivor counts
-are independently announced or withheld from players. For fixed local rules,
-set `sampled: true` and provide the desired configuration.
+are independently announced or withheld from players. The Qwen training/evaluation/inference program uses this ordinary five-seat
+`table5` environment. Fixed `sampled: true` fixtures are infrastructure diagnostics;
+see [the shared training guide](TRAINING.md).
 
 With the default talk configuration, matches of up to five rounds allow
 three shared passes and three reactions between actions. Matches of six to
@@ -81,7 +82,8 @@ bash tools/nim_local.sh r tests/test_scripted.nim  # player prompts
 bash tools/nim_local.sh r tests/test_server.nim    # private states and scoring
 nim c -d:release -o:bin/parley src/parley.nim
 nim c -d:release -o:bin/parley-player src/parley_player.nim
-# See tmp/config.json for a 4-seat fixture; run with COGAME_* env + 4 players.
+# Training, evaluation, and inference use the published five-seat table5 manifest.
+# Fixed certification fixtures test infrastructure only; see TRAINING.md.
 # Hosted games use COWORLD_LLM_ENDPOINT; local games can use ANTHROPIC_API_KEY.
 ```
 

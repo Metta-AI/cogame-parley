@@ -103,9 +103,7 @@ for mode in ["accepted", "retry", "fallback"]:
         COWORLD_LLM_ENDPOINT=f"http://127.0.0.1:{server.server_port}",
         COWORLD_LLM_MODEL="fixture/native",
         COWORLD_LLM_TEMPERATURE="0",
-        COWORLD_EPISODE_ID="fixture-" + mode,
-        COWORLD_GAME_VERSION="source-fixture",
-        COWORLD_SOURCE_REVISION=revision,
+        LLM_REQUEST_METADATA=json.dumps({"episode_request_id": "fixture-" + mode}),
     )
     with (folder / "game.log").open("w") as log:
         process = subprocess.Popen(

@@ -41,9 +41,8 @@ The private evidence records the actual model and native request settings.
 ## Hosted decision evidence
 
 The engine writes canonical private decision JSONL to
-`COGAME_SAVE_TRAJECTORY_URI` before uploading results. Capture requires
-`COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, and immutable
-`COWORLD_SOURCE_REVISION`, injected by the runtime. The artifact contains
+`COGAME_SAVE_TRAJECTORY_URI` before uploading results. Release images embed immutable source and game-version pins. Hosted episode identity comes from the runtime’s
+`LLM_REQUEST_METADATA.episode_request_id`; local runs generate an explicitly local identity. The artifact contains
 seat-private observations, every native attempt, exact prompts and requests,
 raw responses, platform response call IDs, parsed and executed actions,
 rejections, scripted fallbacks, and the completed or truncated terminal outcome.

@@ -14,7 +14,7 @@ parser.add_argument("--episode-id", required=True)
 parser.add_argument(
     "--output",
     type=Path,
-    help="Write supervised JSONL only for a full, fallback-free episode",
+    help="Write accepted model decisions from a complete episode",
 )
 parser.add_argument(
     "--seat", type=int, help="Export only this seat after verifying the whole episode"
@@ -138,8 +138,10 @@ for decision_id, (record, reference) in enumerate(
         )
 
 full_schedule = replay["results"]["rounds"] == replay["config"]["plannedRounds"]
-trainable = full_schedule and all(
-    ref["accepted"] and ref["origin"] in ("model", "external") for ref in references
+trainable = full_schedule and bool(rows) and all(
+    ref["accepted"]
+    and ref["origin"] in ("model", "external", "scripted_after_model_failure")
+    for ref in references
 )
 report = {
     "episode_id": args.episode_id,
@@ -152,7 +154,7 @@ report = {
 if args.output is not None:
     if not trainable:
         raise ValueError(
-            "Episode has fallback, rejected actions, or incomplete rounds; no SFT export"
+            "Episode has rejected actions, unsupported origins, no model labels, or incomplete rounds; no SFT export"
         )
     args.output.write_text(
         "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows)

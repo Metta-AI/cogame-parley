@@ -1,0 +1,40 @@
+name: Test training evidence
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned Nim dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/nimby" https://github.com/treeform/nimby/releases/download/0.1.26/nimby-Linux-X64
+          chmod +x "$HOME/.local/bin/nimby"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.nimby/nim/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/nimby" use 2.2.4
+          "$HOME/.local/bin/nimby" --global sync nimby.lock
+          rm -f nim.cfg
+          for pkg in "$HOME"/.nimby/pkgs/*; do
+            if [ -d "$pkg/src" ]; then echo "--path:\"$pkg/src\"" >> nim.cfg;
+            else echo "--path:\"$pkg\"" >> nim.cfg; fi
+          done
+          echo '--path:"src"' >> nim.cfg
+      - name: Run rules, player privacy, and scripted policy tests
+        run: |
+          set -euo pipefail
+          for test in tests/*.nim; do nim c -r -d:release --path:src "$test"; done
+      - uses: astral-sh/setup-uv@v6
+      - name: Verify real native requests, retries, fallbacks, and private artifacts
+        run: |
+          set -euo pipefail
+          nim c -d:release --threads:on --path:src -o:/tmp/parley-game src/parley.nim
+          uv run --no-project --with 'websockets==15.0.1' python tools/test_native_trajectory.py /tmp/parley-game "$RUNNER_TEMP/private-trajectory-proof" "$GITHUB_SHA"

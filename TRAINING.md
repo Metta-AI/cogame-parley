@@ -53,8 +53,11 @@ python tools/export_hosted_posttrain.py --replay /private/replay.json \
   --output /private/sft.jsonl
 ```
 
-The exporter verifies the whole episode before writing rows. Omit `--output`
-to inspect fallback origins and schedule completion without creating data.
+The exporter verifies the whole episode before writing rows. A completed game
+may contain a scripted fallback; its accepted model decisions still become
+rows, while fallback actions never enter the loss mask. The report keeps origin
+counts and original decision IDs so training can audit the mixed game. Omit
+`--output` to inspect origins and schedule completion without creating data.
 
 ## Scripted local export
 

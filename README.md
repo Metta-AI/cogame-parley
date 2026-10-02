@@ -90,7 +90,8 @@ nim c -d:release -o:bin/parley-player src/parley_player.nim
 Coworld packaging (from a metta checkout):
 
 ```bash
-uv run coworld build --project <this dir> --version 0.1.x
+PARLEY_SOURCE_REVISION=$(git rev-parse HEAD) PARLEY_GAME_VERSION=0.3.22 \
+  uv run coworld build --project <this dir> --version 0.3.22
 uv run coworld certify <this dir>/dist/coworld_manifest.json
 uv run coworld upload-coworld <this dir>/dist/coworld_manifest.json
 ```

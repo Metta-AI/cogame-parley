@@ -36,5 +36,5 @@ jobs:
       - name: Verify real native requests, retries, fallbacks, and private artifacts
         run: |
           set -euo pipefail
-          nim c -d:release --threads:on --path:src -o:/tmp/parley-game src/parley.nim
+          nim c -d:release --threads:on -d:ParleyGameVersion=source-fixture -d:ParleySourceRevision="$GITHUB_SHA" --path:src -o:/tmp/parley-game src/parley.nim
           uv run --no-project --with 'websockets==15.0.1' python tools/test_native_trajectory.py /tmp/parley-game "$RUNNER_TEMP/private-trajectory-proof" "$GITHUB_SHA"

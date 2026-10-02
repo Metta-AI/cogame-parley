@@ -23,7 +23,7 @@
 ##   external player -> game: {"type":"action","id":N,"action":{...}}
 
 import
-  std/[json, locks, options, os, sets, strutils, tables, times],
+  std/[json, locks, options, os, oids, sets, strutils, tables, times],
   bitworld/decision_trajectory,
   bitworld/runtime,
   curly,
@@ -35,6 +35,8 @@ import
 const
   MaxPromptLen = 4000
   ReplayVersion = 3
+  ParleySourceRevision {.strdefine.} = ""
+  ParleyGameVersion {.strdefine.} = ""
 
 type
   GameState = object
@@ -769,9 +771,13 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.scripted = newSeq[bool](config.players.len)
   state.promptSet = newSeq[bool](config.players.len)
   if getEnv(CogameSaveTrajectoryUriEnv).len > 0:
-    state.trajectory = some(newDecisionTrajectory(getEnv("COWORLD_EPISODE_ID"),
-      $config.seed, "parley", getEnv("COWORLD_GAME_VERSION"),
-      getEnv("COWORLD_SOURCE_REVISION")))
+    let metadata = getEnv("LLM_REQUEST_METADATA")
+    let episodeId = if metadata.len > 0:
+        parseJson(metadata)["episode_request_id"].getStr()
+      else:
+        "local-" & $genOid()
+    state.trajectory = some(newDecisionTrajectory(episodeId,
+      $config.seed, "parley", ParleyGameVersion, ParleySourceRevision))
   runtimeConfigGlobal = runtimeConfig
 
   let router = buildRouter(replayMode = false)

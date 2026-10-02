@@ -41,9 +41,8 @@ The private evidence records the actual model and native request settings.
 ## Hosted decision evidence
 
 The engine writes canonical private decision JSONL to
-`COGAME_SAVE_TRAJECTORY_URI` before uploading results. Capture requires
-`COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, and immutable
-`COWORLD_SOURCE_REVISION`, injected by the runtime. The artifact contains
+`COGAME_SAVE_TRAJECTORY_URI` before uploading results. Release images embed immutable source and game-version pins. Hosted episode identity comes from the runtime’s
+`LLM_REQUEST_METADATA.episode_request_id`; local runs generate an explicitly local identity. The artifact contains
 seat-private observations, every native attempt, exact prompts and requests,
 raw responses, platform response call IDs, parsed and executed actions,
 rejections, scripted fallbacks, and the completed or truncated terminal outcome.
@@ -64,21 +63,15 @@ Unattested external frames have unknown origin and do not become model labels.
 Two invalid prompt responses invoke the scripted fallback. Preserve failed
 attempts for audits; train only on accepted model or approved teacher targets.
 
-With the training-enabled Coworld SDK, qualify a downloaded artifact:
+Use Metta’s `metta-posttrain export-parley-native` command to convert reviewed complete five-seat episodes into SLIME
+inputs. Supply the published manifest, per-episode runtime configurations and private trajectories, independent provider
+archive, and content-bound decision approvals. The converter checks ordinary settings, episode/source pins, selected
+parsed actions against execution, exact native prompts and responses, provider call joins, and complete-family splits.
+Keep all attempts and fallbacks in private evidence; only explicitly approved model or teacher completions become labels.
+The pinned Coworld CLI does not supply `coworld training qualify` or `coworld training export`.
 
-```bash
-coworld training qualify /private/trajectory.jsonl --transport hosted
-coworld training export /private/trajectory.jsonl /private/qualified --transport hosted
-```
-
-The gate validates record evidence, including selected parsed-action equality
-with the executed action. Independently join platform call IDs against the
-private provider archive before claiming hosted provenance. Export keeps
-complete episodes; the application trainer selects policy and seat labels.
-Learner reinforcement learning also requires saved-weight, tokenizer, and
-chat-template identities plus actual sampled token likelihoods. Use
-`--objective rl` to reject missing sampling evidence. Greedy completions do not
-supply sampled likelihoods.
+Native SFT export does not qualify learner reinforcement learning. That requires saved-weight, tokenizer, and chat-template
+identities plus actual sampled-token likelihoods. Greedy completions do not supply sampled likelihoods.
 
 Evaluate with the same native renderer, parser, rules, and decoder. Split by
 complete episode; reserve fresh seeds and frozen opponents. Record validity,

@@ -124,6 +124,8 @@ jobs:
       - name: coworld build
         env:
           VERSION: ${{ inputs.version }}
+          PARLEY_GAME_VERSION: ${{ inputs.version }}
+          PARLEY_SOURCE_REVISION: ${{ github.sha }}
         run: |
           set -euo pipefail
           command -v docker

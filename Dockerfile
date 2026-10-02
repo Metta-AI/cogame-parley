@@ -31,6 +31,8 @@ WORKDIR /workspace/parley
 COPY nimby.lock .
 RUN nimby --global sync nimby.lock
 
+ARG PARLEY_SOURCE_REVISION
+ARG PARLEY_GAME_VERSION
 COPY . .
 # The repo nim.cfg pins the host machine's package paths; regenerate it from
 # the container's synced package tree.
@@ -40,7 +42,9 @@ RUN rm -f nim.cfg && \
     else echo "--path:\"$pkg\"" >> nim.cfg; fi; \
   done && \
   echo '--path:"src"' >> nim.cfg && \
+  test -n "$PARLEY_SOURCE_REVISION" && test -n "$PARLEY_GAME_VERSION" && \
   nim c -d:release -d:useMalloc --opt:speed --stackTrace:on \
+    -d:ParleySourceRevision="$PARLEY_SOURCE_REVISION" -d:ParleyGameVersion="$PARLEY_GAME_VERSION" \
     --nimcache:/tmp/parley-nimcache --out:parley src/parley.nim && \
   nim c -d:release -d:useMalloc --opt:speed --stackTrace:on \
     --nimcache:/tmp/parley-player-nimcache --out:parley-player \

@@ -1,63 +1,62 @@
 # Parley training
 
-Hosted prompt players call the Coworld LLM sidecar using the canonical
-`anthropic/claude-sonnet-4.6` model and attribute each call to its seat. The
-game uses the injected `COWORLD_LLM_ENDPOINT`; local play can still use
-`ANTHROPIC_API_KEY` or local Bedrock credentials. Do not add a provider secret
-to the hosted game manifest. Inspect `origin` in every v3 decision reference
-before using a rollout for training.
+Hosted prompt players use the injected `COWORLD_LLM_ENDPOINT`. Set
+`COWORLD_LLM_MODEL` to a registered `checkpoint/<identity>` for a frozen learner,
+or a platform-supported provider model. Hosted games need no provider secret.
+Local games can use Anthropic or Bedrock credentials outside hosted execution.
+`COWORLD_LLM_TEMPERATURE` selects temperature from zero to one; default one.
+The private evidence records the actual model and native request settings.
 
 ## Hosted decision evidence
 
-Replay protocol v3 records each decision's seat, phase, origin, canonical
-action, and before/after event offsets in `decisionRefs`. The replay also
-records planned rounds, reaction and pass settings, and terminal scores. These
-fields identify the exact game rules and the actions the server executed.
+The engine writes canonical private decision JSONL to
+`COGAME_SAVE_TRAJECTORY_URI` before uploading results. Capture requires
+`COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, and immutable
+`COWORLD_SOURCE_REVISION`, injected by the runtime. The artifact contains
+seat-private observations, every native attempt, exact prompts and requests,
+raw responses, platform response call IDs, parsed and executed actions,
+rejections, scripted fallbacks, and the completed or truncated terminal outcome.
+Local files are created privately with mode 0600.
 
-The exact player-facing input and response live in the **team-only game log**,
-as JSON lines prefixed `parley training: `. Prompt seats record the system and
-user messages of the successful attempt, the raw response, and any failed
-attempts. External seats record the exact observation packet and submitted
-wire frame. Scripted and timeout decisions record their origin. A training
-export must join these private records to the public replay by decision ID,
-verify the event offsets and action, and exclude fallback or rejected actions.
-Internal prompt-player responses must be a single JSON object. Prose or code
-fences trigger the existing retry, and two failed attempts trigger a scripted
-fallback. External players still submit structured action frames over the
-socket.
-Supervised completions are the exact accepted raw response for prompt players
-or the submitted action frame for external players. A model trained on external
-frames must use that same frame format during evaluation.
-External player observations now include `input.system` and `input.user`,
-rendered by the same server functions as hosted prompt-player calls. A Qwen
-player registers with `{"type":"register","control":"external","prompt":"..."}`,
-where `prompt` is the operator guidance used for the SFT comparison. The
-player can then use those messages directly and submit its parsed action frame.
-This preserves the training prompt without reimplementing the game rules in
-the player. Compare captured external packets to hosted prompt logs before
-claiming end-to-end inference parity.
-Operator prompts and raw model responses are deliberately absent from the
-public replay URL.
+Replay v3 carries decision IDs, origins, canonical actions, event offsets,
+round settings, and terminal scores. Operator guidance and model responses stay
+out of public replay bytes and standard output. Download the elevated
+`trajectory` artifact separately; public replay alone is insufficient for
+training.
 
-Use the same `src/parley/sim.nim` rules and sampled configuration for held-out
-evaluation. Split by complete episode and reserve fresh seeds and frozen
-opponents; leaderboard games used for SFT cannot be evaluation games. A replay
-alone is insufficient as a supervised label until its private log has been
-joined and verified.
+The production renderer and parser serve both prompt players and external
+players. External observations include `input.system` and `input.user`.
+Register with `{"type":"register","control":"external","prompt":"..."}`
+and submit the ordinary structured action frame. External players may include
+private native `attempts` evidence; the engine owns acceptance and execution.
+Unattested external frames have unknown origin and do not become model labels.
+Two invalid prompt responses invoke the scripted fallback. Preserve failed
+attempts for audits; train only on accepted model or approved teacher targets.
 
-After downloading one hosted replay and its elevated game-log artifact, run:
+With the training-enabled Coworld SDK, qualify a downloaded artifact:
 
 ```bash
-python tools/export_hosted_posttrain.py --replay /private/replay.json \
-  --game-log /private/game.log --episode-id ereq_... \
-  --output /private/sft.jsonl
+coworld training qualify /private/trajectory.jsonl --transport hosted
+coworld training export /private/trajectory.jsonl /private/qualified --transport hosted
 ```
 
-The exporter verifies the whole episode before writing rows. A completed game
-may contain a scripted fallback; its accepted model decisions still become
-rows, while fallback actions never enter the loss mask. The report keeps origin
-counts and original decision IDs so training can audit the mixed game. Omit
-`--output` to inspect origins and schedule completion without creating data.
+The gate validates record evidence, including selected parsed-action equality
+with the executed action. Independently join platform call IDs against the
+private provider archive before claiming hosted provenance. Export keeps
+complete episodes; the application trainer selects policy and seat labels.
+Learner reinforcement learning also requires saved-weight, tokenizer, and
+chat-template identities plus actual sampled token likelihoods. Use
+`--objective rl` to reject missing sampling evidence. Greedy completions do not
+supply sampled likelihoods.
+
+Evaluate with the same native renderer, parser, rules, and decoder. Split by
+complete episode; reserve fresh seeds and frozen opponents. Record validity,
+fallback rate, terminal scores, latency, and token cost. A lower imitation
+loss does not establish stronger play.
+
+`tools/export_hosted_posttrain.py` reads archived `parley training:` game logs
+from older releases. Current games emit the private trajectory artifact instead.
+Keep historical exports separate from current canonical trajectories.
 
 ## Scripted local export
 

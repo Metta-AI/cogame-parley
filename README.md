@@ -52,7 +52,7 @@ The live spectator socket is accessible to player containers, so it receives
 public information only: anonymous names, no cards or aim, and no hidden rules.
 Completed replays reveal cards, aim, and policy names to spectators.
 Replay v3 also carries decision IDs, accepted actions, origins, and event
-offsets. Exact prompts and raw responses are retained in team-only game logs;
+offsets. Exact prompts and raw responses are retained in private trajectory artifacts;
 see [training evidence](TRAINING.md#hosted-decision-evidence).
 Results are reported under policy names.
 

@@ -12,7 +12,8 @@
 ## certification still completes - this fallback is load-bearing.
 
 import
-  std/[json, os, random, strutils],
+  std/[json, options, os, random, strutils],
+  bitworld/decision_trajectory,
   bitworld/runtime,
   curly,
   sim
@@ -38,6 +39,7 @@ type
     input*: JsonNode
     response*: JsonNode
     attempts*: seq[JsonNode]
+    nativeAttempts*: seq[DecisionAttempt]
 
   LlmTransport = enum
     ltNone, ltSidecar, ltBedrock, ltAnthropic
@@ -53,6 +55,7 @@ type
     bedrockToken: string
     model: string
     maxOutputTokens: int
+    temperature: float
     timeoutSeconds: int
     disabled: bool    ## true once credentials are known-unavailable
     rand: seq[Rand]         ## independent scripted stream per seat
@@ -106,9 +109,12 @@ proc newLlmClient*(config: GameConfig): LlmClient =
   result = LlmClient(
     model: config.model,
     maxOutputTokens: config.maxOutputTokens,
+    temperature: parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "1")),
     timeoutSeconds: config.llmTimeoutSeconds,
     rand: newSeq[Rand](config.players.len)
   )
+  if not (result.temperature >= 0 and result.temperature <= 1):
+    raise newException(ValueError, "COWORLD_LLM_TEMPERATURE must be finite and between 0 and 1")
   for seat in 0 ..< config.players.len:
     result.rand[seat] = initRand(config.seed xor 0x5EED xor
       ((seat + 1) shl 16))
@@ -362,9 +368,11 @@ proc parseJsonObject*(text: string): JsonNode =
   if result.kind != JObject:
     raise newException(ParleyError, "response must be a JSON object")
 
-proc completeText(client: LlmClient, seat: int, system, user: string): string =
+proc completeText(client: LlmClient, seat: int, system, user: string,
+    evidence: var DecisionAttempt): string =
   var body = %*{
     "max_tokens": client.maxOutputTokens,
+    "temperature": client.temperature,
     "system": system,
     "messages": [{"role": "user", "content": user}]
   }
@@ -386,9 +394,25 @@ proc completeText(client: LlmClient, seat: int, system, user: string): string =
     headers["x-api-key"] = client.apiKey
     headers["anthropic-version"] = AnthropicVersion
     url = AnthropicUrl
+  evidence.request = copy(body)
+  evidence.model = some(client.model)
+  evidence.decoder = %*{"temperature": client.temperature,
+    "max_tokens": client.maxOutputTokens}
   let response = client.curl.post(
     url, headers, $body, client.timeoutSeconds
   )
+  evidence.rawResponse = %response.body
+  for (header, field) in [
+      ("x-softmax-llm-call-id", "call"),
+      ("x-coworld-checkpoint-sha256", "model"),
+      ("x-coworld-tokenizer-sha256", "tokenizer"),
+      ("x-coworld-chat-template-sha256", "template")]:
+    if response.headers[header].len > 0:
+      case field
+      of "call": evidence.platformCallId = some(response.headers[header])
+      of "model": evidence.modelIdentity = some(response.headers[header])
+      of "tokenizer": evidence.tokenizerIdentity = some(response.headers[header])
+      else: evidence.chatTemplateSha256 = some(response.headers[header])
   if response.code == 401 or response.code == 403:
     ## Bedrock answers "this account has no Marketplace subscription for that
     ## model" with the same 403 it uses for bad credentials, so distinguish
@@ -410,6 +434,24 @@ proc completeText(client: LlmClient, seat: int, system, user: string): string =
     raise newException(ParleyError,
       "anthropic error " & $response.code & ": " & response.body[0 .. min(response.body.high, 300)])
   let payload = parseJson(response.body)
+  evidence.rawResponse = payload
+  evidence.model = some(payload["model"].getStr())
+  evidence.stopReason = some(payload["stop_reason"].getStr())
+  evidence.inputTokens = some(payload["usage"]["input_tokens"].getInt())
+  evidence.outputTokens = some(payload["usage"]["output_tokens"].getInt())
+  if payload.hasKey("sampling_evidence") and payload["sampling_evidence"].kind != JNull:
+    let sampled = payload["sampling_evidence"]
+    var promptTokens, completionTokens: seq[int]
+    var probabilities: seq[float]
+    for token in sampled["prompt_token_ids"]: promptTokens.add(token.getInt())
+    for token in sampled["completion_token_ids"]: completionTokens.add(token.getInt())
+    if sampled["behavior_log_probs"].kind != JNull:
+      for probability in sampled["behavior_log_probs"]: probabilities.add(probability.getFloat())
+    evidence.promptTokenIds = some(promptTokens)
+    evidence.sampledTokenIds = some(completionTokens)
+    if sampled["behavior_log_probs"].kind != JNull:
+      evidence.behaviorLogprobs = some(probabilities)
+    evidence.stopReason = some(sampled["stop_reason"].getStr())
   echo "parley llm: usage model ", payload["model"].getStr(),
     " input_tokens ", payload["usage"]["input_tokens"].getInt(),
     " output_tokens ", payload["usage"]["output_tokens"].getInt()
@@ -455,6 +497,15 @@ proc parseDecision*(sim: Sim, seat: int, payload: JsonNode,
     if payload{"aim"}.getStr().strip().toLowerAscii() == "hip":
       result.aim = aimHip
 
+proc decisionAction*(sim: Sim, decision: Decision, wantShot: bool): JsonNode =
+  result = %*{"say": decision.say}
+  if wantShot:
+    if decision.skip:
+      result["shoot"] = %"pass"
+    else:
+      result["shoot"] = %sim.seats[decision.target].name
+      result["aim"] = %($decision.aim)
+
 proc decide*(
   client: LlmClient,
   sim: Sim,
@@ -481,19 +532,28 @@ proc decide*(
       user.add("\nYour previous reply was invalid. Respond with ONLY the " &
         "requested JSON object and a legal target.")
     var raw = ""
+    var evidence = newDecisionAttempt("attempt-" & $attempt, client.model, aoModel)
+    evidence.prompt = %*[{"role": "system", "content": system},
+      {"role": "user", "content": user}]
     try:
-      raw = client.completeText(seat, system, user)
+      raw = client.completeText(seat, system, user, evidence)
       let payload = parseJsonObject(raw)
       result.decision = parseDecision(sim, seat, payload, wantShot)
+      evidence.response = %raw
+      evidence.parsedAction = decisionAction(sim, result.decision, wantShot)
+      evidence.accepted = true
+      result.nativeAttempts.add(evidence)
       result.origin = "model"
       result.input = %*{"system": system, "user": user}
       result.response = %*{"raw": raw, "parsed": payload}
       return
     except CatchableError as error:
+      evidence.response = %raw
+      evidence.rejectionReason = some(error.msg)
+      result.nativeAttempts.add(evidence)
       result.attempts.add(%*{"system": system, "user": user,
         "raw": raw, "error": error.msg})
-      echo "parley llm: seat ", seat, " attempt ", attempt, " failed: ",
-        error.msg
+      echo "parley llm: seat ", seat, " attempt ", attempt, " failed"
       if client.disabled:
         break
   echo "parley llm: seat ", seat, " falling back to scripted decision"

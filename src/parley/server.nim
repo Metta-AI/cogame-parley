@@ -23,7 +23,8 @@
 ##   external player -> game: {"type":"action","id":N,"action":{...}}
 
 import
-  std/[json, locks, os, sets, strutils, tables, times],
+  std/[json, locks, options, os, sets, strutils, tables, times],
+  bitworld/decision_trajectory,
   bitworld/runtime,
   curly,
   mummy,
@@ -50,8 +51,10 @@ type
     pendingDecision: Decision
     pendingRawAction: JsonNode
     pendingRejected: seq[JsonNode]
+    pendingAttempts: seq[DecisionAttempt]
     hasPendingDecision: bool
     decisionRefs: seq[JsonNode]
+    trajectory: Option[DecisionTrajectory]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -186,6 +189,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
       state.awaitingShot = wantShot
       state.hasPendingDecision = false
       state.pendingRejected = @[]
+      state.pendingAttempts = @[]
       observation = state.externalObservation(sim, seat, prompt, wantShot,
         header, state.awaitingId)
       state.playerSockets[seat].send($observation)
@@ -222,7 +226,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
         origin: "external", input: %*{
           "packet": observation, "wire": $observation},
         response: state.pendingRawAction,
-        attempts: state.pendingRejected)
+        attempts: state.pendingRejected, nativeAttempts: state.pendingAttempts)
   result.decision =
     if wantShot: client.scriptedShot(sim, seat)
     else: client.scriptedReaction(sim, seat)
@@ -230,25 +234,12 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
   result.input = %*{"packet": observation, "wire": $observation}
   result.response = newJNull()
   result.attempts = state.pendingRejected
-
-proc evidenceJson(reference: JsonNode, outcome: DecisionResult): JsonNode =
-  %*{
-    "reference": reference,
-    "input": outcome.input,
-    "response": outcome.response,
-    "attempts": outcome.attempts
-  }
+  result.nativeAttempts = state.pendingAttempts
 
 proc recordDecision(gs: var GameState, sim: Sim, seat: int,
     wantShot: bool, outcome: DecisionResult, beforeEvent: int,
-    accepted: bool) =
-  var action = %*{"say": outcome.decision.say}
-  if wantShot:
-    if outcome.decision.skip:
-      action["shoot"] = %"pass"
-    else:
-      action["shoot"] = %sim.seats[outcome.decision.target].name
-      action["aim"] = %($outcome.decision.aim)
+    accepted: bool, observation: JsonNode) =
+  let action = decisionAction(sim, outcome.decision, wantShot)
   let reference = %*{
     "id": gs.decisionRefs.len + 1,
     "seat": seat,
@@ -260,7 +251,28 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
     "action": action
   }
   gs.decisionRefs.add(reference)
-  echo "parley training: ", $evidenceJson(reference, outcome)
+  if gs.trajectory.isSome:
+    var attempts = outcome.nativeAttempts
+    var selected = none(string)
+    let proposalAccepted = accepted and outcome.origin in ["model", "external"]
+    if proposalAccepted and outcome.origin == "external":
+      if attempts.len == 0 or attempts[^1].rejectionReason.isSome:
+        var external = newDecisionAttempt("external-action", "external", aoUnknown)
+        external.prompt = outcome.input
+        external.response = outcome.response
+        external.rawResponse = outcome.response
+        attempts.add(external)
+      attempts[^1].parsedAction = action
+      attempts[^1].accepted = true
+    if proposalAccepted:
+      selected = some(attempts[^1].attemptId)
+    elif attempts.len > 0 and attempts[^1].accepted:
+      attempts[^1].accepted = false
+      attempts[^1].rejectionReason = some("engine rejected proposal")
+    gs.trajectory.get().recordDecision($reference["id"].getInt(), $seat,
+      observation, attempts, selected, action,
+      (if proposalAccepted: asAccepted else: asFallback),
+      fallbackOrigin = (if proposalAccepted: none(string) else: some(outcome.origin)))
 
 proc broadcast() =
   withLock stateLock:
@@ -357,6 +369,12 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
 
   sleep(500)
   echo "parley: writing results and replay"
+  if state.trajectory.isSome:
+    let trajectory = state.trajectory.get()
+    trajectory.finish(
+      (if state.match.roundsPlayed == state.match.config.rounds: esCompleted else: esTruncated),
+      results, results["scores"])
+    trajectory.writeEventsToUri(getEnv(CogameSaveTrajectoryUriEnv))
   writeArtifact(
     runtimeConfig.resultsUri, $results, "application/json",
     "COGAME_RESULTS_METHOD"
@@ -419,6 +437,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var itPrompt: string
       var itScripted: bool
       var header: string
+      var shotObservation: JsonNode
       withLock stateLock:
         if state.match.done:
           break
@@ -427,6 +446,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         itPrompt = state.prompts[itSeat]
         itScripted = state.scripted[itSeat]
         header = state.match.matchHeader()
+        shotObservation = state.liveFrameJson(itSeat)
 
       ## The slow part (Sonnet) runs outside the lock on a snapshot; only
       ## this thread mutates the match, so the snapshot cannot go stale.
@@ -452,7 +472,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           shot.decision = fallback
           shot.origin = "scripted_after_rejected_action"
           accepted = false
-        state.recordDecision(simCopy, itSeat, true, shot, beforeEvent, accepted)
+        state.recordDecision(simCopy, itSeat, true, shot, beforeEvent, accepted, shotObservation)
         roundEnded = state.match.sim.done
         state.broadcastLocked()
 
@@ -490,11 +510,13 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           var reactionCopy: Sim
           var reactionPrompt: string
           var reactionScripted: bool
+          var reactionObservation: JsonNode
           withLock stateLock:
             reactionCopy = state.match.decisionSim()
             reactionPrompt = state.prompts[seat]
             reactionScripted = state.scripted[seat]
             header = state.match.matchHeader()
+            reactionObservation = state.liveFrameJson(seat)
           let reaction = client.decideSeat(reactionCopy, seat, reactionPrompt,
             wantShot = false, header = header, scripted = reactionScripted, playDeadline = playDeadline)
           withLock stateLock:
@@ -502,7 +524,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             if reaction.decision.say.len > 0:
               state.match.sim.recordSay(seat, reaction.decision.say)
               state.broadcastLocked()
-            state.recordDecision(reactionCopy, seat, false, reaction, beforeEvent, true)
+            state.recordDecision(reactionCopy, seat, false, reaction, beforeEvent, true, reactionObservation)
           if config.turnDelayMs > 0 and
               (playDeadline == 0.0 or epochTime() < playDeadline):
             sleep(config.turnDelayMs div 2)
@@ -641,6 +663,9 @@ proc websocketHandler(
             if state.external[slot] and state.awaitingSeat == slot and
                 state.awaitingId == payload["id"].getInt() and
                 not state.hasPendingDecision:
+              if payload.hasKey("attempts"):
+                for evidence in payload["attempts"]:
+                  state.pendingAttempts.add(readAttemptEvidence(evidence))
               state.pendingDecision = parseDecision(state.match.sim, slot,
                 payload["action"], state.awaitingShot)
               state.pendingRawAction = %*{
@@ -665,7 +690,16 @@ proc websocketHandler(
           if state.awaitingSeat == slot:
             state.pendingRejected.add(%*{
               "wire": message.data, "error": error.msg})
-        echo "parley: ignoring bad player frame: ", error.msg
+            if state.pendingAttempts.len == 0 or state.pendingAttempts[^1].rejectionReason.isSome:
+              var rejected = newDecisionAttempt("external-rejected-" & $state.pendingRejected.len,
+                "external", aoUnknown)
+              rejected.response = %message.data
+              rejected.rejectionReason = some(error.msg)
+              state.pendingAttempts.add(rejected)
+            else:
+              state.pendingAttempts[^1].accepted = false
+              state.pendingAttempts[^1].rejectionReason = some(error.msg)
+        echo "parley: rejected player frame for seat ", slot
     of ErrorEvent:
       discard
     of CloseEvent:
@@ -734,6 +768,10 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.awaitingSeat = -1
   state.scripted = newSeq[bool](config.players.len)
   state.promptSet = newSeq[bool](config.players.len)
+  if getEnv(CogameSaveTrajectoryUriEnv).len > 0:
+    state.trajectory = some(newDecisionTrajectory(getEnv("COWORLD_EPISODE_ID"),
+      $config.seed, "parley", getEnv("COWORLD_GAME_VERSION"),
+      getEnv("COWORLD_SOURCE_REVISION")))
   runtimeConfigGlobal = runtimeConfig
 
   let router = buildRouter(replayMode = false)

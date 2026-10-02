@@ -238,10 +238,45 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
   result.attempts = state.pendingRejected
   result.nativeAttempts = state.pendingAttempts
 
+proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
+    wire: string) =
+  if payload.hasKey("attempts"):
+    for envelope in payload["attempts"]:
+      var evidence = readAttemptEvidence(envelope)
+      if evidence.origin in {aoTeacher, aoHuman}: evidence.origin = aoUnknown
+      gs.pendingAttempts.add(evidence)
+  let proposal = parseDecision(gs.match.sim, seat, payload["action"], gs.awaitingShot)
+  let canonical = decisionAction(gs.match.sim, proposal, gs.awaitingShot)
+  if gs.pendingAttempts.len > 0 and gs.pendingAttempts[^1].origin == aoModel:
+    let generated = parseDecision(gs.match.sim, seat,
+      parseJsonObject(gs.pendingAttempts[^1].response.getStr()), gs.awaitingShot)
+    gs.pendingAttempts[^1].parsedAction = decisionAction(gs.match.sim, generated, gs.awaitingShot)
+    if gs.pendingAttempts[^1].parsedAction != canonical:
+      raise newException(ParleyError, "model response differs from submitted action")
+  gs.pendingDecision = proposal
+  gs.pendingRawAction = %*{"wire": wire, "action": payload["action"]}
+  gs.hasPendingDecision = true
+
 proc recordDecision(gs: var GameState, sim: Sim, seat: int,
     wantShot: bool, outcome: DecisionResult, beforeEvent: int,
     accepted: bool, observation: JsonNode) =
-  let action = decisionAction(sim, outcome.decision, wantShot)
+  var action = %*{"say": ""}
+  var shotApplied = false
+  let events = gs.match.allEvents()
+  for index in beforeEvent ..< events.len:
+    let event = events[index]
+    if event.seat != seat: continue
+    case event.kind
+    of evSay: action["say"] = %event.text
+    of evSkip:
+      action["shoot"] = %"pass"
+      shotApplied = true
+    of evShot:
+      action["shoot"] = %sim.seats[event.target].name
+      action["aim"] = %($event.aim)
+      shotApplied = true
+    else: discard
+  doAssert not wantShot or shotApplied, "engine emitted no applied shot or skip"
   let reference = %*{
     "id": gs.decisionRefs.len + 1,
     "seat": seat,
@@ -264,7 +299,8 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
         external.response = outcome.response
         external.rawResponse = outcome.response
         attempts.add(external)
-      attempts[^1].parsedAction = action
+      if attempts[^1].origin != aoModel:
+        attempts[^1].parsedAction = decisionAction(sim, outcome.decision, wantShot)
       attempts[^1].accepted = true
     if proposalAccepted:
       selected = some(attempts[^1].attemptId)
@@ -665,14 +701,7 @@ proc websocketHandler(
             if state.external[slot] and state.awaitingSeat == slot and
                 state.awaitingId == payload["id"].getInt() and
                 not state.hasPendingDecision:
-              if payload.hasKey("attempts"):
-                for evidence in payload["attempts"]:
-                  state.pendingAttempts.add(readAttemptEvidence(evidence))
-              state.pendingDecision = parseDecision(state.match.sim, slot,
-                payload["action"], state.awaitingShot)
-              state.pendingRawAction = %*{
-                "wire": message.data, "action": payload["action"]}
-              state.hasPendingDecision = true
+              state.acceptExternalAction(slot, payload, message.data)
           return
         if payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()

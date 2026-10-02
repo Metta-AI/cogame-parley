@@ -21,6 +21,10 @@ attempts. External seats record the exact observation packet and submitted
 wire frame. Scripted and timeout decisions record their origin. A training
 export must join these private records to the public replay by decision ID,
 verify the event offsets and action, and exclude fallback or rejected actions.
+Internal prompt-player responses must be a single JSON object. Prose or code
+fences trigger the existing retry, and two failed attempts trigger a scripted
+fallback. External players still submit structured action frames over the
+socket.
 Supervised completions are the exact accepted raw response for prompt players
 or the submitted action frame for external players. A model trained on external
 frames must use that same frame format during evaluation.

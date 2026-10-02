@@ -2,6 +2,11 @@ import std/unittest
 include ../src/parley/server
 
 suite "player state":
+  test "internal model actions reject prose around JSON":
+    check parseJsonObject("  {\"say\": \"truce\"}  ")["say"].getStr() == "truce"
+    expect JsonParsingError:
+      discard parseJsonObject("I choose {\"say\": \"truce\"}")
+
   test "disconnected external seats never switch to the internal model":
     var config = defaultGameConfig()
     config.seed = 17

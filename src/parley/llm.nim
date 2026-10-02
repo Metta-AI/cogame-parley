@@ -356,13 +356,11 @@ proc userPrompt*(
   else:
     result.add(reactionInstruction())
 
-proc extractJsonObject(text: string): JsonNode =
-  ## Pulls the first {...} object out of a model response, tolerating fences.
-  let start = text.find('{')
-  let stop = text.rfind('}')
-  if start < 0 or stop <= start:
-    raise newException(ParleyError, "no JSON object in response")
-  parseJson(text[start .. stop])
+proc parseJsonObject*(text: string): JsonNode =
+  ## Training labels must contain only the requested action object.
+  result = parseJson(text)
+  if result.kind != JObject:
+    raise newException(ParleyError, "response must be a JSON object")
 
 proc completeText(client: LlmClient, seat: int, system, user: string): string =
   var body = %*{
@@ -485,7 +483,7 @@ proc decide*(
     var raw = ""
     try:
       raw = client.completeText(seat, system, user)
-      let payload = extractJsonObject(raw)
+      let payload = parseJsonObject(raw)
       result.decision = parseDecision(sim, seat, payload, wantShot)
       result.origin = "model"
       result.input = %*{"system": system, "user": user}

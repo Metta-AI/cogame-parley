@@ -125,21 +125,34 @@ suite "player state":
     let target = game.match.sim.validTargets(seat)[0]
     let before = game.match.allEvents().len
     let context = game.match.decisionSim()
+    let privateObservation = game.liveFrameJson(seat)
+    game.trajectory = some(newDecisionTrajectory("episode-1", $config.seed,
+      "parley", "1.0.0", repeat('a', 40)))
     let outcome = DecisionResult(
       decision: Decision(say: "Truce?", target: target, aim: aimHip),
       origin: "model",
       input: %*{"system": "private rules", "user": "secret operator prompt"},
-      response: %*{"raw": "model response"}
+      response: %*{"raw": "model response"},
+      nativeAttempts: @[DecisionAttempt(attemptId: "a0", policy: "model", origin: aoModel,
+        prompt: %*[{"role": "user", "content": "secret operator prompt"}],
+        request: %*{"messages": [{"role": "user", "content": "secret operator prompt"}]},
+        response: %"model response", rawResponse: %*{"content": "model response"},
+        decoder: %*{"temperature": 0},
+        parsedAction: %*{"say": "Truce?", "shoot": game.match.sim.seats[target].name, "aim": "hip"},
+        accepted: true)]
     )
     game.match.sim.recordSay(seat, outcome.decision.say)
     game.match.sim.applyShot(seat, target, outcome.decision.aim)
-    game.recordDecision(context, seat, true, outcome, before, true)
+    game.recordDecision(context, seat, true, outcome, before, true, privateObservation)
     let replay = parseJson(game.replayPayload(game.match.resultsJson()))
     let reference = replay["decisionRefs"][0]
     check reference["eventBefore"].getInt() == before
     check reference["eventAfter"].getInt() == replay["events"].len
     check reference["action"]["aim"].getStr() == "hip"
     check "secret operator prompt" notin $replay
-    let privateEvidence = evidenceJson(reference, outcome)
-    check privateEvidence["input"]["user"].getStr() == "secret operator prompt"
-    check privateEvidence["response"]["raw"].getStr() == "model response"
+    game.trajectory.get().finish(esCompleted, game.match.resultsJson(), newJNull())
+    let privateEvidence = parseJson(game.trajectory.get().eventsJsonl().splitLines()[0])
+    check privateEvidence["attempts"][0]["prompt"][0]["content"].getStr() == "secret operator prompt"
+    check privateEvidence["attempts"][0]["response"].getStr() == "model response"
+    check privateEvidence["executed_action"] == privateEvidence["attempts"][0]["parsed_action"]
+    check privateEvidence["observation"] == privateObservation

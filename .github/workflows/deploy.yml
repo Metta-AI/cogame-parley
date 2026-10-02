@@ -34,7 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  COWORLD_CLI_VERSION: "0.1.47" # PyPI `coworld`; pinned so CI never depends on a metta checkout
+  COWORLD_CLI_VERSION: "0.1.56" # PyPI `coworld`; pinned so CI never depends on a metta checkout
   COWORLD_NAME: parley # game.name in coworld_manifest_template.json (not the repo name)
   COWORLD_PROJECT: .
   SOFTMAX_API_SERVER: https://softmax.com/api

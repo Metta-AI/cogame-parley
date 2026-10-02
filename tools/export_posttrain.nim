@@ -21,7 +21,7 @@ when isMainModule:
   let sourceRevision = execProcess("git rev-parse HEAD").strip()
   let manifest = parseFile("coworld_manifest_template.json")
   let variant = manifest["variants"][0]
-  doAssert variant["id"].getStr() == "table4"
+  doAssert variant["id"].getStr() == "table5"
   var
     trainRows: seq[string]
     validationRows: seq[string]
@@ -51,8 +51,8 @@ when isMainModule:
       doAssert parsed.say == shot.say and parsed.target == shot.target and
         parsed.aim == shot.aim and not parsed.skip
       rows.add($(%*{
-        "episode_id": "parley-table4-" & $seed,
-        "seed": "parley-table4-" & $seed,
+        "episode_id": "parley-table5-" & $seed,
+        "seed": "parley-table5-" & $seed,
         "decision_id": rows.len,
         "prompt": [
           {"role": "system", "content": systemPrompt(sim, seat)},
@@ -82,8 +82,8 @@ when isMainModule:
           let parsedReaction = parseDecision(match.sim, other, reply, false)
           doAssert parsedReaction.say == reaction.say
           rows.add($(%*{
-            "episode_id": "parley-table4-" & $seed,
-            "seed": "parley-table4-" & $seed,
+            "episode_id": "parley-table5-" & $seed,
+            "seed": "parley-table5-" & $seed,
             "decision_id": rows.len,
             "prompt": [
               {"role": "system", "content": systemPrompt(match.sim, other)},
@@ -108,7 +108,7 @@ when isMainModule:
   writeFile(output / "manifest.json", pretty(%*{
     "schema_version": 1,
     "game": "parley",
-    "variant": "table4",
+    "variant": "table5",
     "source_revision": sourceRevision,
     "teacher": "scripted-shot-and-reaction",
     "operator_prompt": OperatorPrompt,

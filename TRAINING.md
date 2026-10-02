@@ -1,7 +1,8 @@
 # Five-seat Coworld Parley training and evaluation
 
-Use the published Coworld manifest's `table4` variant for collection, training data, held-out evaluation, and saved-model
-inference. Despite its historical name, `table4` has five seats. The manifest is the authoritative configuration;
+Use the Coworld manifest's five-seat `table5` variant for collection, training data, held-out evaluation, and saved-model
+inference. Publish and qualify a new release before collecting under this ID; older immutable releases retain `table4`.
+The manifest is the authoritative configuration;
 `src/parley/sim.nim`, `server.nim`, and `llm.nim` own rules, prompts, action validation, and score semantics.
 
 Use ordinary seed-driven sampling (`sampled: false`): 3–20 rounds, 2–5 hit points, 1–3 survivors, and independently
@@ -90,7 +91,7 @@ Keep historical exports separate from current canonical trajectories.
 
 ## Scripted diagnostic collection
 
-`tools/export_posttrain.nim` reads the manifest's five-seat `table4` configuration and exercises the native rules and
+`tools/export_posttrain.nim` reads the manifest's five-seat `table5` configuration and exercises the native rules and
 hosted reply parser with scripted players. Its data establishes simulator execution and scripted imitation;
 it is not approved model-teacher data for the Qwen program. The retired `metta_posttrain.train` command and the
 four-seat Metta bridge are not program entry points. Use reviewed accepted model decisions from the shared Coworld

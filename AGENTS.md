@@ -30,11 +30,12 @@ vendored/third-party code or Metta, Fabric, Fabric Research, or Polyworld.
   NEVER delete, prune, rotate, truncate, rewrite or move any of them. Do not
   redirect coding-agent storage to temporary directories.
 - This policy does not authorize cleanup. Leave existing artifacts, other
-  tasks' outputs and the user's Dota2 allocation untouched.
+  tasks' outputs untouched.
 - For AGENTS.md-only changes, use documentation checks (`git diff --check`
   and diff review); do not run game builds, dependency sync or populate global
   build/dependency caches.
-- Repository-specific diagnostic reference: `tools/test_native_trajectory.py` takes an explicit fresh
+- Repository-specific diagnostic reference:
+  `tools/test_native_trajectory.py` takes an explicit fresh
   private output directory and writes per-mode `game.log`, results, replay,
   trajectory and `report.json`. Honor that directory; retained native-call
   trajectory/proof evidence is not disposable QA output.

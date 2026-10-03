@@ -260,23 +260,7 @@ proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
 proc recordDecision(gs: var GameState, sim: Sim, seat: int,
     wantShot: bool, outcome: DecisionResult, beforeEvent: int,
     accepted: bool, observation: JsonNode) =
-  var action = %*{"say": ""}
-  var shotApplied = false
-  let events = gs.match.allEvents()
-  for index in beforeEvent ..< events.len:
-    let event = events[index]
-    if event.seat != seat: continue
-    case event.kind
-    of evSay: action["say"] = %event.text
-    of evSkip:
-      action["shoot"] = %"pass"
-      shotApplied = true
-    of evShot:
-      action["shoot"] = %sim.seats[event.target].name
-      action["aim"] = %($event.aim)
-      shotApplied = true
-    else: discard
-  doAssert not wantShot or shotApplied, "engine emitted no applied shot or skip"
+  let action = appliedDecisionAction(sim, gs.match.allEvents(), beforeEvent, seat, wantShot)
   let reference = %*{
     "id": gs.decisionRefs.len + 1,
     "seat": seat,

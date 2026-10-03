@@ -85,7 +85,7 @@ Keep historical exports separate from current canonical trajectories.
 ## Scripted diagnostic collection
 
 `tools/export_posttrain.nim` reads the manifest's five-seat `table5` configuration and exercises the native rules and
-hosted reply parser with scripted players. Its data establishes simulator execution and scripted imitation;
+hosted reply parser with scripted players. It writes private canonical complete episodes, with engine-event actions, exact prompts, outcomes, and source/mode pins. The shared importer owns family splits and explicit teacher selection. Its data establishes simulator execution and scripted imitation;
 it is not approved model-teacher data for the Qwen program. The retired `metta_posttrain.train` command and the
 four-seat Metta bridge are not program entry points. Use reviewed accepted model decisions from the shared Coworld
 runtime and the Metta five-seat guide for new training.

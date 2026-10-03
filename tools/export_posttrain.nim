@@ -1,7 +1,8 @@
 ## Export complete Parley matches as Metta post-training examples.
 ## Usage: nim r --path:src tools/export_posttrain.nim OUTPUT MATCHES [FIRST_SEED]
 
-import std/[json, os, osproc, strutils]
+import std/[json, options, os, osproc, strutils]
+import bitworld/decision_trajectory
 import parley/[llm, sim]
 
 const OperatorPrompt = "Survive each round, protect your secret friend, and eliminate your secret enemy when you can."
@@ -17,15 +18,15 @@ when isMainModule:
     quit("at least ten matches and a positive first seed are required", 1)
   if dirExists(output) or fileExists(output):
     quit("output already exists: " & output, 1)
+  doAssert execProcess("git status --porcelain").strip().len == 0,
+    "Commit the qualified source before generating a pinned training corpus"
   createDir(output)
+  setFilePermissions(output, {fpUserRead, fpUserWrite, fpUserExec})
   let sourceRevision = execProcess("git rev-parse HEAD").strip()
   let manifest = parseFile("coworld_manifest_template.json")
   let variant = manifest["variants"][0]
   doAssert variant["id"].getStr() == "table5"
-  var
-    trainRows: seq[string]
-    validationRows: seq[string]
-    runs = newJArray()
+  var runs = newJArray()
   for seed in firstSeed ..< firstSeed + matches:
     var config = defaultGameConfig()
     let runtimeConfig = copy(variant["game_config"])
@@ -38,7 +39,10 @@ when isMainModule:
     config = sampleEpisode(config)
     var match = initMatch(config)
     let client = newLlmClient(config)
-    var rows: seq[string]
+    let episodeId = "parley-table5-" & $seed
+    let trajectory = newDecisionTrajectory(episodeId, "parley-" & $seed,
+      "parley", "source-" & sourceRevision, sourceRevision)
+    var decisionIndex = 0
     while not match.done:
       let sim = match.decisionSim()
       let seat = sim.itSeat
@@ -50,21 +54,22 @@ when isMainModule:
       let parsed = parseDecision(sim, seat, completion, true)
       doAssert parsed.say == shot.say and parsed.target == shot.target and
         parsed.aim == shot.aim and not parsed.skip
-      rows.add($(%*{
-        "episode_id": "parley-table5-" & $seed,
-        "seed": "parley-table5-" & $seed,
-        "decision_id": rows.len,
-        "prompt": [
-          {"role": "system", "content": systemPrompt(sim, seat)},
-          {"role": "user", "content": userPrompt(sim, seat,
-            OperatorPrompt, true, header)}
-        ],
-        "completion": [{"role": "assistant", "content": $completion}],
-        "game": "parley",
-        "action_schema_revision": "parley-shot-reaction-v1"
-      }))
+      var attempt = newDecisionAttempt(episodeId & "-" & $decisionIndex,
+        "scripted-shot-and-reaction", aoTeacher)
+      attempt.prompt = %*[
+        {"role": "system", "content": systemPrompt(sim, seat)},
+        {"role": "user", "content": userPrompt(sim, seat, OperatorPrompt, true, header)}]
+      attempt.response = %($completion)
+      attempt.rawResponse = copy(completion)
+      attempt.parsedAction = decisionAction(sim, parsed, true)
+      attempt.accepted = true
+      let beforeEvent = match.allEvents().len
       match.sim.recordSay(seat, parsed.say)
       match.sim.applyShot(seat, parsed.target, parsed.aim)
+      let action = appliedDecisionAction(sim, match.allEvents(), beforeEvent, seat, true)
+      trajectory.recordDecision($decisionIndex, $seat, copy(attempt.prompt), @[attempt],
+        some(attempt.attemptId), action, asAccepted)
+      inc decisionIndex
       if match.sim.done:
         match.finishRound()
       elif config.reactions:
@@ -81,39 +86,41 @@ when isMainModule:
           let reply = %*{"say": reaction.say}
           let parsedReaction = parseDecision(match.sim, other, reply, false)
           doAssert parsedReaction.say == reaction.say
-          rows.add($(%*{
-            "episode_id": "parley-table5-" & $seed,
-            "seed": "parley-table5-" & $seed,
-            "decision_id": rows.len,
-            "prompt": [
-              {"role": "system", "content": systemPrompt(match.sim, other)},
-              {"role": "user", "content": userPrompt(match.decisionSim(), other,
-                OperatorPrompt, false, match.matchHeader())}
-            ],
-            "completion": [{"role": "assistant", "content": $reply}],
-            "game": "parley",
-            "action_schema_revision": "parley-shot-reaction-v1"
-          }))
+          let before = match.decisionSim()
+          var attempt = newDecisionAttempt(episodeId & "-" & $decisionIndex,
+            "scripted-shot-and-reaction", aoTeacher)
+          attempt.prompt = %*[
+            {"role": "system", "content": systemPrompt(before, other)},
+            {"role": "user", "content": userPrompt(before, other,
+              OperatorPrompt, false, match.matchHeader())}]
+          attempt.response = %($reply)
+          attempt.rawResponse = copy(reply)
+          attempt.parsedAction = decisionAction(before, parsedReaction, false)
+          attempt.accepted = true
+          let beforeEvent = match.allEvents().len
           match.sim.recordSay(other, parsedReaction.say)
-    doAssert match.roundsPlayed == config.rounds and rows.len > 0
+          let action = appliedDecisionAction(before, match.allEvents(), beforeEvent, other, false)
+          trajectory.recordDecision($decisionIndex, $other, copy(attempt.prompt), @[attempt],
+            some(attempt.attemptId), action, asAccepted)
+          inc decisionIndex
+    doAssert match.roundsPlayed == config.rounds and decisionIndex > 0
     let outcome = match.resultsJson()
-    if seed mod 5 == 0:
-      validationRows.add(rows)
-    else:
-      trainRows.add(rows)
-    runs.add(%*{"seed": seed, "decisions": rows.len,
-      "scores": outcome["scores"], "rounds_played": match.roundsPlayed})
-  writeFile(output / "train.jsonl", trainRows.join("\n") & "\n")
-  writeFile(output / "validation.jsonl", validationRows.join("\n") & "\n")
-  writeFile(output / "manifest.json", pretty(%*{
+    var participants = newJObject()
+    for seat in 0 ..< outcome["scores"].len: participants[$seat] = outcome["scores"][seat]
+    trajectory.finish(esCompleted, outcome, participants)
+    trajectory.writeCompleteEpisode(output / (episodeId & ".jsonl"))
+    runs.add(%*{"seed": seed, "seed_family": "parley-" & $seed,
+      "decisions": decisionIndex, "scores": outcome["scores"],
+      "rounds_played": match.roundsPlayed})
+  writePrivate(output / "manifest.json", pretty(%*{
     "schema_version": 1,
     "game": "parley",
     "variant": "table5",
     "source_revision": sourceRevision,
     "teacher": "scripted-shot-and-reaction",
     "operator_prompt": OperatorPrompt,
-    "train_examples": trainRows.len,
-    "validation_examples": validationRows.len,
+    "format": "coworld-private-complete-episodes-v1",
+    "dataset_export": "shared importer owns seed-family splits and target selection",
     "runs": runs
   }) & "\n")
-  echo "train=", trainRows.len, " validation=", validationRows.len
+  echo "complete private episodes=", matches

@@ -43,10 +43,10 @@ RUN rm -f nim.cfg && \
   done && \
   echo '--path:"src"' >> nim.cfg && \
   test -n "$PARLEY_SOURCE_REVISION" && test -n "$PARLEY_GAME_VERSION" && \
-  nim c -d:release -d:useMalloc --opt:speed --stackTrace:on \
+  nim c --parallelBuild:1 -d:release -d:useMalloc --opt:speed --stackTrace:on \
     -d:ParleySourceRevision="$PARLEY_SOURCE_REVISION" -d:ParleyGameVersion="$PARLEY_GAME_VERSION" \
     --nimcache:/tmp/parley-nimcache --out:parley src/parley.nim && \
-  nim c -d:release -d:useMalloc --opt:speed --stackTrace:on \
+  nim c --parallelBuild:1 -d:release -d:useMalloc --opt:speed --stackTrace:on \
     --nimcache:/tmp/parley-player-nimcache --out:parley-player \
     src/parley_player.nim
 

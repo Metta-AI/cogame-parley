@@ -60,7 +60,6 @@ when isMainModule:
         {"role": "system", "content": systemPrompt(sim, seat)},
         {"role": "user", "content": userPrompt(sim, seat, OperatorPrompt, true, header)}]
       attempt.response = %($completion)
-      attempt.rawResponse = copy(completion)
       attempt.parsedAction = decisionAction(sim, parsed, true)
       attempt.accepted = true
       let beforeEvent = match.allEvents().len
@@ -94,7 +93,6 @@ when isMainModule:
             {"role": "user", "content": userPrompt(before, other,
               OperatorPrompt, false, match.matchHeader())}]
           attempt.response = %($reply)
-          attempt.rawResponse = copy(reply)
           attempt.parsedAction = decisionAction(before, parsedReaction, false)
           attempt.accepted = true
           let beforeEvent = match.allEvents().len

@@ -84,7 +84,7 @@ nim c -d:release -o:bin/parley src/parley.nim
 nim c -d:release -o:bin/parley-player src/parley_player.nim
 # Training, evaluation, and inference use the published five-seat table5 manifest.
 # Fixed certification fixtures test infrastructure only; see TRAINING.md.
-# Hosted games use COWORLD_LLM_ENDPOINT; local games can use ANTHROPIC_API_KEY.
+# Hosted and local native games use COWORLD_LLM_ENDPOINT; no provider fallback.
 ```
 
 Coworld packaging (from a metta checkout):

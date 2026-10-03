@@ -88,7 +88,7 @@ proc defaultGameConfig*(): GameConfig =
     turnDelayMs: 1200,
     playerConnectTimeoutSeconds: 180,
     episodeTimeoutSeconds: 20 * 60,
-    model: "claude-sonnet-5",
+    model: "anthropic/claude-sonnet-4.6",
     maxOutputTokens: 300,
     llmTimeoutSeconds: 45
   )

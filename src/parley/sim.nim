@@ -366,6 +366,26 @@ proc initMatch*(config: GameConfig): Match =
     killsTotal: newSeq[int](normalized.players.len)
   )
 
+proc appliedDecisionAction*(sim: Sim, events: seq[GameEvent], beforeEvent: int,
+    seat: int, wantShot: bool): JsonNode =
+  ## Recover the applied language action from authoritative engine events.
+  result = %*{"say": ""}
+  var shotApplied = false
+  for index in beforeEvent ..< events.len:
+    let event = events[index]
+    if event.seat != seat: continue
+    case event.kind
+    of evSay: result["say"] = %event.text
+    of evSkip:
+      result["shoot"] = %"pass"
+      shotApplied = true
+    of evShot:
+      result["shoot"] = %sim.seats[event.target].name
+      result["aim"] = %($event.aim)
+      shotApplied = true
+    else: discard
+  doAssert not wantShot or shotApplied, "engine emitted no applied shot or skip"
+
 proc allEvents*(match: Match): seq[GameEvent] =
   match.history & match.sim.events
 

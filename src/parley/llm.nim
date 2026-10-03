@@ -362,11 +362,10 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
     client.budgetExhausted[seat] = true
     raise newException(ParleyError, "seat LLM spend limit exhausted")
   if status == 429:
-    let detail = response.bodyBytes[0 .. min(response.bodyBytes.high, 300)]
-    raise newException(ParleyError, "llm throttled (429): " & detail)
+    raise newException(ParleyError, "llm throttled (429)")
   if status < 200 or status >= 300:
     raise newException(ParleyError,
-      "native inference error " & $status & ": " & response.bodyBytes[0 .. min(response.bodyBytes.high, 300)])
+      "native inference error " & $status)
   if validateUtf8(response.bodyBytes) != -1:
     raise newException(ParleyError, "native response is not valid UTF-8")
   let payload = parseJson(response.bodyBytes)

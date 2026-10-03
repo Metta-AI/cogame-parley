@@ -24,10 +24,12 @@ root = Path(output)
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
 reports = []
 for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
-             "interrupted-started-term", "interrupted-partial-term", "interrupted-partial-int", "runtime-failure"]:
+             "interrupted-started-term", "interrupted-partial-term", "interrupted-partial-int", "runtime-failure",
+             "artifact-http", "interrupted-partial-http-term", "artifact-upload-failure"]:
     folder = root / mode
     folder.mkdir(mode=0o700)
     requests = []
+    uploads = []
     entered = threading.Event()
     release = threading.Event()
     seat_calls = [0] * 4
@@ -36,7 +38,24 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
         def log_message(self, *_):
             pass
 
+        def receive_artifact(self):
+            name = self.path.removeprefix("/artifacts/")
+            assert name in {"trajectory.jsonl", "results.json", "replay.json"}
+            data = self.rfile.read(int(self.headers["Content-Length"]))
+            uploads.append({"name": name, "method": self.command, "bytes": len(data)})
+            with os.fdopen(os.open(folder / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+                stream.write(data)
+            self.send_response(503 if mode == "artifact-upload-failure" else 200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_PUT(self):
+            self.receive_artifact()
+
         def do_POST(self):
+            if self.path.startswith("/artifacts/"):
+                self.receive_artifact()
+                return
             assert self.path == "/v1/messages"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             user = body["messages"][0]["content"]
@@ -146,6 +165,12 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
         COWORLD_LLM_TEMPERATURE="0",
         LLM_REQUEST_METADATA=json.dumps({"episode_request_id": "fixture-" + mode}),
     )
+    if mode in {"artifact-http", "interrupted-partial-http-term", "artifact-upload-failure"}:
+        endpoint = f"http://127.0.0.1:{server.server_port}/artifacts/"
+        environment.update(COGAME_RESULTS_URI=endpoint + "results.json",
+                           COGAME_SAVE_REPLAY_URI=endpoint + "replay.json",
+                           COGAME_SAVE_TRAJECTORY_URI=endpoint + "trajectory.jsonl",
+                           COGAME_SAVE_TRAJECTORY_METHOD="POST")
     if mode == "runtime-failure":
         environment["COWORLD_LLM_TEMPERATURE"] = "2"
     with (folder / "game.log").open("w") as log:
@@ -186,7 +211,7 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
                     if process.poll() is None:
                         process.send_signal(requested)
                 status = process.wait(timeout=45)
-                assert (status != 0 if mode == "runtime-failure" else status == 0), (folder / "game.log").read_text()
+                assert (status != 0 if mode in {"runtime-failure", "artifact-upload-failure"} else status == 0), (folder / "game.log").read_text()
             finally:
                 for seat in sockets:
                     seat.close()
@@ -204,6 +229,20 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
         for line in (folder / "trajectory.jsonl").read_text().splitlines()
     ]
     decisions = events[:-1]
+    if mode == "artifact-upload-failure":
+        assert events[-1]["status"] == "completed"
+        assert not (folder / "results.json").exists() and not (folder / "replay.json").exists()
+        assert len(uploads) == 1 and uploads[0]["name"] == "trajectory.jsonl"
+        assert uploads[0]["method"] == "POST"
+        reports.append({"mode": mode, "complete_episodes": 1, "decisions": len(decisions),
+                        "native_call_joins": len(requests), "artifact_uploads": uploads,
+                        "source_revision": revision, "cohort": "actual HTTP upload failure; no hosted authority"})
+        continue
+    if mode == "artifact-http":
+        assert [u["name"] for u in uploads] == ["trajectory.jsonl", "results.json", "replay.json"]
+        assert [u["method"] for u in uploads] == ["POST", "PUT", "PUT"]
+    if mode == "interrupted-partial-http-term":
+        assert len(uploads) == 1 and uploads[0]["name"] == "trajectory.jsonl" and uploads[0]["method"] == "POST"
     if mode.startswith("interrupted-") or mode == "runtime-failure":
         assert events[-1]["status"] == ("failed" if mode == "runtime-failure" else "truncated")
         assert not (folder / "results.json").exists()

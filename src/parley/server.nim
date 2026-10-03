@@ -27,7 +27,8 @@ import
   bitworld/decision_trajectory,
   bitworld/runtime,
   bitworld/native_stop,
-  curly,
+  bitworld/artifact_runtime,
+  webby/httpheaders,
   mummy,
   mummy/routers,
   llm,
@@ -58,6 +59,8 @@ type
     pendingAttempts: seq[DecisionAttempt]
     hasPendingDecision: bool
     awaitingDeadline, pendingReceived: MonoTime
+    episodeStart, episodeDeadline: MonoTime
+    episodeTimeoutSeconds: float
     decisionRefs: seq[JsonNode]
     trajectory: Option[DecisionTrajectory]
     playerSockets: Table[int, WebSocket]
@@ -318,22 +321,11 @@ proc broadcast() =
   withLock stateLock:
     state.broadcastLocked()
 
-proc writeArtifact(uri, data, contentType, methodEnv: string) =
-  ## Writes a Coworld artifact, honoring the platform's PUT/POST method hint.
+proc writeArtifact(uri, data, contentType, methodEnv: string, cleanupDeadline: MonoTime) =
   if uri.len == 0:
     return
-  let httpMethod = getEnv(methodEnv, "PUT").toUpperAscii()
-  if uri.isHttpCogameUri() and httpMethod == "POST":
-    let curl = newCurly()
-    defer: curl.close()
-    var headers: HttpHeaders
-    headers["content-type"] = contentType
-    let response = curl.post(uri, headers, data, 60)
-    if response.code < 200 or response.code >= 300:
-      raise newException(IOError,
-        "artifact POST failed: " & $response.code)
-  else:
-    writeCogameUri(uri, data, contentType, methodEnv)
+  let httpMethod = parseEnum[ArtifactHttpMethod](getEnv(methodEnv, "PUT").toUpperAscii())
+  writeCogameArtifact(uri, data, contentType, methodEnv, cleanupDeadline, httpMethod)
 
 proc replayPayload(gs: GameState, results: JsonNode): string =
   var names = newJArray()
@@ -371,6 +363,7 @@ proc statesFromEvents(config: GameConfig, events: seq[GameEvent]): JsonNode =
     result.add(frame.sim.seatStates(frame.totals, frame.roundWins))
 
 proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
+  let cleanupDeadline = min(state.episodeDeadline, getMonoTime() + initDuration(seconds = 10))
   var results: JsonNode
   var replayData: string
   withLock stateLock:
@@ -425,15 +418,16 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
         %*{"protocol": "parley.native-outcome.v1", "results": results,
            "input_config": state.inputConfig, "selected_seed": state.config.seed},
         results["scores"])
-    trajectory.writeEventsToUri(getEnv(CogameSaveTrajectoryUriEnv))
+    writeTrajectoryArtifact(trajectory, getEnv(CogameSaveTrajectoryUriEnv), cleanupDeadline,
+      parseEnum[ArtifactHttpMethod](getEnv("COGAME_SAVE_TRAJECTORY_METHOD", "PUT").toUpperAscii()))
   if status != esFailed and not interruptionRequested():
     writeArtifact(
       runtimeConfig.resultsUri, $results, "application/json",
-      "COGAME_RESULTS_METHOD"
+      "COGAME_RESULTS_METHOD", cleanupDeadline
     )
     writeArtifact(
       runtimeConfig.replayUri, replayData, "application/octet-stream",
-      "COGAME_SAVE_REPLAY_METHOD"
+      "COGAME_SAVE_REPLAY_METHOD", cleanupDeadline
     )
     sleep(500)
     echo "parley: episode complete, shutting down"
@@ -450,7 +444,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       if not state.finished:
         finishEpisode(runtimeConfig, esFailed)
     let config = state.config
-    let gameStart = getMonoTime()
+    let gameStart = state.episodeStart
     let deadline = gameStart + initDuration(nanoseconds = int64(config.playerConnectTimeoutSeconds * 1_000_000_000))
 
     while getMonoTime() < deadline and not interruptionRequested():
@@ -469,18 +463,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
     let client = newLlmClient(config)
 
-    ## The platform kills the episode at its wall clock and keeps NOTHING of
-    ## one that overruns, so the deadline has to be the game's problem. The
-    ## platform does not tell the game container that clock (it only sets
-    ## COWORLD_TIMEOUT_SECONDS on its own worker), so the config carries it;
-    ## the env still wins whenever it is present.
-    let hostedTimeout = getEnv("COWORLD_TIMEOUT_SECONDS", "").strip()
-    let timeoutSeconds =
-      if hostedTimeout.len > 0:
-        parseFloat(hostedTimeout)
-      else: config.episodeTimeoutSeconds
-    if timeoutSeconds <= 0.0 or classify(timeoutSeconds) in {fcNan, fcInf, fcNegInf}:
-      raise newException(ParleyError, "episode timeout must be finite and positive")
+    let timeoutSeconds = state.episodeTimeoutSeconds
     let playDeadline = gameStart + initDuration(nanoseconds = int64(timeoutSeconds * PlayBudgetFraction * 1_000_000_000))
     echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",
       (timeoutSeconds * PlayBudgetFraction).int, "s"
@@ -826,6 +809,13 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
 
 proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   installNativeStopHandlers()
+  let hostedTimeout = getEnv("COWORLD_TIMEOUT_SECONDS", "").strip()
+  let timeoutSeconds = if hostedTimeout.len > 0: parseFloat(hostedTimeout) else: config.episodeTimeoutSeconds
+  if timeoutSeconds <= 0.0 or classify(timeoutSeconds) in {fcNan, fcInf, fcNegInf}:
+    raise newException(ParleyError, "episode timeout must be finite and positive")
+  state.episodeStart = getMonoTime()
+  state.episodeTimeoutSeconds = timeoutSeconds
+  state.episodeDeadline = state.episodeStart + initDuration(nanoseconds = int64(timeoutSeconds * 1_000_000_000))
   if config.tokens.len != config.players.len:
     raise newException(ParleyError, "tokens and players must align")
   state.config = config

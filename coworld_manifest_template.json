@@ -376,7 +376,7 @@
   ],
   "variants": [
     {
-      "id": "table4",
+      "id": "table5",
       "name": "Five-cog table",
       "description": "Standard five-cog table. Episodes sample 3–20 rounds, 2–5 starting hp, and 1–3 survivors, with independently announced or withheld round and survivor counts. Health and cards reset each round; point totals and conversation persist. The highest accumulated point total wins, with ties allowed.",
       "game_config": {

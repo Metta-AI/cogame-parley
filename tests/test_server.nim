@@ -141,21 +141,91 @@ suite "player state":
     let target = game.match.sim.validTargets(seat)[0]
     let before = game.match.allEvents().len
     let context = game.match.decisionSim()
+    let privateObservation = game.liveFrameJson(seat)
+    game.trajectory = some(newDecisionTrajectory("episode-1", $config.seed,
+      "parley", "1.0.0", repeat('a', 40)))
     let outcome = DecisionResult(
       decision: Decision(say: "Truce?", target: target, aim: aimHip),
       origin: "model",
       input: %*{"system": "private rules", "user": "secret operator prompt"},
-      response: %*{"raw": "model response"}
+      response: %*{"raw": "model response"},
+      nativeAttempts: @[DecisionAttempt(attemptId: "a0", policy: "model", origin: aoModel,
+        prompt: %*[{"role": "user", "content": "secret operator prompt"}],
+        request: %*{"messages": [{"role": "user", "content": "secret operator prompt"}]},
+        response: %"model response", rawResponse: %*{"content": "model response"},
+        decoder: %*{"temperature": 0},
+        parsedAction: %*{"say": "Truce?", "shoot": game.match.sim.seats[target].name, "aim": "hip"},
+        accepted: true)]
     )
     game.match.sim.recordSay(seat, outcome.decision.say)
     game.match.sim.applyShot(seat, target, outcome.decision.aim)
-    game.recordDecision(context, seat, true, outcome, before, true)
+    game.recordDecision(context, seat, true, outcome, before, true, privateObservation)
     let replay = parseJson(game.replayPayload(game.match.resultsJson()))
     let reference = replay["decisionRefs"][0]
     check reference["eventBefore"].getInt() == before
     check reference["eventAfter"].getInt() == replay["events"].len
     check reference["action"]["aim"].getStr() == "hip"
     check "secret operator prompt" notin $replay
-    let privateEvidence = evidenceJson(reference, outcome)
-    check privateEvidence["input"]["user"].getStr() == "secret operator prompt"
-    check privateEvidence["response"]["raw"].getStr() == "model response"
+    game.trajectory.get().finish(esCompleted, game.match.resultsJson(), newJNull())
+    let privateEvidence = parseJson(game.trajectory.get().eventsJsonl().splitLines()[0])
+    check privateEvidence["attempts"][0]["prompt"][0]["content"].getStr() == "secret operator prompt"
+    check privateEvidence["attempts"][0]["response"].getStr() == "model response"
+    check privateEvidence["executed_action"] == privateEvidence["attempts"][0]["parsed_action"]
+    check privateEvidence["observation"] == privateObservation
+
+suite "external training authority":
+  test "player assertions cannot create teacher labels":
+    for origin in [aoTeacher, aoHuman]:
+      var config = defaultGameConfig()
+      config.seed = 17
+      for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
+      var game = GameState(config: config, match: initMatch(config), awaitingShot: true)
+      let seat = game.match.sim.itSeat
+      let target = game.match.sim.validTargets(seat)[0]
+      let action = %*{"shoot": game.match.sim.seats[target].name, "say": "public"}
+      var attempt = newDecisionAttempt("asserted-teacher", "external", origin)
+      attempt.response = %($action)
+      game.acceptExternalAction(seat, %*{"action": action,
+        "attempts": [attempt.attemptEvidenceJson()]}, "wire")
+      check game.pendingAttempts[0].origin == aoUnknown
+      check game.hasPendingDecision
+
+  test "model response and separately submitted action must agree":
+    var config = defaultGameConfig()
+    config.seed = 17
+    for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
+    var game = GameState(config: config, match: initMatch(config), awaitingShot: true)
+    let seat = game.match.sim.itSeat
+    let targets = game.match.sim.validTargets(seat)
+    let response = %*{"shoot": game.match.sim.seats[targets[0]].name, "say": "public"}
+    let submitted = %*{"shoot": game.match.sim.seats[targets[1]].name, "say": "public"}
+    var attempt = newDecisionAttempt("native-model", "model", aoModel)
+    attempt.response = %($response)
+    expect ParleyError:
+      game.acceptExternalAction(seat, %*{"action": submitted,
+        "attempts": [attempt.attemptEvidenceJson()]}, "wire")
+    check not game.hasPendingDecision
+    check not game.pendingAttempts[0].accepted
+    check game.pendingAttempts[0].parsedAction["shoot"] == response["shoot"]
+
+  test "executed action comes from engine events even after fallback":
+    var config = defaultGameConfig()
+    config.seed = 17
+    for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
+    var game = GameState(config: config, match: initMatch(config))
+    let before = game.match.sim
+    let seat = before.itSeat
+    let targets = before.validTargets(seat)
+    game.trajectory = some(newDecisionTrajectory("engine-fallback", "parley-17", "parley",
+      "source-test", repeat('a', 40)))
+    let start = game.match.allEvents().len
+    game.match.sim.recordSay(seat, "actually spoken")
+    game.match.sim.applyShot(seat, targets[1], aimHip)
+    let outcome = DecisionResult(origin: "scripted_after_rejected_action",
+      decision: Decision(target: targets[0], say: "unused proposal", aim: aimHead))
+    game.recordDecision(before, seat, true, outcome, start, false, newJObject())
+    game.trajectory.get().finish(esCompleted, newJObject(), newJObject())
+    let executed = parseJson(game.trajectory.get().eventsJsonl().splitLines()[0])["executed_action"]
+    check executed["shoot"].getStr() == before.seats[targets[1]].name
+    check executed["say"].getStr() == "actually spoken"
+    check executed["aim"].getStr() == $aimHip

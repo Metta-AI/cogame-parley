@@ -37,6 +37,7 @@ import
 
 const
   MaxPromptLen = 4000
+  MaxPlayerMessageLen = 16 * 1024 * 1024
   ReplayVersion = 3
   ParleySourceRevision {.strdefine.} = ""
   ParleyGameVersion {.strdefine.} = ""
@@ -445,6 +446,11 @@ proc statesFromEvents(config: GameConfig, events: seq[GameEvent]): JsonNode =
   for frame in replayMatch(config, events):
     result.add(frame.sim.seatStates(frame.totals, frame.roundWins))
 
+proc waitUntil(deadline: MonoTime) =
+  ## Spectator and connection waits share the original lifetime and stop signal.
+  while getMonoTime() < deadline and not interruptionRequested():
+    sleep(int(min(20'i64, max(1'i64, (deadline - getMonoTime()).inMilliseconds))))
+
 proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
   let cleanupDeadline = min(state.episodeDeadline, getMonoTime() + initDuration(seconds = 10))
   var targets: seq[int]
@@ -515,7 +521,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
       state.broadcastLocked()
 
   if not interruptionRequested():
-    sleep(500)
+    waitUntil(min(cleanupDeadline, getMonoTime() + initDuration(milliseconds = 500)))
   echo "parley: writing private episode evidence"
   if state.trajectory.isSome:
     let trajectory = state.trajectory.get()
@@ -560,7 +566,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
       runtimeConfig.replayUri, replayData, "application/octet-stream",
       "COGAME_SAVE_REPLAY_METHOD", cleanupDeadline
     )
-    sleep(500)
+    waitUntil(min(cleanupDeadline, getMonoTime() + initDuration(milliseconds = 500)))
     echo "parley: episode complete, shutting down"
   gameServer.close()
 
@@ -576,7 +582,9 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         finishEpisode(runtimeConfig, esFailed)
     let config = state.config
     let gameStart = state.episodeStart
-    let deadline = gameStart + initDuration(nanoseconds = int64(config.playerConnectTimeoutSeconds * 1_000_000_000))
+    let timeoutSeconds = state.episodeTimeoutSeconds
+    let playDeadline = gameStart + initDuration(nanoseconds = int64(timeoutSeconds * PlayBudgetFraction * 1_000_000_000))
+    let deadline = min(playDeadline, gameStart + initDuration(nanoseconds = int64(config.playerConnectTimeoutSeconds * 1_000_000_000)))
 
     while getMonoTime() < deadline and not interruptionRequested():
       var allConnected = false
@@ -584,7 +592,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         allConnected = state.playerSockets.len >= config.tokens.len
       if allConnected:
         break
-      sleep(200)
+      waitUntil(min(deadline, getMonoTime() + initDuration(milliseconds = 200)))
 
     withLock stateLock:
       state.started = true
@@ -594,8 +602,6 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
     let client = newLlmClient(config)
 
-    let timeoutSeconds = state.episodeTimeoutSeconds
-    let playDeadline = gameStart + initDuration(nanoseconds = int64(timeoutSeconds * PlayBudgetFraction * 1_000_000_000))
     echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",
       (timeoutSeconds * PlayBudgetFraction).int, "s"
 
@@ -651,7 +657,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
       if config.turnDelayMs > 0 and
           getMonoTime() < playDeadline:
-        sleep(config.turnDelayMs)
+        waitUntil(min(playDeadline, getMonoTime() + initDuration(milliseconds = config.turnDelayMs)))
 
       if roundEnded:
         ## Let the last shot land before deciding whether to deal another round.
@@ -704,7 +710,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             state.recordDecision(reactionCopy, seat, false, reaction, beforeEvent, true, reactionObservation)
           if config.turnDelayMs > 0 and
               getMonoTime() < playDeadline:
-            sleep(config.turnDelayMs div 2)
+            waitUntil(min(playDeadline, getMonoTime() + initDuration(milliseconds = config.turnDelayMs div 2)))
 
     finishEpisode(runtimeConfig,
       (if state.match.roundsPlayed == state.match.config.rounds: esCompleted else: esTruncated))
@@ -1008,7 +1014,8 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   runtimeConfigGlobal = runtimeConfig
 
   let router = buildRouter(replayMode = false)
-  gameServer = newServer(router, websocketHandler, workerThreads = 4)
+  gameServer = newServer(router, websocketHandler, workerThreads = 4,
+    maxMessageLen = MaxPlayerMessageLen)
   echo "parley: serving on ", runtimeConfig.host, ":", runtimeConfig.port
   try:
     gameServer.serve(Port(runtimeConfig.port), runtimeConfig.host, onReady = startGameThread)

@@ -39,6 +39,8 @@ Local games can use Anthropic or Bedrock credentials outside hosted execution.
 The private evidence records the actual model and native request settings.
 Native requests explicitly disable thinking and carry `output_config.format` with `type: json_schema`.
 The schema retains speech, both aim choices, public living targets, and passes while available; reactions contain speech.
+External observation frames carry that exact game-owned schema in `actionSchema`. Saved-model decoders must use it
+without reconstructing targets or accessing hidden state. Native and external calls still require matched decoder settings.
 Provider routing must support these parameters. Parser validation, rejection, retry, and fallback evidence remain intact.
 Do not strip prose, repair JSON, or discard failed attempts. Unsupported providers and truncated responses fail qualification.
 

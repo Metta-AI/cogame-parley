@@ -19,7 +19,7 @@
 ##   player -> game: {"type":"register","control":"external","prompt":"..."}
 ##   game -> external player: {"type":"observation","id":N,
 ##                   "observation":<seat-private state>,"phase":"shot"|"reaction",
-##                   "input":{"system":...,"user":...},"legalActions":[...]}
+##                   "input":{"system":...,"user":...},"actionSchema":{...},"legalActions":[...]}
 ##   external player -> game: {"type":"action","id":N,"action":{...}}
 
 import
@@ -159,6 +159,7 @@ proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
     "observation": gs.liveFrameJson(seat),
     "input": {"system": systemPrompt(sim, seat),
               "user": userPrompt(sim, seat, prompt, wantShot, header)},
+    "actionSchema": sim.actionSchema(seat, wantShot),
     "legalActions": legalActions}
 
 proc registerExternal(gs: var GameState, slot: int, prompt: string) =

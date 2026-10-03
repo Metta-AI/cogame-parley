@@ -46,6 +46,12 @@ The engine writes canonical private decision JSONL to
 seat-private observations, every native attempt, exact prompts and requests,
 raw responses, platform response call IDs, parsed and executed actions,
 rejections, scripted fallbacks, and the completed or truncated terminal outcome.
+The private outcome uses `parley.native-outcome.v1`: `results` contains the unchanged game results,
+`input_config` preserves the original game input with seat authentication tokens removed, and
+`selected_seed` records the actual seed selected before rule sampling. An unpinned input keeps its seed absent;
+the selected seed is separate evidence, not a reconstructed input. This private envelope never enters replay,
+player observations, or model prompts. Update native consumers and qualify the rebuilt release before collection;
+the previous published source retains its original outcome format.
 Local files are created privately with mode 0600.
 
 Replay v3 carries decision IDs, origins, canonical actions, event offsets,
@@ -64,8 +70,9 @@ Two invalid prompt responses invoke the scripted fallback. Preserve failed
 attempts for audits; train only on accepted model or approved teacher targets.
 
 Use Metta’s `metta-posttrain export-parley-native` command to convert reviewed complete five-seat episodes into SLIME
-inputs. Supply the published manifest, per-episode runtime configurations and private trajectories, independent provider
-archive, and content-bound decision approvals. The converter checks ordinary settings, episode/source pins, selected
+inputs. Supply the published manifest, private trajectories containing the original token-free input and selected seed,
+independent provider archive, and content-bound decision approvals. No separate runtime configuration or authentication
+tokens are required. The converter checks ordinary settings, episode/source pins, selected
 parsed actions against execution, exact native prompts and responses, provider call joins, and complete-family splits.
 Keep all attempts and fallbacks in private evidence; only explicitly approved model or teacher completions become labels.
 The pinned Coworld CLI does not supply `coworld training qualify` or `coworld training export`.

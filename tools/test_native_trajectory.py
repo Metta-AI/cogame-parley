@@ -21,7 +21,7 @@ binary, output, revision = sys.argv[1:]
 root = Path(output)
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
 reports = []
-for mode in ["accepted", "retry", "fallback", "seat-budget"]:
+for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
     folder = root / mode
     folder.mkdir(mode=0o700)
     requests = []
@@ -111,9 +111,11 @@ for mode in ["accepted", "retry", "fallback", "seat-budget"]:
         "turnDelayMs": 0,
         "player_connect_timeout_seconds": 3,
         "episodeTimeoutSeconds": 60,
-        "tokens": [str(i) for i in range(4)],
+        "tokens": ["private-auth-sentinel-" + str(i) for i in range(4)],
         "players": [{"name": "fixture-" + str(i)} for i in range(4)],
     }
+    if mode == "random-seed":
+        del config["seed"]
     config_path = folder / "config.json"
     config_path.write_text(json.dumps(config))
     environment = dict(os.environ)
@@ -145,7 +147,9 @@ for mode in ["accepted", "retry", "fallback", "seat-budget"]:
                 assert time.monotonic() < deadline
                 threading.Event().wait(0.01)
             sockets = [
-                connect(f"ws://127.0.0.1:{port}/player?slot={slot}&token={slot}")
+                connect(
+                    f"ws://127.0.0.1:{port}/player?slot={slot}&token={config['tokens'][slot]}"
+                )
                 for slot in range(4)
             ]
             try:
@@ -171,7 +175,22 @@ for mode in ["accepted", "retry", "fallback", "seat-budget"]:
     ]
     decisions = events[:-1]
     assert events[-1]["status"] == "completed"
-    assert events[-1]["outcome"]["rounds"] == 2
+    outcome = events[-1]["outcome"]
+    assert outcome["protocol"] == "parley.native-outcome.v1"
+    assert outcome["results"] == json.loads((folder / "results.json").read_text())
+    assert outcome["results"]["rounds"] == 2
+    assert outcome["input_config"] == {k: v for k, v in config.items() if k != "tokens"}
+    assert str(outcome["selected_seed"]) == events[-1]["seed_family"]
+    assert (
+        outcome["selected_seed"]
+        == json.loads((folder / "replay.json").read_text())["config"]["seed"]
+    )
+    if mode != "random-seed":
+        assert outcome["selected_seed"] == config["seed"]
+    for token in config["tokens"]:
+        assert token not in (folder / "trajectory.jsonl").read_text()
+        assert token not in (folder / "replay.json").read_text()
+        assert token not in (folder / "game.log").read_text()
     calls = {record["platform_call_id"]: record for record in requests}
     for decision in decisions:
         for attempt in decision["attempts"]:

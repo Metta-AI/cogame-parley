@@ -41,6 +41,7 @@ const
 type
   GameState = object
     config: GameConfig
+    inputConfig: JsonNode
     match: Match
     prompts: seq[string]
     external: seq[bool]
@@ -395,7 +396,9 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
     let trajectory = state.trajectory.get()
     trajectory.finish(
       (if state.match.roundsPlayed == state.match.config.rounds: esCompleted else: esTruncated),
-      results, results["scores"])
+      %*{"protocol": "parley.native-outcome.v1", "results": results,
+         "input_config": state.inputConfig, "selected_seed": state.config.seed},
+      results["scores"])
     trajectory.writeEventsToUri(getEnv(CogameSaveTrajectoryUriEnv))
   writeArtifact(
     runtimeConfig.resultsUri, $results, "application/json",
@@ -777,6 +780,8 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   if config.tokens.len != config.players.len:
     raise newException(ParleyError, "tokens and players must align")
   state.config = config
+  state.inputConfig = parseJson(runtimeConfig.config)
+  state.inputConfig.delete("tokens")
   state.match = initMatch(config)
   state.prompts = newSeq[string](config.players.len)
   state.external = newSeq[bool](config.players.len)

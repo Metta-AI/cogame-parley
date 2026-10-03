@@ -19,5 +19,5 @@ COPY . .
 # The wasm module only uses the Nim stdlib plus parley/sim, so no package
 # sync is needed. Drop the host machine's package paths.
 RUN rm -f nim.cfg && \
-  nim c --hints:off -d:emscripten replay-viewer/parley_replay.nim && \
+  nim c --parallelBuild:1 --hints:off -d:emscripten replay-viewer/parley_replay.nim && \
   test -s replay-viewer/dist/parley_replay.wasm

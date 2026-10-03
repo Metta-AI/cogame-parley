@@ -590,6 +590,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var allConnected = false
       withLock stateLock:
         allConnected = state.playerSockets.len >= config.tokens.len
+        for registered in state.promptSet:
+          allConnected = allConnected and registered
       if allConnected:
         break
       waitUntil(min(deadline, getMonoTime() + initDuration(milliseconds = 200)))

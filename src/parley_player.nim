@@ -7,8 +7,8 @@
 ##     --run /bin/parley-player --secret-env PLAYER_PROMPT="<your strategy>"
 
 import
-  std/[json, options, os],
-  whisky
+  std/[json, math, monotimes, os, strutils, times],
+  bitworld/[native_stop, native_websocket]
 
 const DefaultPrompt = """
 Play to win, but make it fun. Your secret cards run the round: steer shots
@@ -24,43 +24,49 @@ it will.
 """
 
 when isMainModule:
+  installNativeStopHandlers()
   let url = getEnv("COWORLD_PLAYER_WS_URL")
   if url.len == 0:
     quit("COWORLD_PLAYER_WS_URL is not set", 1)
+  let timeout = parseFloat(getEnv("COWORLD_TIMEOUT_SECONDS", "1200"))
+  if timeout <= 0 or classify(timeout) in {fcNan, fcInf, fcNegInf}:
+    quit("player timeout must be finite and positive", 1)
+  let started = getMonoTime()
+  let deadline = started + initDuration(nanoseconds = int64(timeout * 1_000_000_000))
+  let connection = connectNativeWebSocket(url,
+    min(deadline, started + initDuration(seconds = 30)), 16 * 1024 * 1024)
+  case connection.kind
+  of wsInterrupted, wsDeadline: quit(0)
+  of wsReady: discard
+  else: quit("player connection failed", 1)
+  let socket = connection.socket
   let scripted = getEnv("PLAYER_SCRIPTED") == "1"
   var prompt = getEnv("PLAYER_PROMPT")
   if prompt.len == 0 and not scripted:
     prompt = DefaultPrompt
-
-  echo "parley player: connecting to game"
-  let socket = newWebSocket(url)
-  proc registration(): string =
-    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
-  socket.send(registration())
-  echo "parley player: prompt delivered (", prompt.len, " chars)"
-
-  while true:
-    let received = socket.receiveMessage()
-    if received.isNone:
-      echo "parley player: connection closed, exiting"
-      break
-    let message = received.get()
-    if message.kind != TextMessage:
-      continue
-    try:
-      let payload = parseJson(message.data)
-      case payload{"type"}.getStr()
+  var registered = false
+  try:
+    while true:
+      let received = receiveNativeText(socket, deadline)
+      case received.kind
+      of wsClosed, wsInterrupted, wsDeadline: break
+      of wsMessage: discard
+      else: raise newException(ValueError, "player transport failed")
+      let payload = parseJson(received.data)
+      if payload.kind != JObject or not payload.hasKey("type") or payload["type"].kind != JString:
+        raise newException(ValueError, "invalid player protocol packet")
+      case payload["type"].getStr()
       of "welcome":
-        echo "parley player: seated at slot ",
-          payload{"slot"}.getInt(), " as ", payload{"name"}.getStr()
-        ## Re-deliver the prompt after the welcome, in case the first send
-        ## raced the server's slot registration.
-        socket.send(registration())
-      of "final":
-        echo "parley player: final scores ", payload{"scores"}
-        break
-      else:
-        discard
-    except CatchableError as error:
-      echo "parley player: ignoring bad frame: ", error.msg
-  socket.close()
+        if registered:
+          raise newException(ValueError, "duplicate player welcome")
+        let registration = $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
+        let sent = sendNativeText(socket, registration, deadline)
+        case sent.kind
+        of wsInterrupted, wsDeadline: break
+        of wsReady: registered = true
+        else: raise newException(ValueError, "player registration failed")
+      of "state": discard
+      of "final": break
+      else: raise newException(ValueError, "unexpected player protocol packet")
+  finally:
+    closeNativeWebSocket(socket)

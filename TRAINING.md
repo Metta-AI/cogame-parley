@@ -46,6 +46,12 @@ The engine writes canonical private decision JSONL to
 seat-private observations, every native attempt, exact prompts and requests,
 raw responses, platform response call IDs, parsed and executed actions,
 rejections, scripted fallbacks, and the completed or truncated terminal outcome.
+The private outcome uses `parley.native-outcome.v1`: `results` contains the unchanged game results,
+`input_config` preserves the original game input with seat authentication tokens removed, and
+`selected_seed` records the actual seed selected before rule sampling. An unpinned input keeps its seed absent;
+the selected seed is separate evidence, not a reconstructed input. This private envelope never enters replay,
+player observations, or model prompts. Update native consumers and qualify the rebuilt release before collection;
+the previous published source retains its original outcome format.
 Local files are created privately with mode 0600.
 
 Replay v3 carries decision IDs, origins, canonical actions, event offsets,

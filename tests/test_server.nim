@@ -19,7 +19,7 @@ suite "player state":
     let seat = sim.itSeat
     state.registerExternal(seat, "Protect my friend")
     let outcome = decideSeat(newLlmClient(config), sim, seat,
-      state.prompts[seat], true, matchHeader(state.match), false, 0.0)
+      state.prompts[seat], true, matchHeader(state.match), false, getMonoTime() + initDuration(seconds = 60))
     check outcome.origin == "scripted_after_external_disconnect"
     check outcome.input.kind == JNull
     check outcome.response.kind == JNull
@@ -170,7 +170,7 @@ suite "external training authority":
       var attempt = newDecisionAttempt("asserted-teacher", "external", origin)
       attempt.response = %($action)
       game.acceptExternalAction(seat, %*{"action": action,
-        "attempts": [attempt.attemptEvidenceJson()]}, "wire")
+        "attempts": [attempt.attemptEvidenceJson()]}, "wire", getMonoTime())
       check game.pendingAttempts[0].origin == aoUnknown
       check game.hasPendingDecision
 
@@ -187,7 +187,7 @@ suite "external training authority":
     attempt.response = %($response)
     expect ParleyError:
       game.acceptExternalAction(seat, %*{"action": submitted,
-        "attempts": [attempt.attemptEvidenceJson()]}, "wire")
+        "attempts": [attempt.attemptEvidenceJson()]}, "wire", getMonoTime())
     check not game.hasPendingDecision
     check not game.pendingAttempts[0].accepted
     check game.pendingAttempts[0].parsedAction["shoot"] == response["shoot"]

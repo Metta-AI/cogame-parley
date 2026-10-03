@@ -23,9 +23,10 @@
 ##   external player -> game: {"type":"action","id":N,"action":{...}}
 
 import
-  std/[json, locks, options, os, oids, sets, strutils, tables, times],
+  std/[json, locks, math, monotimes, options, os, oids, sets, strutils, tables, times],
   bitworld/decision_trajectory,
   bitworld/runtime,
+  bitworld/native_stop,
   curly,
   mummy,
   mummy/routers,
@@ -56,6 +57,7 @@ type
     pendingRejected: seq[JsonNode]
     pendingAttempts: seq[DecisionAttempt]
     hasPendingDecision: bool
+    awaitingDeadline, pendingReceived: MonoTime
     decisionRefs: seq[JsonNode]
     trajectory: Option[DecisionTrajectory]
     playerSockets: Table[int, WebSocket]
@@ -169,9 +171,9 @@ proc registerExternal(gs: var GameState, slot: int, prompt: string) =
   gs.promptSet[slot] = true
 
 proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
-    wantShot: bool, header: string, scripted: bool, playDeadline: float): DecisionResult =
+    wantShot: bool, header: string, scripted: bool, playDeadline: MonoTime): DecisionResult =
   ## Finish the current round without more model/player waits after the play budget.
-  if playDeadline > 0.0 and epochTime() >= playDeadline:
+  if getMonoTime() >= playDeadline:
     result.decision =
       if wantShot: client.scriptedShot(sim, seat)
       else: client.scriptedReaction(sim, seat)
@@ -179,6 +181,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
     result.input = newJNull()
     result.response = newJNull()
     return
+  let decisionDeadline = min(playDeadline, getMonoTime() + initDuration(seconds = state.config.llmTimeoutSeconds))
   var external = false
   var registeredExternal = false
   var observation: JsonNode
@@ -190,6 +193,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
       state.awaitingSeat = seat
       state.awaitingId = state.nextDecisionId
       state.awaitingShot = wantShot
+      state.awaitingDeadline = decisionDeadline
       state.hasPendingDecision = false
       state.pendingRejected = @[]
       state.pendingAttempts = @[]
@@ -213,9 +217,8 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
       result.input = newJNull()
       result.response = newJNull()
       return
-    return client.decide(sim, seat, prompt, wantShot, header)
-  let deadline = epochTime() + state.config.llmTimeoutSeconds.float
-  while epochTime() < deadline:
+    return client.decide(sim, seat, prompt, wantShot, decisionDeadline, header)
+  while getMonoTime() < decisionDeadline and not interruptionRequested():
     var ready = false
     withLock stateLock:
       ready = state.hasPendingDecision
@@ -224,7 +227,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
     sleep(20)
   withLock stateLock:
     state.awaitingSeat = -1
-    if state.hasPendingDecision:
+    if state.hasPendingDecision and state.pendingReceived < decisionDeadline and not interruptionRequested():
       return DecisionResult(decision: state.pendingDecision,
         origin: "external", input: %*{
           "packet": observation, "wire": $observation},
@@ -240,7 +243,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
   result.nativeAttempts = state.pendingAttempts
 
 proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
-    wire: string) =
+    wire: string, receivedAt: MonoTime) =
   if payload.hasKey("attempts"):
     for envelope in payload["attempts"]:
       var evidence = readAttemptEvidence(envelope)
@@ -256,6 +259,7 @@ proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
       raise newException(ParleyError, "model response differs from submitted action")
   gs.pendingDecision = proposal
   gs.pendingRawAction = %*{"wire": wire, "action": payload["action"]}
+  gs.pendingReceived = receivedAt
   gs.hasPendingDecision = true
 
 proc recordDecision(gs: var GameState, sim: Sim, seat: int,
@@ -297,6 +301,19 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
       (if proposalAccepted: asAccepted else: asFallback),
       fallbackOrigin = (if proposalAccepted: none(string) else: some(outcome.origin)))
 
+
+proc recordInterruptedDecision(gs: var GameState, seat: int,
+    outcome: DecisionResult, observation: JsonNode) =
+  ## No interrupted proposal is applied; keep every started/received attempt.
+  if gs.trajectory.isSome:
+    var attempts = outcome.nativeAttempts
+    for attempt in attempts.mitems:
+      attempt.accepted = false
+      if attempt.rejectionReason.isNone:
+        attempt.rejectionReason = some("interrupted before engine acceptance")
+    gs.trajectory.get().recordDecision($(gs.decisionRefs.len + 1), $seat,
+      observation, attempts, none(string), newJNull(), asMissing)
+
 proc broadcast() =
   withLock stateLock:
     state.broadcastLocked()
@@ -308,6 +325,7 @@ proc writeArtifact(uri, data, contentType, methodEnv: string) =
   let httpMethod = getEnv(methodEnv, "PUT").toUpperAscii()
   if uri.isHttpCogameUri() and httpMethod == "POST":
     let curl = newCurly()
+    defer: curl.close()
     var headers: HttpHeaders
     headers["content-type"] = contentType
     let response = curl.post(uri, headers, data, 60)
@@ -352,7 +370,7 @@ proc statesFromEvents(config: GameConfig, events: seq[GameEvent]): JsonNode =
   for frame in replayMatch(config, events):
     result.add(frame.sim.seatStates(frame.totals, frame.roundWins))
 
-proc finishEpisode(runtimeConfig: RuntimeConfig) =
+proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
   var results: JsonNode
   var replayData: string
   withLock stateLock:
@@ -372,45 +390,54 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
     var aliasNames = newJArray()
     for seat in state.match.sim.seats:
       aliasNames.add(%seat.name)
-    var final = %*{
-      "type": "final",
-      "done": true,
-      "scores": results["scores"],
-      "rawScores": results["rawScores"],
-      "win": results["win"],
-      "names": aliasNames,
-      "kills": results["kills"],
-      "roundWins": results["roundWins"],
-      "friendPoints": results["friendPoints"],
-      "foePoints": results["foePoints"],
-      "rounds": results["rounds"]
-    }
-    for slot, socket in state.playerSockets:
-      final["slot"] = %slot
-      socket.send($final)
-    state.broadcastLocked()
+    if status != esFailed and not interruptionRequested():
+      var final = %*{
+        "type": "final",
+        "done": true,
+        "scores": results["scores"],
+        "rawScores": results["rawScores"],
+        "win": results["win"],
+        "names": aliasNames,
+        "kills": results["kills"],
+        "roundWins": results["roundWins"],
+        "friendPoints": results["friendPoints"],
+        "foePoints": results["foePoints"],
+        "rounds": results["rounds"]
+      }
+      for slot, socket in state.playerSockets:
+        final["slot"] = %slot
+        socket.send($final)
+      state.broadcastLocked()
 
-  sleep(500)
-  echo "parley: writing results and replay"
+  if not interruptionRequested():
+    sleep(500)
+  echo "parley: writing private episode evidence"
   if state.trajectory.isSome:
     let trajectory = state.trajectory.get()
-    trajectory.finish(
-      (if state.match.roundsPlayed == state.match.config.rounds: esCompleted else: esTruncated),
-      %*{"protocol": "parley.native-outcome.v1", "results": results,
-         "input_config": state.inputConfig, "selected_seed": state.config.seed},
-      results["scores"])
+    if interruptionRequested() or status == esFailed:
+      trajectory.finish((if interruptionRequested(): esTruncated else: esFailed),
+        %*{"protocol": "parley.native-outcome.v1", "termination": (if interruptionRequested(): "interrupted" else: "runtime-failure"),
+          "partial_results": results, "input_config": state.inputConfig,
+          "selected_seed": state.config.seed}, newJNull())
+    else:
+      trajectory.finish(
+        status,
+        %*{"protocol": "parley.native-outcome.v1", "results": results,
+           "input_config": state.inputConfig, "selected_seed": state.config.seed},
+        results["scores"])
     trajectory.writeEventsToUri(getEnv(CogameSaveTrajectoryUriEnv))
-  writeArtifact(
-    runtimeConfig.resultsUri, $results, "application/json",
-    "COGAME_RESULTS_METHOD"
-  )
-  writeArtifact(
-    runtimeConfig.replayUri, replayData, "application/octet-stream",
-    "COGAME_SAVE_REPLAY_METHOD"
-  )
-  sleep(500)
-  echo "parley: episode complete, shutting down"
-  quit(0)
+  if status != esFailed and not interruptionRequested():
+    writeArtifact(
+      runtimeConfig.resultsUri, $results, "application/json",
+      "COGAME_RESULTS_METHOD"
+    )
+    writeArtifact(
+      runtimeConfig.replayUri, replayData, "application/octet-stream",
+      "COGAME_SAVE_REPLAY_METHOD"
+    )
+    sleep(500)
+    echo "parley: episode complete, shutting down"
+  gameServer.close()
 
 const PlayBudgetFraction* = 0.6
   ## Share of the platform's episode timeout spent playing. The rest covers
@@ -419,11 +446,14 @@ const PlayBudgetFraction* = 0.6
 
 proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
   {.gcsafe.}:
+    defer:
+      if not state.finished:
+        finishEpisode(runtimeConfig, esFailed)
     let config = state.config
-    let gameStart = epochTime()
-    let deadline = gameStart + config.playerConnectTimeoutSeconds
+    let gameStart = getMonoTime()
+    let deadline = gameStart + initDuration(nanoseconds = int64(config.playerConnectTimeoutSeconds * 1_000_000_000))
 
-    while epochTime() < deadline:
+    while getMonoTime() < deadline and not interruptionRequested():
       var allConnected = false
       withLock stateLock:
         allConnected = state.playerSockets.len >= config.tokens.len
@@ -447,16 +477,15 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     let hostedTimeout = getEnv("COWORLD_TIMEOUT_SECONDS", "").strip()
     let timeoutSeconds =
       if hostedTimeout.len > 0:
-        try: parseFloat(hostedTimeout) except ValueError: config.episodeTimeoutSeconds
+        parseFloat(hostedTimeout)
       else: config.episodeTimeoutSeconds
-    let playDeadline =
-      if timeoutSeconds > 0.0: gameStart + timeoutSeconds * PlayBudgetFraction
-      else: 0.0
-    if playDeadline > 0.0:
-      echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",
-        (timeoutSeconds * PlayBudgetFraction).int, "s"
+    if timeoutSeconds <= 0.0 or classify(timeoutSeconds) in {fcNan, fcInf, fcNegInf}:
+      raise newException(ParleyError, "episode timeout must be finite and positive")
+    let playDeadline = gameStart + initDuration(nanoseconds = int64(timeoutSeconds * PlayBudgetFraction * 1_000_000_000))
+    echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",
+      (timeoutSeconds * PlayBudgetFraction).int, "s"
 
-    while true:
+    while not interruptionRequested():
       var simCopy: Sim
       var itSeat: int
       var itPrompt: string
@@ -477,6 +506,11 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       ## this thread mutates the match, so the snapshot cannot go stale.
       var shot = client.decideSeat(simCopy, itSeat, itPrompt,
         wantShot = true, header = header, scripted = itScripted, playDeadline = playDeadline)
+
+      if interruptionRequested():
+        withLock stateLock:
+          state.recordInterruptedDecision(itSeat, shot, shotObservation)
+        break
 
       var roundEnded = false
       withLock stateLock:
@@ -502,14 +536,14 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         state.broadcastLocked()
 
       if config.turnDelayMs > 0 and
-          (playDeadline == 0.0 or epochTime() < playDeadline):
+          getMonoTime() < playDeadline:
         sleep(config.turnDelayMs)
 
       if roundEnded:
         ## Let the last shot land before deciding whether to deal another round.
         ## This includes deadlines reached during spectator pacing.
         withLock stateLock:
-          let timedOut = playDeadline > 0.0 and epochTime() >= playDeadline
+          let timedOut = getMonoTime() >= playDeadline
           state.match.finishRound(endMatch = timedOut)
           if timedOut:
             echo "parley: episode deadline reached after ",
@@ -517,7 +551,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           state.broadcastLocked()
         continue
 
-      if config.reactions and (playDeadline == 0.0 or epochTime() < playDeadline):
+      if config.reactions and getMonoTime() < playDeadline:
         ## Table talk between shots: the new "it" acts next turn, so let a
         ## few of the other living cogs speak, in seat order after the new IT.
         var speakers: seq[int]
@@ -530,7 +564,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         if speakers.len > config.maxReactions:
           speakers.setLen(config.maxReactions)
         for seat in speakers:
-          if playDeadline > 0.0 and epochTime() >= playDeadline:
+          if getMonoTime() >= playDeadline or interruptionRequested():
             break
           var reactionCopy: Sim
           var reactionPrompt: string
@@ -544,6 +578,10 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             reactionObservation = state.liveFrameJson(seat)
           let reaction = client.decideSeat(reactionCopy, seat, reactionPrompt,
             wantShot = false, header = header, scripted = reactionScripted, playDeadline = playDeadline)
+          if interruptionRequested():
+            withLock stateLock:
+              state.recordInterruptedDecision(seat, reaction, reactionObservation)
+            break
           withLock stateLock:
             let beforeEvent = state.match.allEvents().len
             if reaction.decision.say.len > 0:
@@ -551,12 +589,20 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
               state.broadcastLocked()
             state.recordDecision(reactionCopy, seat, false, reaction, beforeEvent, true, reactionObservation)
           if config.turnDelayMs > 0 and
-              (playDeadline == 0.0 or epochTime() < playDeadline):
+              getMonoTime() < playDeadline:
             sleep(config.turnDelayMs div 2)
 
-    finishEpisode(runtimeConfig)
+    finishEpisode(runtimeConfig,
+      (if state.match.roundsPlayed == state.match.config.rounds: esCompleted else: esTruncated))
 
-var gameThread: Thread[RuntimeConfig]
+var
+  gameThread: Thread[RuntimeConfig]
+  gameThreadStarted: bool
+
+proc startGameThread(server: Server) {.gcsafe, raises: [ResourceExhaustedError].} =
+  {.gcsafe.}:
+    createThread(gameThread, runGame, runtimeConfigGlobal)
+    gameThreadStarted = true
 
 proc serveFile(request: Request, path, contentType: string) =
   if fileExists(path):
@@ -662,6 +708,7 @@ proc websocketHandler(
     of OpenEvent:
       discard
     of MessageEvent:
+      let receivedAt = getMonoTime()
       ## mummy hands Ping frames to the application instead of answering
       ## them itself; the platform's certifier pings /global to check the
       ## game is alive, so an unanswered ping fails certification.
@@ -687,8 +734,9 @@ proc websocketHandler(
           withLock stateLock:
             if state.external[slot] and state.awaitingSeat == slot and
                 state.awaitingId == payload["id"].getInt() and
-                not state.hasPendingDecision:
-              state.acceptExternalAction(slot, payload, message.data)
+                not state.hasPendingDecision and not interruptionRequested() and
+                receivedAt < state.awaitingDeadline:
+              state.acceptExternalAction(slot, payload, message.data, receivedAt)
           return
         if payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()
@@ -777,6 +825,7 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
   gameServer.serve(Port(runtimeConfig.port), runtimeConfig.host)
 
 proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
+  installNativeStopHandlers()
   if config.tokens.len != config.players.len:
     raise newException(ParleyError, "tokens and players must align")
   state.config = config
@@ -800,6 +849,10 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
 
   let router = buildRouter(replayMode = false)
   gameServer = newServer(router, websocketHandler, workerThreads = 4)
-  createThread(gameThread, runGame, runtimeConfig)
   echo "parley: serving on ", runtimeConfig.host, ":", runtimeConfig.port
-  gameServer.serve(Port(runtimeConfig.port), runtimeConfig.host)
+  try:
+    gameServer.serve(Port(runtimeConfig.port), runtimeConfig.host, onReady = startGameThread)
+  finally:
+    requestNativeStop()
+    if gameThreadStarted:
+      joinThread(gameThread)

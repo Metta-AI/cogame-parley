@@ -1,3 +1,4 @@
+import std/[monotimes, times]
 import std/[os, strutils, unittest]
 import parley/[llm, sim]
 
@@ -14,7 +15,7 @@ suite "scripted seat randomness":
     for seat in 0 ..< 4:
       config.players.add(PlayerConfig(name: "P" & $seat))
     let sim = initSim(config)
-    let outcome = newLlmClient(config).decide(sim, sim.itSeat, "", true)
+    let outcome = newLlmClient(config).decide(sim, sim.itSeat, "", true, getMonoTime() + initDuration(seconds = 1))
     check outcome.origin == "scripted_no_native_endpoint"
     check outcome.nativeAttempts.len == 0
 

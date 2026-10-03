@@ -3,10 +3,12 @@
 Arguments: compiled game binary, fresh private output directory, source commit.
 """
 
+import base64
 import json
 import os
 import re
 import socket
+import signal
 import subprocess
 import sys
 import threading
@@ -21,10 +23,13 @@ binary, output, revision = sys.argv[1:]
 root = Path(output)
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
 reports = []
-for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
+for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
+             "interrupted-started-term", "interrupted-partial-term", "interrupted-partial-int", "runtime-failure"]:
     folder = root / mode
     folder.mkdir(mode=0o700)
     requests = []
+    entered = threading.Event()
+    release = threading.Event()
     seat_calls = [0] * 4
 
     class Native(BaseHTTPRequestHandler):
@@ -80,6 +85,10 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
                 }
             )
             payload = json.dumps(response).encode()
+            if mode == "interrupted-started-term":
+                entered.set()
+                release.wait(10)
+                return
             self.send_response(429 if category else 200)
             if category:
                 self.send_header("X-Softmax-Llm-Error-Category", category)
@@ -91,10 +100,17 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
             self.send_header("X-Softmax-Llm-Call-Id", call_id)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
-            self.wfile.write(payload)
+            if mode.startswith("interrupted-partial"):
+                self.wfile.write(b'{"content":"\xe2\x82')
+                self.wfile.flush()
+                entered.set()
+                release.wait(10)
+            else:
+                self.wfile.write(payload)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Native)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    server_owner = threading.Thread(target=server.serve_forever)
+    server_owner.start()
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     port = listener.getsockname()[1]
@@ -130,6 +146,8 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
         COWORLD_LLM_TEMPERATURE="0",
         LLM_REQUEST_METADATA=json.dumps({"episode_request_id": "fixture-" + mode}),
     )
+    if mode == "runtime-failure":
+        environment["COWORLD_LLM_TEMPERATURE"] = "2"
     with (folder / "game.log").open("w") as log:
         process = subprocess.Popen(
             [binary], env=environment, stdout=log, stderr=subprocess.STDOUT
@@ -158,7 +176,17 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
                             {"type": "prompt", "prompt": "PRIVATE OPERATOR SENTINEL"}
                         )
                     )
-                assert process.wait(timeout=45) == 0, (folder / "game.log").read_text()
+                if mode.startswith("interrupted-"):
+                    assert entered.wait(10), "owned native request never reached fixture"
+                    if mode.startswith("interrupted-partial"):
+                        time.sleep(0.2)
+                    requested = signal.SIGINT if mode.endswith("-int") else signal.SIGTERM
+                    process.send_signal(requested)
+                    time.sleep(0.05)
+                    if process.poll() is None:
+                        process.send_signal(requested)
+                status = process.wait(timeout=45)
+                assert (status != 0 if mode == "runtime-failure" else status == 0), (folder / "game.log").read_text()
             finally:
                 for seat in sockets:
                     seat.close()
@@ -166,13 +194,48 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=5)
+            release.set()
             server.shutdown()
+            server_owner.join(timeout=4)
+            assert not server_owner.is_alive()
             server.server_close()
     events = [
         json.loads(line)
         for line in (folder / "trajectory.jsonl").read_text().splitlines()
     ]
     decisions = events[:-1]
+    if mode.startswith("interrupted-") or mode == "runtime-failure":
+        assert events[-1]["status"] == ("failed" if mode == "runtime-failure" else "truncated")
+        assert not (folder / "results.json").exists()
+        assert not (folder / "replay.json").exists()
+        assert events[-1]["participant_outcomes"] is None
+        assert (folder / "trajectory.jsonl").stat().st_mode & 0o777 == 0o600
+        if mode.startswith("interrupted-"):
+            assert len(decisions) == 1 and len(requests) == 1
+            decision = decisions[0]
+            assert decision["selected_attempt_id"] is None and decision["executed_action"] is None
+            assert decision["action_status"] == "missing"
+            attempt = decision["attempts"][0]
+            assert not attempt["accepted"]
+            assert attempt["request"] == requests[0]["caller_request"]
+            if mode.startswith("interrupted-partial"):
+                assert attempt["response_complete"] is False
+                body = base64.b64decode(attempt["response_body_b64"], validate=True)
+                headers = base64.b64decode(attempt["response_headers_b64"], validate=True)
+                assert body == b'{"content":"\xe2\x82'
+                assert attempt["raw_response"] is None
+                assert attempt["http_status"] == 200
+                assert attempt["platform_call_id"] == requests[0]["platform_call_id"]
+                assert b"X-Softmax-Llm-Call-Id:" in headers
+            else:
+                assert attempt["response_body_b64"] is None and attempt["response_headers_b64"] is None
+                assert attempt["response_complete"] is None and attempt["raw_response"] is None
+                assert attempt["response_headers"] is None
+                assert attempt["platform_call_id"] is None and attempt["http_status"] is None
+        reports.append({"mode": mode, "complete_episodes": 0, "decisions": len(decisions),
+                        "native_call_joins": len(requests), "source_revision": revision,
+                        "cohort": "owned CPU interruption/failure fixture; no platform hosted claim"})
+        continue
     assert events[-1]["status"] == "completed"
     outcome = events[-1]["outcome"]
     assert outcome["protocol"] == "parley.native-outcome.v1"
@@ -196,6 +259,9 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
             archive = calls[attempt["platform_call_id"]]
             assert attempt["request"] == archive["caller_request"]
             assert attempt["raw_response"] == archive["provider_response"]
+            assert base64.b64decode(attempt["response_body_b64"], validate=True).decode() == archive["provider_response"]
+            assert attempt["response_complete"] is True
+            assert attempt["http_status"] == (429 if "softmax_error" in json.loads(archive["provider_response"]) else 200)
             assert attempt["provider_request_id"] == "fixture-provider-" + attempt["platform_call_id"]
             received_headers = {key.lower(): value for key, value in attempt["response_headers"].items()}
             assert received_headers["request-id"] == attempt["provider_request_id"]

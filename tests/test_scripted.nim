@@ -1,7 +1,21 @@
 import std/[json, strutils, unittest]
+from std/unicode import runeLen, validateUtf8
 import parley/[llm, sim]
 
 suite "scripted seat randomness":
+  test "speech clipping preserves UTF8 and the advertised character cap":
+    let sim = default(Sim)
+    let shortSpeech = repeat("界", 60)
+    check sim.parseDecision(0, %*{"say": shortSpeech}, false).say == shortSpeech
+    for speech in [repeat("界", 170), repeat("é", 170), repeat("a", 170),
+        repeat("界", 100) & " " & repeat("é", 70)]:
+      let clipped = sim.parseDecision(0, %*{"say": speech}, false).say
+      check clipped.validateUtf8 == -1
+      check clipped.runeLen <= 160
+      check clipped.endsWith("…")
+    let words = repeat("界", 100) & " " & repeat("é", 70)
+    check sim.parseDecision(0, %*{"say": words}, false).say == repeat("界", 100) & "…"
+
   test "structured actions preserve visible targets, both aims, passes, and reactions":
     var config = defaultGameConfig()
     config.sampled = true

@@ -11,6 +11,8 @@
 ## baseline immediately (no retries, no network waits) so offline
 ## certification still completes - this fallback is load-bearing.
 
+from std/unicode import runeLen, runeSubStr
+
 import
   std/[json, options, os, random, strutils],
   bitworld/decision_trajectory,
@@ -493,16 +495,13 @@ proc seatByName(sim: Sim, name: string): int =
 
 proc cleanSay(text: string): string =
   result = text.strip()
-  if result.len <= MaxSayLen:
+  if result.runeLen <= MaxSayLen:
     return
   ## A model that overshoots the stated cap gets cut at a word boundary with
   ## the cut marked — a silent mid-word slice reads as a bug at the table.
-  result = result[0 ..< MaxSayLen - 3]
-  ## Never leave a UTF-8 code point split by the byte slice.
-  while result.len > 0 and (result[^1].ord and 0xC0) == 0x80:
-    result.setLen(result.len - 1)
+  result = result.runeSubStr(0, MaxSayLen - 1)
   let space = result.rfind(' ')
-  if space > MaxSayLen div 2:
+  if space >= 0 and result[0 ..< space].runeLen > MaxSayLen div 2:
     result.setLen(space)
   result.add("…")
 

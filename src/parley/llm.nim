@@ -298,6 +298,7 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
     "max_tokens": client.maxOutputTokens}
   let response = performNativePost(url, headers, $body, deadline)
   evidence.latencyMs = response.latencyMs
+  evidence.responseReaderJoined = response.responseReaderJoined
   let observedResponse = response.httpStatus.isSome or response.headerBytes.len > 0 or response.bodyBytes.len > 0
   if observedResponse:
     evidence.responseBodyB64 = some(encode(response.bodyBytes))

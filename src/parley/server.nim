@@ -11,19 +11,20 @@
 ##   WS  /global                     - spectator snapshots
 ##   WS  /replay                     - replay payload (replay mode)
 ##
-## Player protocol (parley.player.v2), all JSON text frames:
+## Player protocol (parley.player.v3), all JSON text frames:
 ##   game -> player: {"type":"welcome","slot":N,"name":...}
 ##                   {"type":"state",...} after every event batch
 ##                   {"type":"final","scores":[...],"win":[...]}
 ##   player -> game: {"type":"prompt","prompt":"..."} (max 4000 chars)
 ##   player -> game: {"type":"register","control":"external","prompt":"..."}
-##   game -> external player: {"type":"observation","id":N,
-##                   "observation":<seat-private state>,"phase":"shot"|"reaction",
-##                   "input":{"system":...,"user":...},"legalActions":[...]}
-##   external player -> game: {"type":"action","id":N,"action":{...}}
+##   game -> external player: decision {decision_id, observation, transport}
+##   player -> game: attempt_started/action {decision_id, training_attempt}
+##   game -> external player: stop {decision_id, reason, cleanup_budget_ms}
+##   player -> game: stopped {decision_id, worker_status, attempts}
+##   Acceptance and engine actions are never player-owned evidence.
 
 import
-  std/[json, locks, math, monotimes, options, os, oids, sets, strutils, tables, times],
+  std/[base64, json, locks, math, monotimes, options, os, oids, sets, strutils, sysrand, tables, times],
   bitworld/decision_trajectory,
   bitworld/runtime,
   bitworld/native_stop,
@@ -41,6 +42,13 @@ const
   ParleyGameVersion {.strdefine.} = ""
 
 type
+  StagedDecision = object
+    id, seat: string
+    observation, action: JsonNode
+    attempts: seq[DecisionAttempt]
+    selected: Option[string]
+    status: ActionStatus
+    fallback: Option[string]
   GameState = object
     config: GameConfig
     inputConfig: JsonNode
@@ -49,16 +57,25 @@ type
     external: seq[bool]
     scripted: seq[bool]
     promptSet: seq[bool]
-    nextDecisionId: int
     awaitingSeat: int
-    awaitingId: int
+    awaitingId: string
+    issuedWindows: Table[string, JsonNode]
+    issuedSeats: Table[string, int]
+    issuedAt: Table[string, MonoTime]
+    latestDecisions: Table[int, string]
+    startedAttempts, completedAttempts: Table[string, JsonNode]
+    stoppedSlots: HashSet[int]
+    staged: seq[StagedDecision]
+    stopping: bool
+    stopId: string
+    pendingSource: string
     awaitingShot: bool
     pendingDecision: Decision
     pendingRawAction: JsonNode
     pendingRejected: seq[JsonNode]
     pendingAttempts: seq[DecisionAttempt]
     hasPendingDecision: bool
-    awaitingDeadline, pendingReceived: MonoTime
+    awaitingDeadline, pendingReceived, stopAckStart, stopAckDeadline: MonoTime
     episodeStart, episodeDeadline: MonoTime
     episodeTimeoutSeconds: float
     decisionRefs: seq[JsonNode]
@@ -150,7 +167,7 @@ proc broadcastLocked(gs: GameState) =
     socket.send($gs.liveFrameJson(slot))
 
 proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
-    wantShot: bool, header: string, id: int): JsonNode =
+    wantShot: bool, header: string): JsonNode =
   var legalActions = newJArray()
   if wantShot:
     if sim.skipsLeft() > 0:
@@ -159,7 +176,6 @@ proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
       for aim in ["head", "hip"]:
         legalActions.add(%*{"shoot": sim.seats[target].name, "aim": aim})
   %*{
-    "type": "observation", "id": id,
     "phase": (if wantShot: "shot" else: "reaction"),
     "observation": gs.liveFrameJson(seat),
     "input": {"system": systemPrompt(sim, seat),
@@ -167,6 +183,8 @@ proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
     "legalActions": legalActions}
 
 proc registerExternal(gs: var GameState, slot: int, prompt: string) =
+  if gs.started or gs.stopping or gs.finished:
+    raise newException(ParleyError, "player control is frozen after gameplay begins")
   if prompt.len > MaxPromptLen:
     raise newException(ParleyError, "external operator prompt exceeds limit")
   gs.prompts[slot] = prompt
@@ -192,17 +210,22 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
     registeredExternal = state.external[seat]
     external = registeredExternal and state.playerSockets.hasKey(seat)
     if external:
-      inc state.nextDecisionId
       state.awaitingSeat = seat
-      state.awaitingId = state.nextDecisionId
+      state.awaitingId = $(state.decisionRefs.len + 1)
       state.awaitingShot = wantShot
       state.awaitingDeadline = decisionDeadline
       state.hasPendingDecision = false
       state.pendingRejected = @[]
       state.pendingAttempts = @[]
-      observation = state.externalObservation(sim, seat, prompt, wantShot,
-        header, state.awaitingId)
-      state.playerSockets[seat].send($observation)
+      observation = state.externalObservation(sim, seat, prompt, wantShot, header)
+      state.issuedWindows[state.awaitingId] = observation
+      state.issuedSeats[state.awaitingId] = seat
+      state.issuedAt[state.awaitingId] = getMonoTime()
+      state.latestDecisions[seat] = state.awaitingId
+      state.playerSockets[seat].send($(%*{"type": "decision", "decision_id": state.awaitingId,
+        "observation": observation, "transport": {
+          "budget_ms": max(1, (decisionDeadline - getMonoTime()).inMilliseconds),
+          "cleanup_budget_ms": 5000}}))
   if not external:
     if registeredExternal:
       result.decision =
@@ -232,7 +255,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
     state.awaitingSeat = -1
     if state.hasPendingDecision and state.pendingReceived < decisionDeadline and not interruptionRequested():
       return DecisionResult(decision: state.pendingDecision,
-        origin: "external", input: %*{
+        origin: (if state.pendingSource == "fallback": "scripted_external_fallback" else: "external"), input: %*{
           "packet": observation, "wire": $observation},
         response: state.pendingRawAction,
         attempts: state.pendingRejected, nativeAttempts: state.pendingAttempts)
@@ -245,22 +268,82 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
   result.attempts = state.pendingRejected
   result.nativeAttempts = state.pendingAttempts
 
+proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
+    evidence: JsonNode, completed: bool) =
+  if not gs.issuedSeats.hasKey(id) or gs.issuedSeats[id] != seat:
+    raise newException(ParleyError, "attempt does not belong to authenticated issued seat")
+  let attempt = readAttemptEvidence(evidence)
+  if attempt.attemptId != id & "-model" or attempt.origin != aoModel:
+    raise newException(ParleyError, "external attempt must identify its issued model call")
+  let input = gs.issuedWindows[id]["input"]
+  let prompt = %*[{"role": "system", "content": input["system"]},
+    {"role": "user", "content": input["user"]}]
+  if attempt.prompt != prompt or attempt.request.kind != JObject or
+      attempt.request["messages"] != prompt:
+    raise newException(ParleyError, "model call rewrites the exact private prompt")
+  if completed and not gs.startedAttempts.hasKey(id):
+    raise newException(ParleyError, "completed model evidence lacks pre-request start")
+  if gs.startedAttempts.hasKey(id):
+    if gs.startedAttempts[id]["latency_ms"].kind != JNull and evidence != gs.startedAttempts[id]:
+      raise newException(ParleyError, "finished native attempt evidence is immutable")
+    for key in ["prompt", "request", "decoder", "policy"]:
+      if evidence[key] != gs.startedAttempts[id][key]:
+        raise newException(ParleyError, "started model request evidence is immutable")
+    let before = gs.startedAttempts[id]
+    for key in ["response_body_b64", "response_headers_b64"]:
+      if before[key].kind != JNull:
+        if evidence[key].kind != JString or
+            not decode(evidence[key].getStr()).startsWith(decode(before[key].getStr())):
+          raise newException(ParleyError, "received native bytes cannot be rewritten")
+    if before["response_complete"] == %true and
+        (evidence["response_complete"] != %true or evidence["response_body_b64"] != before["response_body_b64"] or
+          evidence["response_headers_b64"] != before["response_headers_b64"]):
+      raise newException(ParleyError, "complete native response cannot be rewritten")
+    for key in ["http_status", "response_headers", "platform_call_id", "provider_request_id",
+        "model_identity", "tokenizer_identity", "chat_template_sha256"]:
+      if before[key].kind != JNull and evidence[key] != before[key]:
+        raise newException(ParleyError, "received native identity cannot be rewritten")
+  if gs.completedAttempts.hasKey(id) and evidence != gs.completedAttempts[id]:
+    raise newException(ParleyError, "completed native evidence is immutable")
+  gs.startedAttempts[id] = copy(evidence)
+  if completed: gs.completedAttempts[id] = copy(evidence)
+  if gs.awaitingSeat == seat and gs.awaitingId == id:
+    gs.pendingAttempts = @[attempt]
+
 proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
     wire: string, receivedAt: MonoTime) =
-  if payload.hasKey("attempts"):
-    for envelope in payload["attempts"]:
-      var evidence = readAttemptEvidence(envelope)
-      if evidence.origin in {aoTeacher, aoHuman}: evidence.origin = aoUnknown
-      gs.pendingAttempts.add(evidence)
+  let source = payload["source"].getStr()
+  if source notin ["llm", "fallback", "scripted"]:
+    raise newException(ParleyError, "unknown external action source")
+  let id = payload["decision_id"].getStr()
+  let evidence = payload["training_attempt"]
+  if evidence.kind != JNull:
+    if source == "scripted":
+      raise newException(ParleyError, "scripted action cannot assert model evidence")
+    gs.retainExternalAttempt(seat, id, evidence, completed = true)
+  elif source == "llm":
+    raise newException(ParleyError, "model action requires native attempt evidence")
   let proposal = parseDecision(gs.match.sim, seat, payload["action"], gs.awaitingShot)
   let canonical = decisionAction(gs.match.sim, proposal, gs.awaitingShot)
-  if gs.pendingAttempts.len > 0 and gs.pendingAttempts[^1].origin == aoModel:
+  if source == "llm":
+    var attempt = readAttemptEvidence(evidence)
+    if attempt.response.kind != JString or attempt.rawResponse.kind != JString or
+        attempt.responseComplete != some(true) or attempt.responseReaderJoined != some(true) or
+        attempt.httpStatus != some(200) or
+        attempt.rejectionReason.isSome:
+      raise newException(ParleyError, "model action requires its complete successful native response")
+    let served = parseJson(attempt.rawResponse.getStr())
+    if attempt.model.isNone or served["model"] != %attempt.model.get() or
+        served["choices"][0]["message"]["content"] != attempt.response:
+      raise newException(ParleyError, "selected completion differs from actual received native body")
     let generated = parseDecision(gs.match.sim, seat,
-      parseJsonObject(gs.pendingAttempts[^1].response.getStr()), gs.awaitingShot)
-    gs.pendingAttempts[^1].parsedAction = decisionAction(gs.match.sim, generated, gs.awaitingShot)
-    if gs.pendingAttempts[^1].parsedAction != canonical:
+      parseJsonObject(attempt.response.getStr()), gs.awaitingShot)
+    attempt.parsedAction = decisionAction(gs.match.sim, generated, gs.awaitingShot)
+    if attempt.parsedAction != canonical:
       raise newException(ParleyError, "model response differs from submitted action")
+    gs.pendingAttempts = @[attempt]
   gs.pendingDecision = proposal
+  gs.pendingSource = source
   gs.pendingRawAction = %*{"wire": wire, "action": payload["action"]}
   gs.pendingReceived = receivedAt
   gs.hasPendingDecision = true
@@ -289,7 +372,6 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
         var external = newDecisionAttempt("external-action", "external", aoUnknown)
         external.prompt = outcome.input
         external.response = outcome.response
-        external.rawResponse = outcome.response
         attempts.add(external)
       if attempts[^1].origin != aoModel:
         attempts[^1].parsedAction = decisionAction(sim, outcome.decision, wantShot)
@@ -299,10 +381,10 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
     elif attempts.len > 0 and attempts[^1].accepted:
       attempts[^1].accepted = false
       attempts[^1].rejectionReason = some("engine rejected proposal")
-    gs.trajectory.get().recordDecision($reference["id"].getInt(), $seat,
-      observation, attempts, selected, action,
-      (if proposalAccepted: asAccepted else: asFallback),
-      fallbackOrigin = (if proposalAccepted: none(string) else: some(outcome.origin)))
+    gs.staged.add(StagedDecision(id: $reference["id"].getInt(), seat: $seat,
+      observation: observation, attempts: attempts, selected: selected, action: action,
+      status: (if proposalAccepted: asAccepted else: asFallback),
+      fallback: (if proposalAccepted: none(string) else: some(outcome.origin))))
 
 
 proc recordInterruptedDecision(gs: var GameState, seat: int,
@@ -314,8 +396,9 @@ proc recordInterruptedDecision(gs: var GameState, seat: int,
       attempt.accepted = false
       if attempt.rejectionReason.isNone:
         attempt.rejectionReason = some("interrupted before engine acceptance")
-    gs.trajectory.get().recordDecision($(gs.decisionRefs.len + 1), $seat,
-      observation, attempts, none(string), newJNull(), asMissing)
+    gs.staged.add(StagedDecision(id: $(gs.decisionRefs.len + 1), seat: $seat,
+      observation: observation, attempts: attempts, selected: none(string),
+      action: newJNull(), status: asMissing))
 
 proc broadcast() =
   withLock stateLock:
@@ -364,11 +447,40 @@ proc statesFromEvents(config: GameConfig, events: seq[GameEvent]): JsonNode =
 
 proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
   let cleanupDeadline = min(state.episodeDeadline, getMonoTime() + initDuration(seconds = 10))
+  var targets: seq[int]
+  withLock stateLock:
+    if state.finished: return
+    state.stopping = true
+    var stopToken: array[16, byte]
+    doAssert urandom(stopToken), "OS entropy unavailable for stop identity"
+    for value in stopToken: state.stopId.add(value.toHex(2))
+    state.stopAckStart = getMonoTime()
+    state.stopAckDeadline = cleanupDeadline - initDuration(seconds = 1)
+    for slot in 0 ..< state.external.len:
+      if not state.external[slot]: continue
+      targets.add(slot)
+      if state.playerSockets.hasKey(slot):
+        let id = if state.latestDecisions.hasKey(slot): %state.latestDecisions[slot] else: newJNull()
+        state.playerSockets[slot].send($(%*{"type": "stop", "stop_id": state.stopId, "decision_id": id,
+          "reason": (if interruptionRequested(): "interrupted" elif status == esCompleted: "terminal" else: "episode_deadline"),
+          "cleanup_budget_ms": max(0, (state.stopAckDeadline - getMonoTime()).inMilliseconds)}))
+  let ackDeadline = cleanupDeadline - initDuration(seconds = 1)
+  while getMonoTime() < ackDeadline:
+    var acknowledged = true
+    withLock stateLock:
+      for slot in targets:
+        if slot notin state.stoppedSlots: acknowledged = false
+    if acknowledged: break
+    sleep(10)
+  var unresolved = false
+  var cleanup = newJObject()
   var results: JsonNode
   var replayData: string
   withLock stateLock:
-    if state.finished:
-      return
+    for slot in targets:
+      let joined = slot in state.stoppedSlots
+      cleanup[$slot] = %(if joined: "acknowledged" else: "unresolved")
+      if not joined: unresolved = true
     state.finished = true
     results = state.match.resultsJson()
     replayData = state.replayPayload(results)
@@ -383,7 +495,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
     var aliasNames = newJArray()
     for seat in state.match.sim.seats:
       aliasNames.add(%seat.name)
-    if status != esFailed and not interruptionRequested():
+    if status != esFailed and not interruptionRequested() and not unresolved:
       var final = %*{
         "type": "final",
         "done": true,
@@ -407,20 +519,39 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
   echo "parley: writing private episode evidence"
   if state.trajectory.isSome:
     let trajectory = state.trajectory.get()
-    if interruptionRequested() or status == esFailed:
-      trajectory.finish((if interruptionRequested(): esTruncated else: esFailed),
-        %*{"protocol": "parley.native-outcome.v1", "termination": (if interruptionRequested(): "interrupted" else: "runtime-failure"),
+    withLock stateLock:
+      for staged in state.staged:
+        var attempts = staged.attempts
+        if staged.selected.isNone:
+          var late = newJNull()
+          if state.completedAttempts.hasKey(staged.id): late = state.completedAttempts[staged.id]
+          elif state.startedAttempts.hasKey(staged.id): late = state.startedAttempts[staged.id]
+          if late.kind == JObject:
+            var received = readAttemptEvidence(late)
+            if attempts.len > 0:
+              received.accepted = attempts[0].accepted
+              received.parsedAction = attempts[0].parsedAction
+              received.rejectionReason = attempts[0].rejectionReason
+            else:
+              received.rejectionReason = some("native evidence arrived after engine decision")
+            attempts = @[received]
+        trajectory.recordDecision(staged.id, staged.seat, staged.observation,
+          attempts, staged.selected, staged.action, staged.status, fallbackOrigin = staged.fallback)
+    if interruptionRequested() or status == esFailed or unresolved:
+      trajectory.finish((if interruptionRequested() or unresolved: esTruncated else: esFailed),
+        %*{"protocol": "parley.native-outcome.v1", "player_cleanup": cleanup,
+          "termination": (if interruptionRequested(): "interrupted" elif unresolved: "unresolved-player-cleanup" else: "runtime-failure"),
           "partial_results": results, "input_config": state.inputConfig,
           "selected_seed": state.config.seed}, newJNull())
     else:
       trajectory.finish(
         status,
         %*{"protocol": "parley.native-outcome.v1", "results": results,
-           "input_config": state.inputConfig, "selected_seed": state.config.seed},
+           "player_cleanup": cleanup, "input_config": state.inputConfig, "selected_seed": state.config.seed},
         results["scores"])
     writeTrajectoryArtifact(trajectory, getEnv(CogameSaveTrajectoryUriEnv), cleanupDeadline,
       parseEnum[ArtifactHttpMethod](getEnv("COGAME_SAVE_TRAJECTORY_METHOD", "PUT").toUpperAscii()))
-  if status != esFailed and not interruptionRequested():
+  if status != esFailed and not interruptionRequested() and not unresolved:
     writeArtifact(
       runtimeConfig.resultsUri, $results, "application/json",
       "COGAME_RESULTS_METHOD", cleanupDeadline
@@ -641,22 +772,21 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
       slot = parseInt(slotText)
     except ValueError:
       discard
-    var authorized = false
     withLock stateLock:
-      authorized = slot >= 0 and slot < state.config.tokens.len and
-        state.config.tokens[slot] == token
-    if not authorized:
-      request.respond(401)
-      return
-    let websocket = request.upgradeToWebSocket()
-    withLock stateLock:
+      if slot < 0 or slot >= state.config.tokens.len or state.config.tokens[slot] != token:
+        request.respond(401)
+        return
+      if state.started or state.stopping or state.finished or state.playerSockets.hasKey(slot):
+        request.respond(409)
+        return
+      let websocket = request.upgradeToWebSocket()
       state.playerSockets[slot] = websocket
       state.socketSlots[websocket] = slot
       echo "parley: player slot ", slot, " connected (",
         state.playerSockets.len, "/", state.config.tokens.len, ")"
       websocket.send($ %*{
         "type": "welcome",
-        "protocol": "parley.player.v2",
+        "protocol": "parley.player.v3",
         "slot": slot,
         "name": state.match.sim.seats[slot].name,
         "hitPoints": state.config.hitPoints,
@@ -705,21 +835,56 @@ proc websocketHandler(
         slot = state.socketSlots.getOrDefault(websocket, -1)
       if slot < 0:
         return
+      var payload = newJNull()
       try:
-        let payload = parseJson(message.data)
+        payload = parseJson(message.data)
         if payload{"type"}.getStr() == "register":
           if payload["control"].getStr() != "external":
             raise newException(ParleyError, "unknown player control")
           withLock stateLock:
             state.registerExternal(slot, payload{"prompt"}.getStr())
           return
-        if payload{"type"}.getStr() == "action":
+        if payload["type"].getStr() in ["attempt_started", "action"]:
+          let id = payload["decision_id"].getStr()
           withLock stateLock:
-            if state.external[slot] and state.awaitingSeat == slot and
-                state.awaitingId == payload["id"].getInt() and
-                not state.hasPendingDecision and not interruptionRequested() and
-                receivedAt < state.awaitingDeadline:
+            if state.finished: return
+            if not state.external[slot] or not state.issuedSeats.hasKey(id) or state.issuedSeats[id] != slot or receivedAt < state.issuedAt[id]:
+              raise newException(ParleyError, "decision does not belong to authenticated issued seat")
+            if payload["type"].getStr() == "attempt_started":
+              state.retainExternalAttempt(slot, id, payload["training_attempt"], completed = false)
+            elif state.awaitingSeat == slot and state.awaitingId == id and
+                not state.hasPendingDecision and not interruptionRequested() and receivedAt < state.awaitingDeadline:
               state.acceptExternalAction(slot, payload, message.data, receivedAt)
+            elif payload["training_attempt"].kind != JNull:
+              state.retainExternalAttempt(slot, id, payload["training_attempt"], completed = true)
+          return
+        if payload["type"].getStr() == "stopped":
+          withLock stateLock:
+            if state.finished: return
+            if not state.external[slot]:
+              raise newException(ParleyError, "acknowledgement does not belong to external owner")
+            let id = payload["decision_id"]
+            if payload["worker_status"].getStr() notin ["joined", "no_active_call"] or payload["attempts"].kind != JArray:
+              raise newException(ParleyError, "stop must carry owned worker status and attempt array")
+            if id.kind == JString:
+              if not state.issuedSeats.hasKey(id.getStr()) or state.issuedSeats[id.getStr()] != slot or
+                  receivedAt < state.issuedAt[id.getStr()]:
+                raise newException(ParleyError, "stop evidence does not belong to authenticated issued seat")
+              for evidence in payload["attempts"]:
+                state.retainExternalAttempt(slot, id.getStr(), evidence, completed = true)
+            elif id.kind != JNull or payload["attempts"].len > 0:
+              raise newException(ParleyError, "unissued stop has native attempt evidence")
+            if state.playerSockets.hasKey(slot) and state.playerSockets[slot] == websocket:
+              websocket.send($(%*{"type": "evidence_received", "decision_id": id,
+                "stop_id": payload["stop_id"]}))
+            let expected = if state.latestDecisions.hasKey(slot): %state.latestDecisions[slot] else: newJNull()
+            if id != expected or not state.stopping or receivedAt < state.stopAckStart or
+                receivedAt >= state.stopAckDeadline or payload["stop_id"] != %state.stopId:
+              raise newException(ParleyError, "acknowledgement is outside its engine-issued stop window")
+            for evidence in payload["attempts"]:
+              if readAttemptEvidence(evidence).responseReaderJoined == some(false):
+                raise newException(ParleyError, "stop retains an unjoined native response reader")
+            state.stoppedSlots.incl(slot)
           return
         if payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()
@@ -727,6 +892,8 @@ proc websocketHandler(
           if prompt.len > MaxPromptLen:
             prompt = prompt[0 ..< MaxPromptLen]
           withLock stateLock:
+            if state.started or state.stopping or state.finished or state.external[slot]:
+              raise newException(ParleyError, "player control is frozen after registration or gameplay begins")
             state.prompts[slot] = prompt
             state.external[slot] = false
             state.scripted[slot] = scripted
@@ -736,7 +903,10 @@ proc websocketHandler(
             (if scripted: ", scripted" else: ""), ")"
       except CatchableError as error:
         withLock stateLock:
-          if state.awaitingSeat == slot:
+          if state.awaitingSeat == slot and not state.hasPendingDecision and
+              payload.kind == JObject and payload{"type"}.getStr() == "action" and
+              payload{"decision_id"}.getStr() == state.awaitingId and
+              receivedAt >= state.issuedAt[state.awaitingId] and receivedAt < state.awaitingDeadline:
             state.pendingRejected.add(%*{
               "wire": message.data, "error": error.msg})
             if state.pendingAttempts.len == 0 or state.pendingAttempts[^1].rejectionReason.isSome:
@@ -755,7 +925,7 @@ proc websocketHandler(
       withLock stateLock:
         if websocket in state.socketSlots:
           let slot = state.socketSlots[websocket]
-          state.socketSlots.del(websocket)
+          ## Keep authenticated ownership for queued final progress until seal.
           if state.playerSockets.getOrDefault(slot) == websocket:
             state.playerSockets.del(slot)
         state.globalSockets.excl(websocket)

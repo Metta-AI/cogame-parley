@@ -63,8 +63,18 @@ training.
 The production renderer and parser serve both prompt players and external
 players. External observations include `input.system` and `input.user`.
 Register with `{"type":"register","control":"external","prompt":"..."}`
-and submit the ordinary structured action frame. External players may include
-private native `attempts` evidence; the engine owns acceptance and execution.
+and receive `decision` frames with a string `decision_id`, the unchanged private `observation`, and a separate
+`transport` budget. Send `attempt_started` before native inference, then an `action` frame carrying that same identity,
+`source`, structured action, and one private `training_attempt`. The engine owns acceptance and execution.
+On `stop`, join the owned inference reader before returning `stopped` with the same decision identity, engine-issued
+`stop_id`, and actual attempts. Older issued operations may deliver final private transport facts without acknowledging
+a newer stop window. Received bytes and identities remain immutable.
+Wait for `evidence_received` with the same `decision_id` and `stop_id` before closing the socket, within the original
+cleanup deadline. This confirms private fact retention, not stop credit or model receipt authority.
+An unsolicited final evidence delivery uses a null `stop_id` and cannot acknowledge an engine-issued stop.
+All registered external seats must acknowledge engine-issued stops, including seats that disconnect. Missing or late
+acknowledgements seal a private truncated episode and prevent public results or replay publication. Earlier unsolicited
+stop evidence can preserve received bytes but cannot acknowledge a later engine stop.
 Unattested external frames have unknown origin and do not become model labels.
 Two invalid prompt responses invoke the scripted fallback. Preserve failed
 attempts for audits; train only on accepted model or approved teacher targets.

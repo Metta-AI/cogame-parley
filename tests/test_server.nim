@@ -206,8 +206,9 @@ suite "external training authority":
     attempt.prompt = %*[{"role": "system", "content": input["system"]},
       {"role": "user", "content": input["user"]}]
     attempt.request = %*{"messages": attempt.prompt}
-    attempt.response = %($response)
     attempt.model = some("fixture-model")
+    game.retainExternalAttempt(seat, "1", attempt.attemptEvidenceJson(), completed = false)
+    attempt.response = %($response)
     attempt.rawResponse = %($(%*{"model": "fixture-model", "choices": [{"message": {"content": $response}}]}))
     attempt.responseComplete = some(true)
     attempt.responseReaderJoined = some(true)
@@ -219,6 +220,11 @@ suite "external training authority":
     check not game.hasPendingDecision
     check not game.pendingAttempts[0].accepted
     check game.pendingAttempts[0].parsedAction.kind == JNull
+    game.acceptExternalAction(seat, %*{"decision_id": "1", "source": "llm", "action": response,
+      "training_attempt": attempt.attemptEvidenceJson()}, "matching-wire", getMonoTime())
+    check game.hasPendingDecision
+    check game.pendingAttempts[0].parsedAction == decisionAction(game.match.sim,
+      parseDecision(game.match.sim, seat, response, true), true)
 
   test "external transport progress preserves issued owner prompt and received facts":
     var config = defaultGameConfig()
@@ -233,6 +239,17 @@ suite "external training authority":
     attempt.prompt = %*[{"role": "system", "content": input["system"]},
       {"role": "user", "content": input["user"]}]
     attempt.request = %*{"messages": attempt.prompt}
+    let start = attempt.attemptEvidenceJson()
+    for (key, value) in [("response", %"finished"), ("raw_response", %"received"),
+        ("response_body_b64", %encode("received")), ("http_status", %200),
+        ("response_complete", %false), ("response_reader_joined", %false),
+        ("platform_call_id", %"received-id"), ("latency_ms", %20.0)]:
+      var forged = copy(start)
+      forged[key] = value
+      expect ParleyError:
+        game.retainExternalAttempt(seat, "issued", forged, completed = false)
+      check not game.startedAttempts.hasKey("issued")
+    game.retainExternalAttempt(seat, "issued", start, completed = false)
     attempt.httpStatus = some(200)
     attempt.responseBodyB64 = some(encode("actual-prefix"))
     attempt.responseHeadersB64 = some(encode("HTTP/1.1 200 OK\r\n"))
@@ -305,6 +322,42 @@ suite "external training authority":
       "worker_status": "joined", "attempts": [attempt.attemptEvidenceJson()]}
     websocketHandler(socket, MessageEvent, Message(kind: TextMessage, data: $late))
     check state.completedAttempts["older"] == evidence
+
+  test "stop cannot omit a known reader and joined evidence stays immutable without latency":
+    var config = defaultGameConfig()
+    for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
+    state = GameState(config: config, match: initMatch(config), external: newSeq[bool](5),
+      awaitingSeat: -1, stopping: true, stopId: "owned-stop",
+      stopAckStart: getMonoTime() - initDuration(seconds = 1),
+      stopAckDeadline: getMonoTime() + initDuration(seconds = 10))
+    let socket = default(WebSocket)
+    state.external[0] = true
+    state.socketSlots[socket] = 0
+    state.issuedSeats["known"] = 0
+    state.issuedAt["known"] = getMonoTime() - initDuration(seconds = 2)
+    state.latestDecisions[0] = "known"
+    state.issuedWindows["known"] = state.externalObservation(state.match.sim, 0, "operator", true, matchHeader(state.match))
+    let input = state.issuedWindows["known"]["input"]
+    var attempt = newDecisionAttempt("known-model", "native", aoModel)
+    attempt.prompt = %*[{"role": "system", "content": input["system"]},
+      {"role": "user", "content": input["user"]}]
+    attempt.request = %*{"messages": attempt.prompt}
+    state.retainExternalAttempt(0, "known", attempt.attemptEvidenceJson(), completed = false)
+    let ack = %*{"type": "stopped", "decision_id": "known", "stop_id": "owned-stop",
+      "worker_status": "no_active_call", "attempts": []}
+    websocketHandler(socket, MessageEvent, Message(kind: TextMessage, data: $ack))
+    check 0 notin state.stoppedSlots
+    attempt.responseReaderJoined = some(true)
+    attempt.responseComplete = some(false)
+    let joined = attempt.attemptEvidenceJson()
+    state.retainExternalAttempt(0, "known", joined, completed = false)
+    var rewrite = copy(joined)
+    rewrite["response_reader_joined"] = %false
+    expect ParleyError:
+      state.retainExternalAttempt(0, "known", rewrite, completed = false)
+    check state.startedAttempts["known"] == joined
+    websocketHandler(socket, MessageEvent, Message(kind: TextMessage, data: $ack))
+    check 0 in state.stoppedSlots
 
   test "executed action comes from engine events even after fallback":
     var config = defaultGameConfig()

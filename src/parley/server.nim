@@ -273,6 +273,14 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
     evidence: JsonNode, completed: bool) =
   if not gs.issuedSeats.hasKey(id) or gs.issuedSeats[id] != seat:
     raise newException(ParleyError, "attempt does not belong to authenticated issued seat")
+  if not completed and not gs.startedAttempts.hasKey(id):
+    for key in ["response", "raw_response", "platform_call_id", "provider_request_id",
+        "response_headers", "response_headers_b64", "response_body_b64", "response_complete",
+        "response_reader_joined", "http_status", "latency_ms", "input_tokens", "output_tokens",
+        "prompt_token_ids", "sampled_token_ids", "behavior_logprobs", "stop_reason",
+        "model_identity", "tokenizer_identity", "chat_template_sha256", "rejection_reason"]:
+      if evidence[key].kind != JNull:
+        raise newException(ParleyError, "initial attempt start already contains response facts")
   let attempt = readAttemptEvidence(evidence)
   if attempt.attemptId != id & "-model" or attempt.origin != aoModel:
     raise newException(ParleyError, "external attempt must identify its issued model call")
@@ -285,7 +293,8 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
   if completed and not gs.startedAttempts.hasKey(id):
     raise newException(ParleyError, "completed model evidence lacks pre-request start")
   if gs.startedAttempts.hasKey(id):
-    if gs.startedAttempts[id]["latency_ms"].kind != JNull and evidence != gs.startedAttempts[id]:
+    if (gs.startedAttempts[id]["latency_ms"].kind != JNull or
+        gs.startedAttempts[id]["response_reader_joined"] == %true) and evidence != gs.startedAttempts[id]:
       raise newException(ParleyError, "finished native attempt evidence is immutable")
     for key in ["prompt", "request", "decoder", "policy"]:
       if evidence[key] != gs.startedAttempts[id][key]:
@@ -889,8 +898,9 @@ proc websocketHandler(
             if id != expected or not state.stopping or receivedAt < state.stopAckStart or
                 receivedAt >= state.stopAckDeadline or payload["stop_id"] != %state.stopId:
               raise newException(ParleyError, "acknowledgement is outside its engine-issued stop window")
-            for evidence in payload["attempts"]:
-              if readAttemptEvidence(evidence).responseReaderJoined == some(false):
+            for issuedId, evidence in state.startedAttempts:
+              if state.issuedSeats[issuedId] == slot and
+                  readAttemptEvidence(evidence).responseReaderJoined != some(true):
                 raise newException(ParleyError, "stop retains an unjoined native response reader")
             state.stoppedSlots.incl(slot)
           return

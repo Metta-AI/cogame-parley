@@ -34,6 +34,11 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
         def do_POST(self):
             assert self.path == "/v1/messages"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            assert body["thinking"] == {"type": "disabled"}
+            assert body["output_config"]["format"]["type"] == "json_schema"
+            schema = body["output_config"]["format"]["schema"]
+            assert schema["additionalProperties"] is False
+            assert "say" in schema["required"]
             user = body["messages"][0]["content"]
             slot = int(self.headers["x-coworld-player-slot"])
             seat_calls[slot] += 1
@@ -41,6 +46,11 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
             action = {"say": "fixture public speech"}
             if target:
                 action.update(shoot=target[1], aim="head")
+                assert target[1] in schema["properties"]["shoot"]["enum"]
+                assert schema["properties"]["aim"]["enum"] == ["head", "hip"]
+                assert "shoot" in schema["required"]
+            else:
+                assert set(schema["properties"]) == {"say"}
             raw = json.dumps(action, separators=(",", ":"))
             if (
                 mode == "fallback"
@@ -195,6 +205,12 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
     for decision in decisions:
         for attempt in decision["attempts"]:
             archive = calls[attempt["platform_call_id"]]
+            assert attempt["decoder"] == {
+                "temperature": attempt["request"]["temperature"],
+                "max_tokens": attempt["request"]["max_tokens"],
+                "thinking": attempt["request"]["thinking"],
+                "output_config": attempt["request"]["output_config"],
+            }
             assert attempt["request"] == archive["caller_request"]
             assert attempt["raw_response"] == archive["provider_response"]
         if decision["action_status"] == "accepted":

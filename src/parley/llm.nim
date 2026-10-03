@@ -11,6 +11,8 @@
 ## baseline immediately (no retries, no network waits) so offline
 ## certification still completes - this fallback is load-bearing.
 
+from std/unicode import runeLen, runeSubStr
+
 import
   std/[json, options, os, random, strutils],
   bitworld/decision_trajectory,
@@ -332,6 +334,22 @@ proc reactionInstruction(): string =
     $MaxSayLen & " chars) - plead, deflect, scheme, or stir the pot.\n" &
     "Respond with JSON: {\"say\": \"...\"}"
 
+proc actionSchema*(sim: Sim, seat: int, wantShot: bool): JsonNode =
+  ## Constrain only the action contract and already-public legal targets.
+  result = %*{"type": "object", "additionalProperties": false,
+    "properties": {"say": {"type": "string",
+      "description": "Public speech, at most " & $MaxSayLen & " characters."}},
+    "required": ["say"]}
+  if wantShot:
+    var targets = newJArray()
+    for target in sim.validTargets(seat):
+      targets.add(%sim.seatName(target))
+    if sim.skipsLeft() > 0:
+      targets.add(%"pass")
+    result["properties"]["shoot"] = %*{"type": "string", "enum": targets}
+    result["properties"]["aim"] = %*{"type": "string", "enum": ["head", "hip"]}
+    result["required"].add(%"shoot")
+
 proc matchHeader*(match: Match): string =
   ## Share standings without revealing a withheld match length.
   var standings: seq[string]
@@ -371,12 +389,14 @@ proc parseJsonObject*(text: string): JsonNode =
     raise newException(ParleyError, "response must be a JSON object")
 
 proc completeText(client: LlmClient, seat: int, system, user: string,
-    evidence: var DecisionAttempt): string =
+    schema: JsonNode, evidence: var DecisionAttempt): string =
   var body = %*{
     "max_tokens": client.maxOutputTokens,
     "temperature": client.temperature,
     "system": system,
-    "messages": [{"role": "user", "content": user}]
+    "messages": [{"role": "user", "content": user}],
+    "thinking": {"type": "disabled"},
+    "output_config": {"format": {"type": "json_schema", "schema": schema}}
   }
   var headers: HttpHeaders
   headers["content-type"] = "application/json"
@@ -399,7 +419,8 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
   evidence.request = copy(body)
   evidence.model = some(client.model)
   evidence.decoder = %*{"temperature": client.temperature,
-    "max_tokens": client.maxOutputTokens}
+    "max_tokens": client.maxOutputTokens, "thinking": body["thinking"],
+    "output_config": body["output_config"]}
   let response = client.curl.post(
     url, headers, $body, client.timeoutSeconds
   )
@@ -474,16 +495,13 @@ proc seatByName(sim: Sim, name: string): int =
 
 proc cleanSay(text: string): string =
   result = text.strip()
-  if result.len <= MaxSayLen:
+  if result.runeLen <= MaxSayLen:
     return
   ## A model that overshoots the stated cap gets cut at a word boundary with
   ## the cut marked — a silent mid-word slice reads as a bug at the table.
-  result = result[0 ..< MaxSayLen - 3]
-  ## Never leave a UTF-8 code point split by the byte slice.
-  while result.len > 0 and (result[^1].ord and 0xC0) == 0x80:
-    result.setLen(result.len - 1)
+  result = result.runeSubStr(0, MaxSayLen - 1)
   let space = result.rfind(' ')
-  if space > MaxSayLen div 2:
+  if space >= 0 and result[0 ..< space].runeLen > MaxSayLen div 2:
     result.setLen(space)
   result.add("…")
 
@@ -543,7 +561,7 @@ proc decide*(
     evidence.prompt = %*[{"role": "system", "content": system},
       {"role": "user", "content": user}]
     try:
-      raw = client.completeText(seat, system, user, evidence)
+      raw = client.completeText(seat, system, user, sim.actionSchema(seat, wantShot), evidence)
       let payload = parseJsonObject(raw)
       result.decision = parseDecision(sim, seat, payload, wantShot)
       evidence.response = %raw

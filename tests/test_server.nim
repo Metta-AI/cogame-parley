@@ -46,6 +46,20 @@ suite "player state":
         userPrompt(sim, seat, "Protect my friend", wantShot, header)
       check packet["observation"]["seats"][seat]["friend"].getInt() >= 0
       check packet["id"].getInt() == 7
+      check packet["actionSchema"] == sim.actionSchema(seat, wantShot)
+      if wantShot:
+        var publicTargets = newJArray()
+        for action in packet["legalActions"]:
+          let target = action["shoot"]
+          if target notin publicTargets:
+            publicTargets.add(target)
+        let schemaTargets = packet["actionSchema"]["properties"]["shoot"]["enum"]
+        check publicTargets.len == schemaTargets.len
+        for target in schemaTargets:
+          check target in publicTargets
+      else:
+        check packet["actionSchema"]["properties"].len == 1
+        check packet["actionSchema"]["required"] == %*["say"]
 
   test "foe points appear once before and after the final verdict":
     var config = defaultGameConfig()

@@ -34,7 +34,7 @@ hosted Qwen. Local endpoint transport does not establish hosted inference parity
 Hosted prompt players use the injected `COWORLD_LLM_ENDPOINT`. Set
 `COWORLD_LLM_MODEL` to a registered `checkpoint/<identity>` for a frozen learner,
 or a platform-supported provider model. Hosted games need no provider secret.
-Local games can use Anthropic or Bedrock credentials outside hosted execution.
+Local games use the same native endpoint protocol. Retired provider credentials never activate inference.
 `COWORLD_LLM_TEMPERATURE` selects temperature from zero to one; default one.
 The private evidence records the actual model and native request settings.
 
@@ -85,9 +85,8 @@ complete episode; reserve fresh seeds and frozen opponents. Record validity,
 fallback rate, terminal scores, latency, and token cost. A lower imitation
 loss does not establish stronger play.
 
-`tools/export_hosted_posttrain.py` reads archived `parley training:` game logs
-from older releases. Current games emit the private trajectory artifact instead.
-Keep historical exports separate from current canonical trajectories.
+New exports require the canonical private trajectory and content-bound review through the shared importer.
+Archived logs and previous exports remain historical evidence; they cannot qualify current training labels.
 
 ## Scripted diagnostic collection
 

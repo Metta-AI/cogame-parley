@@ -111,9 +111,9 @@
           "default": 1200
         },
         "model": {
-          "description": "Claude model for legacy prompt seats.",
+          "description": "Native sidecar model for prompt seats, overridden by COWORLD_LLM_MODEL when supplied.",
           "type": "string",
-          "default": "claude-sonnet-5"
+          "default": "anthropic/claude-sonnet-4.6"
         },
         "maxOutputTokens": {
           "type": "integer",

@@ -76,9 +76,7 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
                 {
                     "platform_call_id": call_id,
                     "caller_request": body,
-                    "provider_response": response
-                    if not category
-                    else json.dumps(response),
+                    "provider_response": json.dumps(response),
                 }
             )
             payload = json.dumps(response).encode()
@@ -89,6 +87,7 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
                     "X-Softmax-Llm-Retryable", "false" if slot == 2 else "true"
                 )
             self.send_header("Content-Type", "application/json")
+            self.send_header("request-id", "fixture-provider-" + call_id)
             self.send_header("X-Softmax-Llm-Call-Id", call_id)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
@@ -197,6 +196,13 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed"]:
             archive = calls[attempt["platform_call_id"]]
             assert attempt["request"] == archive["caller_request"]
             assert attempt["raw_response"] == archive["provider_response"]
+            assert attempt["provider_request_id"] == "fixture-provider-" + attempt["platform_call_id"]
+            received_headers = {key.lower(): value for key, value in attempt["response_headers"].items()}
+            assert received_headers["request-id"] == attempt["provider_request_id"]
+            assert received_headers["x-softmax-llm-call-id"] == attempt["platform_call_id"]
+            assert attempt["decoder"] == {
+                key: archive["caller_request"][key] for key in ("temperature", "max_tokens")
+            }
         if decision["action_status"] == "accepted":
             selected = next(
                 a

@@ -1,7 +1,23 @@
-import std/[strutils, unittest]
+import std/[os, strutils, unittest]
 import parley/[llm, sim]
 
 suite "scripted seat randomness":
+  test "retired provider credentials cannot activate inference":
+    putEnv("COWORLD_LLM_ENDPOINT", "")
+    putEnv("ANTHROPIC_API_KEY", "retired-test-key")
+    putEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "http://127.0.0.1:1")
+    defer:
+      delEnv("COWORLD_LLM_ENDPOINT")
+      delEnv("ANTHROPIC_API_KEY")
+      delEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+    var config = defaultGameConfig()
+    for seat in 0 ..< 4:
+      config.players.add(PlayerConfig(name: "P" & $seat))
+    let sim = initSim(config)
+    let outcome = newLlmClient(config).decide(sim, sim.itSeat, "", true)
+    check outcome.origin == "scripted_no_native_endpoint"
+    check outcome.nativeAttempts.len == 0
+
   test "one seat's reactions do not change another seat's shots":
     var config = defaultGameConfig()
     config.seed = 6

@@ -21,7 +21,8 @@ binary, output, revision = sys.argv[1:]
 root = Path(output)
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
 reports = []
-for mode in ["accepted", "retry", "fallback"]:
+for mode in ["accepted", "retry", "fallback", "registration"]:
+    seats = 5 if mode == "registration" else 4
     folder = root / mode
     folder.mkdir(mode=0o700)
     requests = []
@@ -78,17 +79,17 @@ for mode in ["accepted", "retry", "fallback"]:
     listener.close()
     config = {
         "seed": 17,
-        "sampled": True,
+        "sampled": mode != "registration",
         "rounds": 2,
         "hitPoints": 1,
         "survivors": 1,
         "reactions": True,
-        "maxReactions": 1,
+        "maxReactions": 3 if mode == "registration" else 1,
         "turnDelayMs": 0,
         "player_connect_timeout_seconds": 3,
         "episodeTimeoutSeconds": 60,
-        "tokens": [str(i) for i in range(4)],
-        "players": [{"name": "fixture-" + str(i)} for i in range(4)],
+        "tokens": [str(i) for i in range(seats)],
+        "players": [{"name": "fixture-" + str(i)} for i in range(seats)],
     }
     config_path = folder / "config.json"
     config_path.write_text(json.dumps(config))
@@ -122,10 +123,15 @@ for mode in ["accepted", "retry", "fallback"]:
                 threading.Event().wait(0.01)
             sockets = [
                 connect(f"ws://127.0.0.1:{port}/player?slot={slot}&token={slot}")
-                for slot in range(4)
+                for slot in range(seats)
             ]
             try:
-                for seat in sockets:
+                for index, seat in enumerate(sockets):
+                    if mode == "registration" and index == seats - 1:
+                        time.sleep(0.8)
+                        assert not requests, (
+                            "Decision requested before final control registration"
+                        )
                     seat.send(
                         json.dumps(
                             {"type": "prompt", "prompt": "PRIVATE OPERATOR SENTINEL"}
@@ -147,7 +153,10 @@ for mode in ["accepted", "retry", "fallback"]:
     ]
     decisions = events[:-1]
     assert events[-1]["status"] == "completed"
-    assert events[-1]["outcome"]["rounds"] == 2
+    if mode == "registration":
+        assert 3 <= events[-1]["outcome"]["rounds"] <= 20
+    else:
+        assert events[-1]["outcome"]["rounds"] == 2
     calls = {record["platform_call_id"]: record for record in requests}
     for decision in decisions:
         for attempt in decision["attempts"]:
@@ -174,6 +183,8 @@ for mode in ["accepted", "retry", "fallback"]:
         {
             "mode": mode,
             "complete_episodes": 1,
+            "seats": seats,
+            "completed_rounds": events[-1]["outcome"]["rounds"],
             "decisions": len(decisions),
             "native_call_joins": len(requests),
             "source_revision": revision,

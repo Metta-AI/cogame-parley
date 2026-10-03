@@ -430,6 +430,14 @@ const PlayBudgetFraction* = 0.6
   ## container start, player connects, and writing the artifacts — the part
   ## that must never be the thing that runs out of time.
 
+proc playersReady(gs: GameState): bool =
+  if gs.playerSockets.len != gs.config.tokens.len:
+    return false
+  for registered in gs.promptSet:
+    if not registered:
+      return false
+  true
+
 proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
   {.gcsafe.}:
     let config = state.config
@@ -437,10 +445,10 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     let deadline = gameStart + config.playerConnectTimeoutSeconds
 
     while epochTime() < deadline:
-      var allConnected = false
+      var allReady = false
       withLock stateLock:
-        allConnected = state.playerSockets.len >= config.tokens.len
-      if allConnected:
+        allReady = state.playersReady()
+      if allReady:
         break
       sleep(200)
 

@@ -2,6 +2,22 @@ import std/unittest
 include ../src/parley/server
 
 suite "player state":
+  test "game waits for every connected player to register control":
+    var config = defaultGameConfig()
+    for index in 0 ..< 5:
+      config.players.add(PlayerConfig(name: "Policy" & $index))
+      config.tokens.add("token" & $index)
+    var game = GameState(config: config, promptSet: newSeq[bool](5))
+    check not game.playersReady()
+    for index in 0 ..< 5:
+      game.playerSockets[index] = default(WebSocket)
+    check not game.playersReady()
+    for index in 0 ..< 5:
+      game.promptSet[index] = true
+    check game.playersReady()
+    game.playerSockets.del(4)
+    check not game.playersReady()
+
   test "internal model actions reject prose around JSON":
     check parseJsonObject("  {\"say\": \"truce\"}  ")["say"].getStr() == "truce"
     expect JsonParsingError:

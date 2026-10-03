@@ -21,10 +21,11 @@ binary, output, revision = sys.argv[1:]
 root = Path(output)
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
 reports = []
-for mode in ["accepted", "retry", "fallback"]:
+for mode in ["accepted", "retry", "fallback", "seat-budget"]:
     folder = root / mode
     folder.mkdir(mode=0o700)
     requests = []
+    seat_calls = [0] * 4
 
     class Native(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -34,6 +35,8 @@ for mode in ["accepted", "retry", "fallback"]:
             assert self.path == "/v1/messages"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             user = body["messages"][0]["content"]
+            slot = int(self.headers["x-coworld-player-slot"])
+            seat_calls[slot] += 1
             target = re.search(r'<one of "([^"]+)"', user)
             action = {"say": "fixture public speech"}
             if target:
@@ -55,15 +58,36 @@ for mode in ["accepted", "retry", "fallback"]:
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 100, "output_tokens": 20},
             }
+            category = ""
+            if mode == "seat-budget" and (
+                slot == 2 or slot == 1 and seat_calls[slot] == 1
+            ):
+                category = "spend_limit" if slot == 2 else "provider_rate_limit"
+                response = {
+                    "type": "error",
+                    "error": {"type": "rate_limit_error", "message": "fixture"},
+                    "softmax_error": {
+                        "category": category,
+                        "retryable": slot != 2,
+                        "call_id": call_id,
+                    },
+                }
             requests.append(
                 {
                     "platform_call_id": call_id,
                     "caller_request": body,
-                    "provider_response": response,
+                    "provider_response": response
+                    if not category
+                    else json.dumps(response),
                 }
             )
             payload = json.dumps(response).encode()
-            self.send_response(200)
+            self.send_response(429 if category else 200)
+            if category:
+                self.send_header("X-Softmax-Llm-Error-Category", category)
+                self.send_header(
+                    "X-Softmax-Llm-Retryable", "false" if slot == 2 else "true"
+                )
             self.send_header("Content-Type", "application/json")
             self.send_header("X-Softmax-Llm-Call-Id", call_id)
             self.send_header("Content-Length", str(len(payload)))
@@ -165,7 +189,21 @@ for mode in ["accepted", "retry", "fallback"]:
                 and selected["parsed_action"] == decision["executed_action"]
             )
         else:
-            assert mode == "fallback" and decision["selected_attempt_id"] is None
+            assert (
+                mode in ("fallback", "seat-budget")
+                and decision["selected_attempt_id"] is None
+            )
+            if mode == "seat-budget":
+                assert decision["seat"] == "2"
+                assert decision["fallback_origin"] == "scripted_after_budget_exhausted"
+    if mode == "seat-budget":
+        assert seat_calls[2] == 1, seat_calls
+        assert seat_calls[1] > 1, seat_calls
+        assert all(
+            d["action_status"] == "accepted" for d in decisions if d["seat"] != "2"
+        )
+        assert sum(len(d["attempts"]) for d in decisions if d["seat"] == "2") == 1
+        assert any(len(d["attempts"]) == 2 for d in decisions if d["seat"] == "1")
     assert "PRIVATE OPERATOR SENTINEL" not in (folder / "replay.json").read_text()
     assert "PRIVATE OPERATOR SENTINEL" not in (folder / "game.log").read_text()
     assert "PRIVATE OPERATOR SENTINEL" in (folder / "trajectory.jsonl").read_text()

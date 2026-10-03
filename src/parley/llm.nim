@@ -58,6 +58,7 @@ type
     temperature: float
     timeoutSeconds: int
     disabled: bool    ## true once credentials are known-unavailable
+    budgetExhausted: seq[bool] ## platform spend limits belong to individual seats
     rand: seq[Rand]         ## independent scripted stream per seat
 
 proc resolveApiKey(): string =
@@ -111,7 +112,8 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     maxOutputTokens: config.maxOutputTokens,
     temperature: parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "1")),
     timeoutSeconds: config.llmTimeoutSeconds,
-    rand: newSeq[Rand](config.players.len)
+    rand: newSeq[Rand](config.players.len),
+    budgetExhausted: newSeq[bool](config.players.len)
   )
   if not (result.temperature >= 0 and result.temperature <= 1):
     raise newException(ValueError, "COWORLD_LLM_TEMPERATURE must be finite and between 0 and 1")
@@ -425,6 +427,9 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
     client.disabled = true
     raise newException(ParleyError,
       "llm auth failed (" & $response.code & ") at " & url & ": " & detail)
+  if response.headers["x-softmax-llm-error-category"] == "spend_limit":
+    client.budgetExhausted[seat] = true
+    raise newException(ParleyError, "seat LLM spend limit exhausted")
   if response.code == 429:
     ## Shared hosted capacity, not our quota: another model may still have room.
     let detail = response.body[0 .. min(response.body.high, 300)]
@@ -516,11 +521,13 @@ proc decide*(
 ): DecisionResult =
   ## One decision for one seat. Never raises: any failure falls back to the
   ## scripted baseline so the game always advances.
-  if client.disabled:
+  if client.disabled or client.budgetExhausted[seat]:
     result.decision =
       if wantShot: client.scriptedShot(sim, seat)
       else: client.scriptedReaction(sim, seat)
-    result.origin = "scripted_no_credentials"
+    result.origin =
+      if client.budgetExhausted[seat]: "scripted_after_budget_exhausted"
+      else: "scripted_no_credentials"
     result.input = newJNull()
     result.response = newJNull()
     return
@@ -554,12 +561,14 @@ proc decide*(
       result.attempts.add(%*{"system": system, "user": user,
         "raw": raw, "error": error.msg})
       echo "parley llm: seat ", seat, " attempt ", attempt, " failed"
-      if client.disabled:
+      if client.disabled or client.budgetExhausted[seat]:
         break
   echo "parley llm: seat ", seat, " falling back to scripted decision"
   result.decision =
     if wantShot: client.scriptedShot(sim, seat)
     else: client.scriptedReaction(sim, seat)
-  result.origin = "scripted_after_model_failure"
+  result.origin =
+    if client.budgetExhausted[seat]: "scripted_after_budget_exhausted"
+    else: "scripted_after_model_failure"
   result.input = newJNull()
   result.response = newJNull()

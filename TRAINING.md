@@ -37,6 +37,16 @@ or a platform-supported provider model. Hosted games need no provider secret.
 Local games can use Anthropic or Bedrock credentials outside hosted execution.
 `COWORLD_LLM_TEMPERATURE` selects temperature from zero to one; default one.
 The private evidence records the actual model and native request settings.
+Native requests explicitly disable thinking and carry `output_config.format` with `type: json_schema`.
+The schema retains speech, both aim choices, public living targets, and passes while available; reactions contain speech.
+Provider routing must support these parameters. Parser validation, rejection, retry, and fallback evidence remain intact.
+Do not strip prose, repair JSON, or discard failed attempts. Unsupported providers and truncated responses fail qualification.
+
+This staged request contract requires coordinated gateway and external-player decoding support before publication.
+Current published releases retain their recorded decoder settings. Native request fields follow the
+[Anthropic structured-output API](https://platform.claude.com/docs/en/build-with-claude/structured-outputs).
+[OpenRouter routing](https://openrouter.ai/docs/guides/features/structured-outputs) requires checking endpoint support;
+model identity alone does not prove schema enforcement. Live provider/gameplay proof remains required.
 
 ## Hosted decision evidence
 

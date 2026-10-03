@@ -1,7 +1,27 @@
-import std/[strutils, unittest]
+import std/[json, strutils, unittest]
 import parley/[llm, sim]
 
 suite "scripted seat randomness":
+  test "structured actions preserve visible targets, both aims, passes, and reactions":
+    var config = defaultGameConfig()
+    config.sampled = true
+    for seat in 0 ..< 5:
+      config.players.add(PlayerConfig(name: "P" & $seat))
+    var sim = initSim(config)
+    let schema = sim.actionSchema(sim.itSeat, true)
+    var names = newJArray()
+    for target in sim.validTargets(sim.itSeat):
+      names.add(%sim.seats[target].name)
+    names.add(%"pass")
+    check schema["properties"]["shoot"]["enum"] == names
+    check schema["properties"]["aim"]["enum"] == %*["head", "hip"]
+    let reaction = sim.actionSchema(sim.itSeat, false)
+    check reaction["properties"].len == 1
+    check reaction["properties"]["say"]["type"].getStr() == "string"
+    check reaction["required"] == %*["say"]
+    while sim.skipsLeft() > 0:
+      sim.applySkip(sim.itSeat)
+    check "pass" notin $sim.actionSchema(sim.itSeat, true)["properties"]["shoot"]["enum"]
   test "one seat's reactions do not change another seat's shots":
     var config = defaultGameConfig()
     config.seed = 6

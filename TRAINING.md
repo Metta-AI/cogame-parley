@@ -70,8 +70,9 @@ Two invalid prompt responses invoke the scripted fallback. Preserve failed
 attempts for audits; train only on accepted model or approved teacher targets.
 
 Use Metta’s `metta-posttrain export-parley-native` command to convert reviewed complete five-seat episodes into SLIME
-inputs. Supply the published manifest, per-episode runtime configurations and private trajectories, independent provider
-archive, and content-bound decision approvals. The converter checks ordinary settings, episode/source pins, selected
+inputs. Supply the published manifest, private trajectories containing the original token-free input and selected seed,
+independent provider archive, and content-bound decision approvals. No separate runtime configuration or authentication
+tokens are required. The converter checks ordinary settings, episode/source pins, selected
 parsed actions against execution, exact native prompts and responses, provider call joins, and complete-family splits.
 Keep all attempts and fallbacks in private evidence; only explicitly approved model or teacher completions become labels.
 The pinned Coworld CLI does not supply `coworld training qualify` or `coworld training export`.

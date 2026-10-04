@@ -7,16 +7,17 @@
 ##     --run /bin/parley-player --secret-env PLAYER_PROMPT="<your strategy>"
 ##
 ## PLAYER_SCRIPTED selects a no-model baseline instead: random (or 1),
-## finisher, retaliator, protector, or hoarder.
+## finisher, retaliator, protector, or hoarder. Empty or 0 plays the prompt.
 
 import
   std/[json, math, monotimes, os, strutils, times],
-  bitworld/[native_stop, native_websocket]
+  bitworld/[native_stop, native_websocket],
+  parley/types
 
 const DefaultPrompt = """
 Play to win, but make it fun. Your secret cards run the round: steer shots
-toward your ENEMY without being obvious about it (a point for the fatal
-shot yourself is even better), quietly keep your FRIEND alive, and never
+toward your ENEMY without being obvious about it (land at least one hit on
+them yourself to earn its point), quietly keep your FRIEND alive, and never
 reveal either card out loud. Shoot whoever threatens you or your friend
 most, and aim for the head when you mean it. Shoot from the hip when you want the gun
 to move without the damage - handing it to your friend, or staging a grudge
@@ -45,9 +46,14 @@ when isMainModule:
   of wsReady: discard
   else: quit("player connection failed", 1)
   let socket = connection.socket
-  let scriptedEnv = getEnv("PLAYER_SCRIPTED").strip()
-  let scripted = scriptedEnv.len > 0
-  let baseline = if scriptedEnv in ["", "1"]: "random" else: scriptedEnv
+  let scriptedEnv = getEnv("PLAYER_SCRIPTED").strip().toLowerAscii()
+  let scripted = scriptedEnv notin ["", "0"]
+  ## Fail at startup on an unknown baseline rather than registering a
+  ## seat the game cannot field.
+  let baseline =
+    if scriptedEnv == "1": blRandom
+    elif scripted: parseEnum[Baseline](scriptedEnv)
+    else: blRandom
   var prompt = getEnv("PLAYER_PROMPT")
   if prompt.len == 0 and not scripted:
     prompt = DefaultPrompt
@@ -68,7 +74,7 @@ when isMainModule:
           raise newException(ValueError, "duplicate player welcome")
         var registration = %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
         if scripted:
-          registration["baseline"] = %baseline
+          registration["baseline"] = %($baseline)
         let sent = sendNativeText(socket, $registration, deadline)
         case sent.kind
         of wsInterrupted, wsDeadline: break

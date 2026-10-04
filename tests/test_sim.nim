@@ -527,7 +527,8 @@ suite "parley sim":
       check not sim.seats[target].alive
       check sim.itSeat == it
       check sim.seats[it].foeScored
-      check sim.events[^1].kind == evScore
+      ## Earned now, announced with the verdict.
+      check sim.events[^1].kind == evDeath
     check found
 
   test "hip-shots are unlimited and a hip-shot-only table still ends":
@@ -628,32 +629,41 @@ suite "parley sim":
             if sim.seats[seat.friend].friend == index: mutual = true
           check mutual
 
-  test "a foe point goes to every cog whose hit landed before its enemy went out":
-    ## The assist rule: the final blow is not required, only a landed hit.
+  test "a foe point needs a landed hit on your enemy, not the final blow":
+    ## Real deals only: A wounds its enemy B, then C (whose enemy is someone
+    ## else) finishes B. A scores the foe point; the killer does not.
     var checked = false
     for seed in 0 ..< 200:
-      var config = fixtureConfig(4, hp = 2)
+      var config = fixtureConfig(4, hp = 2, rounds = 2)
       config.seed = seed
-      var sim = initSim(config)
-      let a = sim.itSeat
-      let b = (a + 1) mod 4
-      let c = (a + 2) mod 4
-      sim.seats[a].enemy = b
-      sim.seats[c].enemy = b
-      sim.applyShot(a, b)
-      if sim.lastShot().miss: continue
-      sim.applyShot(b, c)
-      if sim.lastShot().miss: continue
-      sim.applyShot(c, b)
-      if sim.lastShot().miss: continue
+      var match = initMatch(config)
+      let a = match.sim.itSeat
+      let b = match.sim.seats[a].enemy
+      match.sim.applyShot(a, b)
+      if match.sim.lastShot().miss: continue
+      var c = -1
+      for seat in match.sim.validTargets(b):
+        if seat != a: c = seat
+      match.sim.applyShot(b, c)
+      if match.sim.lastShot().miss: continue
+      match.sim.applyShot(c, b)
+      if match.sim.lastShot().miss: continue
       checked = true
-      check not sim.seats[b].alive
-      check sim.itSeat == c
-      check sim.seats[a].foeScored and sim.seats[c].foeScored
+      check not match.sim.seats[b].alive
+      check match.sim.seats[c].enemy != b
+      check match.sim.seats[a].foeScored and not match.sim.seats[c].foeScored
+      while not match.sim.done:
+        match.sim.applyShot(match.sim.itSeat, match.sim.validTargets(match.sim.itSeat)[0])
       var foes: seq[int]
-      for event in sim.events:
+      for event in match.allEvents():
         if event.kind == evScore and event.text == "foe": foes.add(event.seat)
-      check foes == @[a, c]
+      check a notin foes
+      match.finishRound()
+      foes.setLen(0)
+      for event in match.allEvents():
+        if event.kind == evScore and event.text == "foe": foes.add(event.seat)
+      check a in foes and c notin foes
+      check match.foePoints[a] == 1
       break
     check checked
 
@@ -720,6 +730,7 @@ suite "parley sim":
     var sim = initSim(config)
     var spoke = newSeq[int](5)
     var deadSpoke = false
+    let opener = sim.itSeat
     for turn in 0 ..< 60:
       sim.turn = turn
       let speakers = sim.reactionSpeakers()
@@ -727,14 +738,15 @@ suite "parley sim":
       check sim.itSeat notin speakers
       check speakers == sim.reactionSpeakers()
       for seat in speakers: inc spoke[seat]
-    sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[0])
+    while sim.aliveCount() == 5:
+      sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[0])
     for turn in 0 ..< 40:
       sim.turn = turn
       for seat in sim.reactionSpeakers():
         if not sim.seats[seat].alive: deadSpoke = true
     for seat in 0 ..< 5:
-      if seat != sim.itSeat: check spoke[seat] > 0
-    check deadSpoke or sim.aliveCount() == 5
+      if seat != opener: check spoke[seat] > 0
+    check deadSpoke
 
   test "platform scores are within-table placings":
     var match = initMatch(fixtureConfig(4))

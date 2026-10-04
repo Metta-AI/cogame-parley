@@ -48,6 +48,14 @@ type
     evReveal = "reveal"    ## verified card shown to one cog; others see only that it happened
     evPledge = "pledge"    ## public promise not to shoot a cog for the rest of the round
 
+  Baseline* = enum
+    ## Scripted no-model policies, selectable per seat for evaluation cohorts.
+    blRandom = "random"         ## random living target; hip-shot at its friend
+    blFinisher = "finisher"     ## lowest-hp non-friend, its enemy on ties
+    blRetaliator = "retaliator" ## whoever last landed a hit on it, else random
+    blProtector = "protector"   ## whoever last hit its friend, else its enemy
+    blHoarder = "hoarder"       ## passes while the table has passes, else finisher
+
   CardKind* = enum
     cardFriend = "friend"
     cardEnemy = "enemy"

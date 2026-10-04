@@ -354,12 +354,13 @@ proc applyShot*(sim: var Sim, shooter, target: int, aim = aimHead) =
     inc sim.deathCount
     inc sim.seats[shooter].kills
     sim.addEvent(evDeath, target)
-    ## The FOE point lands the moment the enemy goes out, for every cog
-    ## holding that enemy card whose shot landed on them this round.
+    ## The FOE point is earned the moment the enemy goes out, by the one cog
+    ## holding that enemy card if any of its shots landed on them this round.
+    ## It is announced with the round's verdict: a mid-round announcement
+    ## would tell the table whose enemy card named the fallen cog.
     for index in 0 ..< sim.seats.len:
       if sim.seats[index].enemy == target and sim.seats[index].hitEnemy:
         sim.seats[index].foeScored = true
-        sim.addEvent(evScore, index, target, points = 1, text = "foe")
     ## The gun stays with the shooter: a dead cog cannot be "it".
   else:
     sim.itSeat = target
@@ -510,8 +511,12 @@ proc finishRound*(match: var Match, endMatch = false) =
     if roundWinners[index]:
       inc match.roundWins[index]
       match.sim.addEvent(evRoundEnd, index)
-  ## Round-end score deltas, after the verdict lines: survivor points for
-  ## the winners, friend points for everyone whose friend made it.
+  ## Round-end score deltas, after the verdict lines: foe points, survivor
+  ## points for the winners, friend points for everyone whose friend made it.
+  for index in 0 ..< match.totals.len:
+    if match.sim.seats[index].foeScored:
+      match.sim.addEvent(evScore, index, match.sim.seats[index].enemy, points = 1,
+        text = "foe")
   for index in 0 ..< match.totals.len:
     if roundWinners[index]:
       match.sim.addEvent(evScore, index, points = 3, text = "survivor")

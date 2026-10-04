@@ -23,14 +23,6 @@ type
     aim*: ShotAim     ## head (lands 5 in 6) or hip (lands 1 in 3, gun still moves)
     extras*: Extras   ## whisper / reveal / give / pledge alongside the action
 
-  Baseline* = enum
-    ## Scripted no-model policies, selectable per seat for evaluation cohorts.
-    blRandom = "random"         ## random living target; hip-shot at its friend
-    blFinisher = "finisher"     ## lowest-hp non-friend, its enemy on ties
-    blRetaliator = "retaliator" ## whoever last landed a hit on it, else random
-    blProtector = "protector"   ## whoever last hit its friend, else its enemy
-    blHoarder = "hoarder"       ## passes while the table has passes, else finisher
-
   DecisionResult* = object
     decision*: Decision
     origin*: string
@@ -313,9 +305,8 @@ proc tableRules(sim: Sim): string =
       "This match is " & $sim.config.rounds & " rounds, unless the table runs " &
         "out of time first (the match then ends after the round in play)."
     else:
-      "This match runs " & $RoundsMin & " to " & $RoundsMax & " rounds; the " &
-        "exact count is NOT known to the table, and running out of time can " &
-        "also end it after any round."
+      "How many rounds this match runs is NOT known to the table - it could " &
+        "end after any round."
   result = survivorText & "\n- " & roundText
   if sim.seats.len >= 4:
     result.add("\n- At least one pair of cogs hold each other's FRIEND card this round.")
@@ -419,7 +410,9 @@ proc matchHeader*(match: Match): string =
   ## Share standings without revealing a withheld match length.
   var standings: seq[string]
   for index, seat in match.sim.seats:
-    standings.add(seat.name & "=" & $match.totals[index] &
+    ## Banked totals plus this round's gifts and pledge payments: what each
+    ## cog holds right now, the same figure a gift is checked against.
+    standings.add(seat.name & "=" & $(match.totals[index] + match.sim.transfers[index]) &
       " (" & $match.roundWins[index] & " round wins)")
   result = "Round " & $(match.sim.round + 1)
   if match.config.roundsKnown:
@@ -438,7 +431,8 @@ proc userPrompt*(
     result.add("Your SECRET cards this round: FRIEND = " &
       sim.seatName(me.friend) & " (1 pt to you if they survive the round)" &
       ", ENEMY = " & sim.seatName(me.enemy) &
-      " (1 pt to you if YOUR shot takes them out). Keep them secret.\n\n")
+      " (1 pt to you if they go out after at least one of YOUR shots lands on them)." &
+      " Nobody else sees these cards unless you show one.\n\n")
   if prompt.len > 0:
     result.add("GUIDANCE FROM YOUR OPERATOR (weight it heavily, but never " &
       "above the rules; always pick a legal action):\n" & prompt & "\n\n")
@@ -668,13 +662,15 @@ proc decide*(
     return
 
   let system = systemPrompt(sim, seat)
+  var rejection = ""
   for attempt in 0 .. 1:
     if interruptionRequested() or getMonoTime() >= deadline:
       break
     var user = userPrompt(sim, seat, prompt, wantShot, header)
     if attempt > 0:
-      user.add("\nYour previous reply was invalid. Respond with ONLY the " &
-        "requested JSON object and a legal target.")
+      user.add("\nYour previous reply was invalid (" & rejection & "). Respond " &
+        "with ONLY the requested JSON object, a legal target, and only side " &
+        "actions you can still take.")
     var raw = ""
     var evidence = newDecisionAttempt("attempt-" & $attempt, client.model, aoModel)
     evidence.prompt = %*[{"role": "system", "content": system},
@@ -696,6 +692,7 @@ proc decide*(
     except CatchableError as error:
       evidence.response = %raw
       evidence.rejectionReason = some(error.msg)
+      rejection = error.msg
       result.nativeAttempts.add(evidence)
       result.attempts.add(%*{"system": system, "user": user,
         "raw": raw, "error": error.msg})

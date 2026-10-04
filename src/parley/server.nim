@@ -129,8 +129,8 @@ proc snapshotJson(gs: GameState): JsonNode =
   var connected = newJArray()
   for slot in 0 ..< gs.config.tokens.len:
     connected.add(%gs.playerSockets.hasKey(slot))
-  ## Mid-round foe points show up in the scorebug as soon as they land
-  ## (match.totals itself only folds them in at round end).
+  ## Mid-round gifts and pledge payments show up in the scorebug as soon as
+  ## they land (match.totals itself only folds them in at round end).
   var liveTotals = newSeq[float](gs.config.players.len)
   for event in gs.match.allEvents():
     if event.kind == evScore:

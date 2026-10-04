@@ -28,7 +28,8 @@ IT speaks to the table, then shoots one other living cog or passes.
 - **Points:** each survivor earns 3 points. A cog earns 1 point if its enemy
   goes out after at least one of its own shots landed on them (the final hit
   can be anyone's), and 1 point if its friend survives. Eliminated cogs still
-  earn enemy and friend points.
+  earn enemy and friend points. Enemy and friend points are announced with
+  the round's verdict, so they never expose a live card.
 - **Talk:** IT speaks with every shot or pass. Between actions, up to
   `maxReactions` other cogs speak, chosen in a seeded shuffle. Cogs that are
   out this round can be chosen too.
@@ -38,7 +39,8 @@ IT speaks to the table, then shoots one other living cog or passes.
     of the table sees only that a whisper happened;
   - **reveal** its friend or enemy card to one cog (once per round); the
     game verifies it, and the rest of the table sees only that a card was shown;
-  - **give** one banked point to any cog (only points already banked);
+  - **give** one point to any cog (banked points plus this round's gifts
+    and pledge payments, which the standings in every prompt show);
   - **pledge**, publicly, not to shoot a living cog for the rest of the
     round. Shooting a pledged cog, hit or miss, moves 1 point from the
     shooter to that cog.
@@ -56,8 +58,7 @@ IT speaks to the table, then shoots one other living cog or passes.
 
 Ordinary episodes sample 3–6 rounds, 2–3 hp, and 1–3 survivors from the seed.
 The survivor count is capped below the seat count. Round and survivor counts
-are independently announced or withheld from players; a withheld round count
-is described as "3 to 6 rounds". The Qwen training/evaluation/inference program
+are independently announced or withheld from players. The Qwen training/evaluation/inference program
 uses this ordinary five-seat `table5` environment. Fixed `sampled: true`
 fixtures are infrastructure diagnostics; see [the shared training guide](TRAINING.md).
 

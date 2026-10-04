@@ -25,7 +25,7 @@ suite "Frozen native model routing":
     expect ValueError:
       parsed.bindings[4].validatePrompt("prompt-0")
 
-  test "wrong seat, changed model, duplicate actor and unimplemented ranking fail closed":
+  test "wrong seat, changed model, duplicate actor and undeclared ranking fail closed":
     let roster = fixtureRoster()
     for fault in ["seat", "model", "actor", "ranking", "decoder", "extra"]:
       var node = roster.rosterJson()
@@ -45,3 +45,14 @@ suite "Frozen native model routing":
     roster.sha256 = sha256Text(canonicalJson(roster.rosterPayload()))
     expect ValueError:
       discard parseModelRoster(roster.rosterJson())
+
+  test "legal-choice ranking binds the exact restricted speech profile":
+    var roster = fixtureRoster()
+    roster.bindings[2].actionMode = "legal_choice_ranking"
+    roster.bindings[2].assistanceId = "legal-private-actions-v1"
+    roster.bindings[2].assistanceSha256 = sha256Text(canonicalJson(legalAssistanceProfile()))
+    roster.sha256 = sha256Text(canonicalJson(roster.rosterPayload()))
+    check parseModelRoster(roster.rosterJson()).bindings[2].actionMode == "legal_choice_ranking"
+    roster.bindings[2].assistanceSha256 = repeat('a', 64)
+    roster.sha256 = sha256Text(canonicalJson(roster.rosterPayload()))
+    expect ValueError: discard parseModelRoster(roster.rosterJson())

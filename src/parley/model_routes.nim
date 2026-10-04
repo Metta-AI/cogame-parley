@@ -2,6 +2,14 @@
 import std/[algorithm, json, sets, strutils, sequtils]
 import checksums/sha2
 
+const ChoiceScoreRule* = "sum-target-token-logprobs-including-template-assistant-terminator"
+
+proc legalAssistanceProfile*(): JsonNode =
+  %*{"id": "legal-private-actions-v1", "version": 1, "say_choices": [""],
+    "shot_order": "living-nonacting-seat-order/head-then-hip/pass-last-without-aim",
+    "reaction_order": "say-only", "candidate_limit": 128,
+    "score_rule": ChoiceScoreRule, "tie_break": "lowest-declared-index"}
+
 type
   ModelSeatBinding* = object
     seat*: int
@@ -92,10 +100,17 @@ proc parseModelRoster*(node: JsonNode): ModelRoster =
     for digest in [tokenizerDigest, binding.chatTemplateSha256, binding.promptSha256, binding.assistanceSha256]:
       if digest.len != 64 or digest.anyIt(it notin {'0'..'9', 'a'..'f'}):
         raise newException(ValueError, "Native roster requires lowercase SHA256 identities")
-    if binding.actionMode != "generated-json" or binding.assistanceId != "none":
-      raise newException(ValueError, "Legal-choice scoring needs its distinct qualified producer protocol")
-    if binding.assistanceSha256 != sha256Text("{\"id\":\"none\",\"version\":1}"):
-      raise newException(ValueError, "Generated-json assistance identity must describe no assistance")
+    case binding.actionMode
+    of "generated-json":
+      if binding.assistanceId != "none" or
+          binding.assistanceSha256 != sha256Text("{\"id\":\"none\",\"version\":1}"):
+        raise newException(ValueError, "Generated-json assistance must describe no assistance")
+    of "legal_choice_ranking":
+      if binding.assistanceId != "legal-private-actions-v1" or
+          binding.assistanceSha256 != sha256Text(canonicalJson(legalAssistanceProfile())):
+        raise newException(ValueError, "Ranking requires the exact restricted legal-action profile")
+    else:
+      raise newException(ValueError, "Unknown native action mode")
     actors.incl(binding.actorId)
     policies.incl(binding.policyId)
     learners += int(binding.role == "learner")

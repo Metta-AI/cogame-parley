@@ -14,11 +14,11 @@
 from std/unicode import runeLen, runeSubStr
 
 import
-  std/[json, options, os, random, strutils],
+  std/[json, options, os, random, strutils, times],
   bitworld/decision_trajectory,
   bitworld/runtime,
   curly,
-  sim
+  sim, legal_choices
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -521,6 +521,67 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
     if contentBlock{"type"}.getStr() == "text":
       result.add(contentBlock{"text"}.getStr())
 
+proc rankChoices(client: LlmClient, sim: Sim, seat: int, wantShot: bool,
+    system, user: string, evidence: var DecisionAttempt): JsonNode =
+  let binding = client.modelRoster.get().bindings[seat]
+  let actions = sim.legalCandidates(seat, wantShot)
+  let rosterHash = client.modelRoster.get().sha256
+  evidence.inferenceMode = imCandidate
+  evidence.actionEvidence = some(rejectedChoiceEvidence(binding, rosterHash, actions, "transport"))
+  evidence.request = choiceRequest(binding, rosterHash, system, user, actions)
+  evidence.decoder = %*{"seat_binding": binding.bindingJson(), "model_roster_sha256": rosterHash}
+  var headers: HttpHeaders
+  headers["content-type"] = "application/json"
+  headers["x-coworld-player-slot"] = $seat
+  headers["x-coworld-model-roster-sha256"] = rosterHash
+  headers["x-coworld-actor-id"] = binding.actorId
+  headers["x-coworld-policy-id"] = binding.policyId
+  let start = epochTime()
+  let response = client.curl.post(client.sidecarEndpoint & "/v1/parley/score-choices",
+    headers, $evidence.request, client.timeoutSeconds)
+  evidence.latencyMs = some((epochTime() - start) * 1000)
+  evidence.decoder["transport"] = %*{"http_status": response.code, "response_headers": {}}
+  evidence.rawResponse = %response.body
+  for name in ["x-softmax-llm-call-id", "x-coworld-checkpoint-sha256",
+      "x-coworld-tokenizer-sha256", "x-coworld-chat-template-sha256"]:
+    if response.headers[name].len > 0:
+      evidence.decoder["transport"]["response_headers"][name] = %response.headers[name]
+  if response.headers["x-softmax-llm-call-id"].len > 0:
+    evidence.platformCallId = some(response.headers["x-softmax-llm-call-id"])
+  if response.headers["x-softmax-llm-error-category"] == "spend_limit":
+    client.budgetExhausted[seat] = true
+    evidence.actionEvidence.get()["scoring_result"]["fault_kind"] = %"budget"
+    raise newException(ParleyError, "Legal-choice seat budget exhausted")
+  if response.code < 200 or response.code >= 300:
+    let fault = if response.code in [404, 405, 501]: "unsupported" else: "http"
+    evidence.actionEvidence.get()["scoring_result"]["fault_kind"] = %fault
+    raise newException(ParleyError, "Legal-choice HTTP failure: " & $response.code)
+  evidence.actionEvidence.get()["scoring_result"]["fault_kind"] = %"malformed-response"
+  let payload = parseJson(response.body)
+  evidence.rawResponse = payload
+  let scored = payload.to(ChoiceResponse)
+  if payload.kind != JObject or payload.len != 8:
+    raise newException(ParleyError, "Unexpected legal-choice response fields")
+  for candidate in payload["candidates"]:
+    if candidate.kind != JObject or candidate.len != 6:
+      raise newException(ParleyError, "Unexpected legal-choice token fields")
+  let validation = validateChoices(scored, binding, actions,
+    response.headers["x-softmax-llm-call-id"])
+  if not validation.valid:
+    evidence.actionEvidence.get()["scoring_result"]["fault_kind"] = %($validation.fault)
+    raise newException(ParleyError, "Rejected legal-choice scoring: " & $validation.fault)
+  if response.headers["x-coworld-checkpoint-sha256"] != binding.model or
+      response.headers["x-coworld-tokenizer-sha256"] != binding.tokenizerIdentity or
+      response.headers["x-coworld-chat-template-sha256"] != binding.chatTemplateSha256:
+    evidence.actionEvidence.get()["scoring_result"]["fault_kind"] = %"identity"
+    raise newException(ParleyError, "Legal-choice response headers differ from frozen seat")
+  evidence.modelIdentity = some(scored.model_identity)
+  evidence.tokenizerIdentity = some(scored.tokenizer_identity)
+  evidence.chatTemplateSha256 = some(scored.chat_template_sha256)
+  evidence.actionEvidence = some(scoredChoiceEvidence(evidence.actionEvidence.get(), payload,
+    validation.selectedIndex))
+  actions[validation.selectedIndex]
+
 proc seatByName(sim: Sim, name: string): int =
   for index, seat in sim.seats:
     if seat.name == name:
@@ -586,6 +647,8 @@ proc decide*(
 
   if client.modelRoster.isSome:
     client.modelRoster.get().bindings[seat].validatePrompt(prompt)
+  let ranking = client.modelRoster.isSome and
+    client.modelRoster.get().bindings[seat].actionMode == "legal_choice_ranking"
   let system = systemPrompt(sim, seat)
   for attempt in 0 .. 1:
     var user = userPrompt(sim, seat, prompt, wantShot, header)
@@ -601,10 +664,14 @@ proc decide*(
     evidence.prompt = %*[{"role": "system", "content": system},
       {"role": "user", "content": user}]
     try:
-      raw = client.completeText(seat, system, user, sim.actionSchema(seat, wantShot), evidence)
-      let payload = parseJsonObject(raw)
+      var payload: JsonNode
+      if ranking:
+        payload = client.rankChoices(sim, seat, wantShot, system, user, evidence)
+      else:
+        raw = client.completeText(seat, system, user, sim.actionSchema(seat, wantShot), evidence)
+        payload = parseJsonObject(raw)
       result.decision = parseDecision(sim, seat, payload, wantShot)
-      evidence.response = %raw
+      if not ranking: evidence.response = %raw
       evidence.parsedAction = decisionAction(sim, result.decision, wantShot)
       evidence.accepted = true
       result.nativeAttempts.add(evidence)
@@ -613,7 +680,7 @@ proc decide*(
       result.response = %*{"raw": raw, "parsed": payload}
       return
     except CatchableError as error:
-      evidence.response = %raw
+      if not ranking: evidence.response = %raw
       evidence.rejectionReason = some(error.msg)
       result.nativeAttempts.add(evidence)
       result.attempts.add(%*{"system": system, "user": user,

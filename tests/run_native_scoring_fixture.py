@@ -4,6 +4,7 @@ Arguments: compiled fixture binary, new private evidence directory.
 Scores and token IDs are fixtures, not a tokenizer or model qualification.
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -83,7 +84,8 @@ class Scorer(BaseHTTPRequestHandler):
         raw = b"{" if mode == "malformed" else json.dumps(response, ensure_ascii=False).encode()
         self.server.exchanges.append({"path": self.path, "request_headers": dict(self.headers),
                                       "request_body": body.decode(), "response_body": raw.decode(),
-                                      "status": status, "provider_call_id_header": call_id})
+                                      "status": status, "generated_provider_call_id": call_id,
+                                      "provider_call_id_header": None if mode == "missing-provider" else call_id})
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
@@ -92,6 +94,7 @@ class Scorer(BaseHTTPRequestHandler):
         self.send_header("x-coworld-checkpoint-sha256", "foreign" if mode == "header-identity" else request["model"])
         self.send_header("x-coworld-tokenizer-sha256", "b" * 64)
         self.send_header("x-coworld-chat-template-sha256", "c" * 64)
+        self.server.exchanges[-1]["response_headers_b64"] = base64.b64encode(b"".join(self._headers_buffer) + b"\r\n").decode()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -130,7 +133,13 @@ for mode in ["shot", "pass", "reaction", "unsupported", "identity", "provider", 
             assert raw == exchange["response_body"]
         else:
             assert (json.loads(raw) if isinstance(raw, str) else raw) == json.loads(exchange["response_body"])
-        assert attempt["platform_call_id"] == (None if mode == "missing-provider" else exchange["provider_call_id_header"])
+        assert attempt["platform_call_id"] == exchange["provider_call_id_header"]
+        response_headers = base64.b64decode(exchange["response_headers_b64"]).decode("latin-1")
+        if mode == "missing-provider":
+            assert "x-softmax-llm-call-id:" not in response_headers.lower()
+            assert exchange["generated_provider_call_id"] != attempt["platform_call_id"]
+        else:
+            assert "x-softmax-llm-call-id: " + exchange["provider_call_id_header"] in response_headers.lower()
         assert attempt["response"] is None
         assert attempt["sampled_token_ids"] is None and attempt["behavior_logprobs"] is None
     results.append({"case": mode, "attempts": len(attempts), "status": events[0]["action_status"]})

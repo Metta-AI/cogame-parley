@@ -246,9 +246,10 @@ suite "external training authority":
     game.issuedWindows["issued"] = game.externalObservation(game.match.sim, seat, "operator", true, matchHeader(game.match))
     let input = game.issuedWindows["issued"]["input"]
     var attempt = newDecisionAttempt("issued-model", "native", aoModel)
+    attempt.model = some("fixture-model")
     attempt.prompt = %*[{"role": "system", "content": input["system"]},
       {"role": "user", "content": input["user"]}]
-    attempt.request = %*{"messages": attempt.prompt}
+    attempt.request = %*{"messages": attempt.prompt, "model": "fixture-model"}
     let start = attempt.attemptEvidenceJson()
     for (key, value) in [("response", %"finished"), ("raw_response", %"received"),
         ("response_body_b64", %encode("received")), ("http_status", %200),
@@ -270,7 +271,7 @@ suite "external training authority":
       game.retainExternalAttempt((seat + 1) mod 5, "issued", evidence, completed = false)
     for (key, changed) in [("response_body_b64", %encode("rewritten")),
         ("response_headers_b64", %encode("HTTP/1.1 503 Error\r\n")), ("http_status", %400),
-        ("prompt", newJArray()), ("request", %*{"messages": []})]:
+        ("prompt", newJArray()), ("request", %*{"messages": []}), ("model", %"rewritten-model")]:
       var altered = copy(evidence)
       altered[key] = changed
       expect ParleyError:

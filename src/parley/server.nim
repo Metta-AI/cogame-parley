@@ -320,7 +320,7 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
     if (gs.startedAttempts[id]["latency_ms"].kind != JNull or
         gs.startedAttempts[id]["response_reader_joined"] == %true) and evidence != gs.startedAttempts[id]:
       raise newException(ParleyError, "finished native attempt evidence is immutable")
-    for key in ["prompt", "request", "decoder", "policy"]:
+    for key in ["prompt", "request", "decoder", "policy", "model"]:
       if evidence[key] != gs.startedAttempts[id][key]:
         raise newException(ParleyError, "started model request evidence is immutable")
     let before = gs.startedAttempts[id]

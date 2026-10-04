@@ -33,7 +33,8 @@ suite "player state":
     let seat = sim.itSeat
     state.registerExternal(seat, "Protect my friend")
     let outcome = decideSeat(newLlmClient(config), sim, seat,
-      state.prompts[seat], true, matchHeader(state.match), false, getMonoTime() + initDuration(seconds = 60))
+      state.prompts[seat], true, matchHeader(state.match), false, blRandom,
+      getMonoTime() + initDuration(seconds = 60))
     check outcome.origin == "scripted_after_external_disconnect"
     check outcome.input.kind == JNull
     check outcome.response.kind == JNull
@@ -60,6 +61,10 @@ suite "player state":
         userPrompt(sim, seat, "Protect my friend", wantShot, header)
       check packet["observation"]["seats"][seat]["friend"].getInt() >= 0
       check not packet.hasKey("id") and not packet.hasKey("transport")
+      ## Side actions are offered as allowances: every other cog is reachable.
+      check packet["extras"]["whisper"]["to"].len == 4
+      check packet["extras"]["pledge"]["to"].len == 4
+      check packet["extras"]["give"]["to"].len == 0
 
   test "foe points appear once before and after the final verdict":
     var config = defaultGameConfig()
@@ -77,7 +82,7 @@ suite "player state":
         game.match.sim.validTargets(game.match.sim.itSeat)[0])
     let beforeVerdict = game.snapshotJson()
     for index in 0 ..< config.players.len:
-      check beforeVerdict["seats"][index]["score"].getFloat() == float(game.match.sim.seats[index].enemyKill)
+      check beforeVerdict["seats"][index]["score"].getFloat() == float(game.match.sim.seats[index].foeScored)
     game.match.finishRound()
     let snapshot = game.snapshotJson()
     for index, total in game.match.totals:

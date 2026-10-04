@@ -6,19 +6,25 @@
 ## A hit costs the target 1 hp. A living target becomes "it" — unless it dies, in
 ## which case the shooter keeps the gun.
 ##
-## Aim: a HEAD-SHOT always lands. A HIP-SHOT misses two times in three, but
-## the target takes the gun either way — so a hip-shot is how a cog hands the
-## gun to a friend with a good chance of leaving them unhurt, or fakes a
-## grudge. Which aim was chosen is the shooter's secret: the table sees only
-## hit or miss. Hip-shots are unlimited: every shot still has a real chance
-## of landing, so a round always ends — it just may take a few more turns.
+## Aim: a HEAD-SHOT lands five times in six. A HIP-SHOT misses two times in
+## three, but the target takes the gun either way — so a hip-shot is how a cog
+## hands the gun to a friend with a good chance of leaving them unhurt, or
+## fakes a grudge. Which aim was chosen is the shooter's secret: the table sees
+## only hit or miss, and because head-shots can miss too, a miss alone does
+## not prove a gift. Every shot has a real chance of landing, so a round
+## always ends — it just may take a few more turns.
 ##
 ## Cards: every round each cog is secretly dealt a FRIEND and an ENEMY
 ## (two distinct other cogs). Round points: 3 for surviving the round,
-## 1 for fatally shooting your enemy, 1 if your friend survives. A round
-## ends at the configured survivor count; every survivor earns the 3 points.
-## A match is `rounds` rounds; the deal reshuffles every round and match
+## 1 if your enemy goes out after one of YOUR shots landed on them, 1 if your
+## friend survives. A round ends at the configured survivor count; every
+## survivor earns the 3 points. The deal reshuffles every round and match
 ## scores are the round points summed. All seats return at full hp each round.
+##
+## Side actions: alongside any shot or reaction a cog may whisper to one cog,
+## show one of its cards (verified by the game) to one cog, hand one banked
+## point to a cog, or pledge publicly not to shoot a cog for the rest of the
+## round. Breaking a pledge moves one point from the breaker to its victim.
 
 import std/[json, random, sequtils, strutils], types
 
@@ -27,19 +33,25 @@ export types
 const
   ## Per-episode sample ranges. Rounds and survivor count are also either told
   ## to the table or withheld, which is itself drawn per episode.
+  ## Rounds and hit points are bounded so an ordinary table, talk included,
+  ## fits the hosted episode clock.
   RoundsMin* = 3
-  RoundsMax* = 20
+  RoundsMax* = 6
   SurvivorsMin* = 1
   SurvivorsMax* = 3
   HitPointsMin* = 2
-  HitPointsMax* = 5
-  ## The most one seat can bank in a round: survive (3) + fatally shoot its
-  ## enemy (1) + its friend survives (1).
+  HitPointsMax* = 3
+  ## The most one seat can earn from one round's cards: survive (3) + its
+  ## enemy goes out after its hit (1) + its friend survives (1).
   PointsPerRound* = 5.0
   ## Total spectator-pacing sleep an episode may spend, in milliseconds.
   PacingBudgetMs* = 60_000
   ## A hip-shot lands one time in `HipShotOdds`.
   HipShotOdds* = 3
+  ## A head-shot misses one time in `HeadMissOdds`.
+  HeadMissOdds* = 6
+  ## Whispers each cog may send per round.
+  MaxWhispers* = 2
 
 type
   Sim* = object
@@ -53,7 +65,9 @@ type
     done*: bool
     deathCount*: int
     events*: seq[GameEvent]
-    rng: Rand       ## hip-shot dice, seeded from seed + round so re-runs agree
+    banked*: seq[float]     ## match totals when this round was dealt
+    transfers*: seq[float]  ## this round's gifts and pledge penalties, net
+    rng: Rand       ## shot dice, seeded from seed + round so re-runs agree
 
   Match* = object
     ## A full episode: `config.rounds` rounds with cumulative scoring.
@@ -63,7 +77,7 @@ type
     totals*: seq[float]       ## summed round points
     roundWins*: seq[int]      ## rounds won per seat (3 pts each)
     friendPoints*: seq[int]   ## rounds where the seat's friend won (1 pt each)
-    foePoints*: seq[int]      ## rounds where the seat fatally shot its enemy
+    foePoints*: seq[int]      ## rounds where the seat's enemy went out after its hit
     killsTotal*: seq[int]
     turnsTotal*: int
     roundsPlayed*: int   ## completed rounds; may fall short of config.rounds
@@ -107,26 +121,26 @@ proc addEvent(
     points: points
   ))
 
-proc derangement(rng: var Rand, n: int, avoid: seq[int] = @[]): seq[int] =
+proc derangement(rng: var Rand, n: int, avoid: seq[int] = @[],
+    mutualPair = false): seq[int] =
   ## A permutation of 0..<n where no seat maps to itself, nor to the seat at the
-  ## same index in `avoid`. Rejection sampling: the constraints are loose enough
-  ## at n >= 3 that a valid shuffle turns up in a handful of tries.
-  for attempt in 0 .. 999:
+  ## same index in `avoid`; with `mutualPair`, at least two seats map to each
+  ## other. Rejection sampling: at n >= 3 a valid shuffle turns up in a
+  ## handful of tries.
+  for attempt in 0 .. 9999:
     result = toSeq(0 ..< n)
     rng.shuffle(result)
     var ok = true
+    var paired = false
     for index in 0 ..< n:
       if result[index] == index or (avoid.len == n and result[index] == avoid[index]):
         ok = false
         break
-    if ok:
+      if result[result[index]] == index:
+        paired = true
+    if ok and (paired or not mutualPair):
       return
-  ## Fall back to the rotation, which is a derangement by construction and
-  ## distinct from `avoid` whenever `avoid` is the other rotation.
-  result = newSeq[int](n)
-  let step = if avoid.len == n: 2 else: 1
-  for index in 0 ..< n:
-    result[index] = (index + step) mod n
+  raise newException(ParleyError, "no card deal satisfies the constraints")
 
 proc dealCards(sim: var Sim) =
   ## Deals every seat a friend and a distinct enemy (never itself),
@@ -137,12 +151,16 @@ proc dealCards(sim: var Sim) =
   ## each seat's cards independently would let a cog be nobody's friend while
   ## carrying two cogs' enemy cards, which reads as a bug at the table and
   ## quietly skews the round's scoring toward whoever drew the popular target.
+  ##
+  ## From four seats up, at least one pair of cogs hold each other's FRIEND
+  ## card, and the table is told so: finding your mutual friend is a puzzle
+  ## worth talking about. Three seats only admit 3-cycles.
   let n = sim.seats.len
   if n < 3:
     ## A friend and a distinct enemy need at least two other cogs.
     return
   var rng = initRand(int64(sim.config.seed) * 7919 + int64(sim.round) * 104729 + 17)
-  let friends = derangement(rng, n)
+  let friends = derangement(rng, n, mutualPair = n >= 4)
   let enemies = derangement(rng, n, friends)
   for index in 0 ..< n:
     sim.seats[index].friend = friends[index]
@@ -168,15 +186,6 @@ proc tableNames*(players: seq[PlayerConfig], seed: int): seq[string] =
       result.add(pool[index])
     else:
       result.add("Cog " & $(index + 1))
-
-proc talkAllowance(rounds, maxReactions, maxSkips: int): (int, int) =
-  ## Reactions and passes are table flavour rather than the game itself, so a
-  ## long match spends its allowance on playing more rounds instead of on more
-  ## chatter per shot. Both ladder together: chatter is cheapest to allow on a
-  ## short table and priced out of a long one.
-  if rounds <= 5: (maxReactions, maxSkips)
-  elif rounds <= 10: (min(maxReactions, 1), min(maxSkips, 1))
-  else: (0, 0)
 
 proc sampleEpisode*(config: GameConfig): GameConfig =
   ## Draws this episode's table rules from the seed. Every seat plays the same
@@ -204,13 +213,8 @@ proc sampleEpisode*(config: GameConfig): GameConfig =
   ## there is no turn ceiling of any kind: it runs until the table is down to
   ## `survivors`, however long that takes. The only thing that shortens a
   ## match is the hosted deadline, checked between rounds by the server.
-  ##
-  ## Chatter ladders with the round count: reactions and passes are table
-  ## flavour, so a long match spends its time on rounds rather than on more
-  ## talk per shot.
-  (result.maxReactions, result.maxSkips) =
-    talkAllowance(result.rounds,
-      (if config.reactions: config.maxReactions else: 0), config.maxSkips)
+  ## Talk is the game, so every table gets the same reactions and passes.
+  result.maxReactions = if config.reactions: config.maxReactions else: 0
   result.reactions = result.maxReactions > 0
 
   ## Spectator pacing is a fixed sleep per turn, so on a long table it stops
@@ -222,10 +226,12 @@ proc sampleEpisode*(config: GameConfig): GameConfig =
     min(config.turnDelayMs, PacingBudgetMs div roughTurns)
   result.sampled = true
 
-proc initSim*(config: GameConfig, round = 0): Sim =
+proc initSim*(config: GameConfig, round = 0, banked: seq[float] = @[]): Sim =
   if config.players.len < 2:
     raise newException(ParleyError, "parley needs at least 2 players")
-  result = Sim(config: config, round: round)
+  result = Sim(config: config, round: round,
+    banked: (if banked.len > 0: banked else: newSeq[float](config.players.len)),
+    transfers: newSeq[float](config.players.len))
   ## Separate stream from the deal so the cards and the dice never correlate.
   result.rng = initRand(int64(config.seed) * 3571 + int64(round) * 15485863 + 101)
   let names = tableNames(config.players, config.seed)
@@ -248,16 +254,17 @@ proc initSim*(config: GameConfig, round = 0): Sim =
 proc winners*(sim: Sim): seq[bool]
 
 proc scores*(sim: Sim): seq[float] =
-  ## Card scoring for one round: 3 points for surviving the round, 1 point for
-  ## having fatally shot your enemy, 1 point if your friend survived. Every
-  ## survivor takes the full 3, so a round played to three survivors pays out
-  ## more than one played to a sole winner.
+  ## Card scoring for one round: 3 points for surviving the round, 1 point if
+  ## your enemy went out after one of your shots landed on them, 1 point if
+  ## your friend survived. Every survivor takes the full 3, so a round played
+  ## to three survivors pays out more than one played to a sole winner.
+  ## Gifts and pledge penalties are transfers, not round points.
   result = newSeq[float](sim.seats.len)
   let winFlags = sim.winners()
   for index, seat in sim.seats:
     if winFlags[index]:
       result[index] += 3
-    if seat.enemyKill:
+    if seat.foeScored:
       result[index] += 1
     if seat.friend >= 0 and winFlags[seat.friend]:
       result[index] += 1
@@ -304,13 +311,19 @@ proc applySkip*(sim: var Sim, shooter: int) =
   inc sim.skips
   sim.addEvent(evSkip, shooter)
 
+proc transfer(sim: var Sim, source, target: int, reason: string) =
+  ## One point moves from `source` to `target` at once; both sides are logged.
+  sim.transfers[source] -= 1
+  sim.transfers[target] += 1
+  sim.addEvent(evScore, source, target, points = -1, text = reason)
+  sim.addEvent(evScore, target, source, points = 1, text = reason)
+
 proc applyShot*(sim: var Sim, shooter, target: int, aim = aimHead) =
   ## One turn: "it" shoots a living cog. Raises on illegal shots.
   ##
-  ## A head-shot always lands. A hip-shot rolls the round's dice and misses
-  ## `HipShotOdds - 1` times in `HipShotOdds`; a miss still spends the turn
-  ## and still hands the gun to the target — the table cannot tell a missed
-  ## hip-shot from a gift.
+  ## A head-shot misses one time in `HeadMissOdds`; a hip-shot misses
+  ## `HipShotOdds - 1` times in `HipShotOdds`. A miss still spends the turn
+  ## and still hands the gun to the target.
   if sim.done:
     raise newException(ParleyError, "round is over")
   if shooter != sim.itSeat:
@@ -323,11 +336,17 @@ proc applyShot*(sim: var Sim, shooter, target: int, aim = aimHead) =
     raise newException(ParleyError, "target is already out")
 
   inc sim.turn
-  let miss = aim == aimHip and sim.rng.rand(HipShotOdds - 1) != 0
+  let miss =
+    if aim == aimHip: sim.rng.rand(HipShotOdds - 1) != 0
+    else: sim.rng.rand(HeadMissOdds - 1) == 0
   if not miss:
     dec sim.seats[target].hp
+    if target == sim.seats[shooter].enemy:
+      sim.seats[shooter].hitEnemy = true
   sim.addEvent(evShot, shooter, target, hpAfter = sim.seats[target].hp,
     aim = aim, miss = miss)
+  if target in sim.seats[shooter].pledges:
+    sim.transfer(shooter, target, "pledge")
 
   if sim.seats[target].hp <= 0:
     sim.seats[target].alive = false
@@ -335,10 +354,12 @@ proc applyShot*(sim: var Sim, shooter, target: int, aim = aimHead) =
     inc sim.deathCount
     inc sim.seats[shooter].kills
     sim.addEvent(evDeath, target)
-    if target == sim.seats[shooter].enemy:
-      sim.seats[shooter].enemyKill = true
-      ## The FOE point lands the moment the fatal shot does.
-      sim.addEvent(evScore, shooter, target, points = 1, text = "foe")
+    ## The FOE point lands the moment the enemy goes out, for every cog
+    ## holding that enemy card whose shot landed on them this round.
+    for index in 0 ..< sim.seats.len:
+      if sim.seats[index].enemy == target and sim.seats[index].hitEnemy:
+        sim.seats[index].foeScored = true
+        sim.addEvent(evScore, index, target, points = 1, text = "foe")
     ## The gun stays with the shooter: a dead cog cannot be "it".
   else:
     sim.itSeat = target
@@ -349,6 +370,72 @@ proc applyShot*(sim: var Sim, shooter, target: int, aim = aimHead) =
   ## hp is finite, so the round terminates with probability one.
   if sim.aliveCount() <= max(sim.config.survivors, 1):
     sim.done = true
+
+proc seatByName*(sim: Sim, name: string): int =
+  for index, seat in sim.seats:
+    if seat.name == name:
+      return index
+  -1
+
+proc validateExtras*(sim: Sim, seat: int, extras: Extras) =
+  ## Raises on any side action this seat may not take right now.
+  proc other(sim: Sim, seat: int, target: Option[int], what: string) =
+    if target.get < 0 or target.get >= sim.seats.len or target.get == seat:
+      raise newException(ParleyError, what & " needs another cog at the table")
+  if sim.done:
+    raise newException(ParleyError, "round is over")
+  if extras.whisperTo.isSome:
+    sim.other(seat, extras.whisperTo, "whisper")
+    if extras.whisperText.len == 0:
+      raise newException(ParleyError, "whisper needs text")
+    if sim.seats[seat].whispers >= MaxWhispers:
+      raise newException(ParleyError, "no whispers left this round")
+  if extras.revealTo.isSome:
+    sim.other(seat, extras.revealTo, "reveal")
+    if sim.seats[seat].friend < 0:
+      raise newException(ParleyError, "no cards to reveal at this table")
+    if sim.seats[seat].revealed:
+      raise newException(ParleyError, "already revealed a card this round")
+  if extras.giveTo.isSome:
+    sim.other(seat, extras.giveTo, "give")
+    if sim.banked[seat] + sim.transfers[seat] < 1:
+      raise newException(ParleyError, "no banked point to give")
+  if extras.pledgeTo.isSome:
+    sim.other(seat, extras.pledgeTo, "pledge")
+    if not sim.seats[seat].alive or not sim.seats[extras.pledgeTo.get].alive:
+      raise newException(ParleyError, "pledges are between living cogs")
+    if extras.pledgeTo.get in sim.seats[seat].pledges:
+      raise newException(ParleyError, "already pledged")
+
+proc applyExtras*(sim: var Sim, seat: int, extras: Extras) =
+  ## Validates every side action first, so an illegal one changes nothing.
+  sim.validateExtras(seat, extras)
+  if extras.whisperTo.isSome:
+    inc sim.seats[seat].whispers
+    sim.addEvent(evWhisper, seat, extras.whisperTo.get, text = extras.whisperText)
+  if extras.revealTo.isSome:
+    sim.seats[seat].revealed = true
+    if extras.revealCard == cardFriend:
+      sim.addEvent(evReveal, seat, extras.revealTo.get, friend = sim.seats[seat].friend)
+    else:
+      sim.addEvent(evReveal, seat, extras.revealTo.get, enemy = sim.seats[seat].enemy)
+  if extras.pledgeTo.isSome:
+    sim.seats[seat].pledges.add(extras.pledgeTo.get)
+    sim.addEvent(evPledge, seat, extras.pledgeTo.get)
+  if extras.giveTo.isSome:
+    sim.transfer(seat, extras.giveTo.get, "gift")
+
+proc reactionSpeakers*(sim: Sim): seq[int] =
+  ## Who talks before IT's next decision: every cog but IT, eliminated ones
+  ## included, in a seeded shuffle so no seat is structurally silenced.
+  for index in 0 ..< sim.seats.len:
+    if index != sim.itSeat:
+      result.add(index)
+  var rng = initRand(int64(sim.config.seed) * 92821 + int64(sim.round) * 7867 +
+    int64(sim.turn) * 337 + int64(sim.skips) * 29 + 5)
+  rng.shuffle(result)
+  if result.len > sim.config.maxReactions:
+    result.setLen(sim.config.maxReactions)
 
 # ---- Match ------------------------------------------------------------------
 
@@ -383,6 +470,16 @@ proc appliedDecisionAction*(sim: Sim, events: seq[GameEvent], beforeEvent: int,
       result["shoot"] = %sim.seats[event.target].name
       result["aim"] = %($event.aim)
       shotApplied = true
+    of evWhisper:
+      result["whisper"] = %*{"to": sim.seats[event.target].name, "text": event.text}
+    of evReveal:
+      result["reveal"] = %*{"to": sim.seats[event.target].name,
+        "card": (if event.friend >= 0: $cardFriend else: $cardEnemy)}
+    of evPledge:
+      result["pledge"] = %sim.seats[event.target].name
+    of evScore:
+      if event.text == "gift" and event.points < 0:
+        result["give"] = %sim.seats[event.target].name
     else: discard
   doAssert not wantShot or shotApplied, "engine emitted no applied shot or skip"
 
@@ -403,9 +500,9 @@ proc finishRound*(match: var Match, endMatch = false) =
   let roundScores = match.sim.scores()
   let roundWinners = match.sim.winners()
   for index in 0 ..< match.totals.len:
-    match.totals[index] += roundScores[index]
+    match.totals[index] += roundScores[index] + match.sim.transfers[index]
     match.killsTotal[index] += match.sim.seats[index].kills
-    if match.sim.seats[index].enemyKill:
+    if match.sim.seats[index].foeScored:
       inc match.foePoints[index]
     let friend = match.sim.seats[index].friend
     if friend >= 0 and roundWinners[friend]:
@@ -427,7 +524,7 @@ proc finishRound*(match: var Match, endMatch = false) =
 
   if not endMatch and match.sim.round + 1 < match.config.rounds:
     match.history.add(match.sim.events)
-    match.sim = initSim(match.config, match.sim.round + 1)
+    match.sim = initSim(match.config, match.sim.round + 1, match.totals)
   else:
     match.done = true
 
@@ -453,9 +550,27 @@ proc pointsAvailable*(match: Match): float =
   ## thrown away rounds it never got to play.
   PointsPerRound * float(max(match.roundsPlayed, 1))
 
+proc placings*(match: Match): seq[float] =
+  ## The platform score: the share of the other seats this seat finished
+  ## ahead of, ties counting half. Raw totals swing with the survivor count
+  ## (a three-survivor table pays out more than twice a sole-winner one), so
+  ## only the order within the table is comparable across episodes.
+  let n = match.totals.len
+  result = newSeq[float](n)
+  if n < 2:
+    return
+  for index in 0 ..< n:
+    var beaten = 0.0
+    for other in 0 ..< n:
+      if other == index: continue
+      if match.totals[index] > match.totals[other]: beaten += 1
+      elif match.totals[index] == match.totals[other]: beaten += 0.5
+    result[index] = beaten / float(n - 1)
+
 proc resultsJson*(match: Match): JsonNode =
   let winFlags = match.matchWinners()
   let available = match.pointsAvailable()
+  let placing = match.placings()
   var names = newJArray()
   var scoresNode = newJArray()
   var winNode = newJArray()
@@ -465,14 +580,17 @@ proc resultsJson*(match: Match): JsonNode =
   var friendNode = newJArray()
   var foeNode = newJArray()
   var rawNode = newJArray()
+  var shareNode = newJArray()
   for index, seat in match.sim.seats:
     ## Results are platform-facing: the league attributes scores by POLICY
     ## name, not by the anonymous alias the seat played under.
     names.add(%match.config.players[index].name)
-    ## `scores` is the normalized share of the episode's ceiling so the league
-    ## can rank across differently-shaped tables; the raw points ride along.
-    scoresNode.add(%(match.totals[index] / available))
+    ## `scores` is the within-table placing so the league can rank across
+    ## differently-shaped tables; raw points and their share of the
+    ## per-seat ceiling ride along.
+    scoresNode.add(%placing[index])
     rawNode.add(%match.totals[index])
+    shareNode.add(%(match.totals[index] / available))
     winNode.add(%(match.done and winFlags[index]))
     hpNode.add(%max(seat.hp, 0))
     killsNode.add(%match.killsTotal[index])
@@ -489,6 +607,7 @@ proc resultsJson*(match: Match): JsonNode =
     "friendPoints": friendNode,
     "foePoints": foeNode,
     "rawScores": rawNode,
+    "pointShares": shareNode,
     "pointsAvailable": available,
     "rounds": match.roundsPlayed,
     "survivors": match.config.survivors,
@@ -512,7 +631,7 @@ proc seatStates*(sim: Sim, totals: seq[float], roundWins: seq[int]): JsonNode =
       "roundWins": if index < roundWins.len: roundWins[index] else: 0,
       "friend": seat.friend,
       "enemy": seat.enemy,
-      "enemyDone": seat.enemyKill
+      "enemyDone": seat.foeScored
     })
 
 proc redactSecrets*(snapshot: JsonNode, slot: int) =
@@ -533,6 +652,16 @@ proc redactSecrets*(snapshot: JsonNode, slot: int) =
       var public = event.copy()
       if public.hasKey("aim"):
         public.delete("aim")
+      visible.add(public)
+      continue
+    ## Whispers and card reveals are private to the two cogs involved; the
+    ## rest of the table sees only that one happened.
+    if event{"kind"}.getStr() in ["whisper", "reveal"] and
+        slot notin [event{"seat"}.getInt(), event{"target"}.getInt()]:
+      var public = event.copy()
+      for key in ["text", "friend", "enemy"]:
+        if public.hasKey(key):
+          public.delete(key)
       visible.add(public)
       continue
     visible.add(event)
@@ -578,7 +707,7 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[ReplayFrame] 
         frame.sim.seats[index].kills = 0
         frame.sim.seats[index].friend = -1
         frame.sim.seats[index].enemy = -1
-        frame.sim.seats[index].enemyKill = false
+        frame.sim.seats[index].foeScored = false
       frame.sim.deathCount = 0
       frame.sim.skips = 0
       frame.sim.done = false
@@ -586,7 +715,7 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[ReplayFrame] 
     of evDeal:
       frame.sim.seats[event.seat].friend = event.friend
       frame.sim.seats[event.seat].enemy = event.enemy
-    of evSay:
+    of evSay, evWhisper, evReveal, evPledge:
       discard
     of evSkip:
       inc frame.sim.skips
@@ -600,10 +729,10 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[ReplayFrame] 
       inc frame.sim.deathCount
       ## The gun did not move on a lethal shot, so "it" is the shooter.
       inc frame.sim.seats[frame.sim.itSeat].kills
-      if event.seat == frame.sim.seats[frame.sim.itSeat].enemy:
-        frame.sim.seats[frame.sim.itSeat].enemyKill = true
     of evScore:
       frame.totals[event.seat] += float(event.points)
+      if event.text == "foe":
+        frame.sim.seats[event.seat].foeScored = true
     of evRoundEnd:
       frame.sim.done = true
       inc frame.roundWins[event.seat]

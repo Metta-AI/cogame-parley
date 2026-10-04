@@ -705,18 +705,36 @@
         return name(event.seat) + " shoots " + name(event.target) + aim +
           " (" + Math.max(event.hpAfter, 0) + " hp left)";
       case "death": return name(event.seat) + " is OUT!";
+      case "whisper":
+        // Players and the live feed only see that a whisper happened.
+        return name(event.seat) + " whispers to " + name(event.target) +
+          (event.text ? ": “" + nameMap.text(event.text) + "”" : ".");
+      case "reveal":
+        var card = event.friend !== undefined ? "FRIEND card: " + name(event.friend) :
+          event.enemy !== undefined ? "ENEMY card: " + name(event.enemy) : "a card";
+        return name(event.seat) + " shows " + name(event.target) + " " + card + ".";
+      case "pledge":
+        return name(event.seat) + " pledges not to shoot " + name(event.target) +
+          " this round.";
       case "roundEnd":
         return name(event.seat) + " WINS round " + (event.round + 1) + "!";
       case "score":
         var reason = "";
         if (event.text === "foe") {
-          reason = "fatally shot " + name(event.target) + " (FOE)";
+          reason = "enemy " + name(event.target) + " is out after their hit (FOE)";
+        } else if (event.text === "gift") {
+          reason = event.points < 0 ? "gave a point to " + name(event.target) :
+            "gift from " + name(event.target);
+        } else if (event.text === "pledge") {
+          reason = event.points < 0 ? "broke a pledge to " + name(event.target) :
+            name(event.target) + " broke a pledge (PLEDGE)";
         } else if (event.text === "survivor") {
           reason = "last cog standing";
         } else if (event.text === "friend") {
           reason = name(event.target) + " survived (FRIEND)";
         }
-        return name(event.seat) + " +" + event.points + " \u2014 " + reason;
+        return name(event.seat) + " " + (event.points > 0 ? "+" : "") +
+          event.points + " \u2014 " + reason;
       default: return JSON.stringify(event);
     }
   }

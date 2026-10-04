@@ -1,4 +1,6 @@
-import std/[json, strutils]
+import std/[json, options, strutils]
+
+export options
 
 type
   ParleyError* = object of CatchableError
@@ -42,6 +44,23 @@ type
     evDeath = "death"
     evScore = "score"
     evRoundEnd = "roundEnd"
+    evWhisper = "whisper"  ## private line to one cog; others see only that it happened
+    evReveal = "reveal"    ## verified card shown to one cog; others see only that it happened
+    evPledge = "pledge"    ## public promise not to shoot a cog for the rest of the round
+
+  CardKind* = enum
+    cardFriend = "friend"
+    cardEnemy = "enemy"
+
+  Extras* = object
+    ## Optional side actions any cog may attach to a shot or a reaction; the
+    ## default value takes none.
+    whisperTo*: Option[int]
+    whisperText*: string
+    revealTo*: Option[int]
+    revealCard*: CardKind
+    giveTo*: Option[int]    ## hand over 1 banked point
+    pledgeTo*: Option[int]  ## promise not to shoot this cog for the rest of the round
 
   ShotAim* = enum
     ## How "it" aimed. A head-shot always lands. A hip-shot is a gamble: it
@@ -59,9 +78,9 @@ type
     text*: string   ## say text; empty otherwise
     hpAfter*: int   ## target hp after a shot; -1 otherwise
     aim*: ShotAim   ## shot events: how the shooter aimed (secret from the table)
-    miss*: bool     ## shot events: a hip-shot that did no damage
-    friend*: int    ## deal events: this seat's friend card; -1 otherwise
-    enemy*: int     ## deal events: this seat's enemy card; -1 otherwise
+    miss*: bool     ## shot events: a shot that did no damage
+    friend*: int    ## deal/reveal events: the friend card shown; -1 otherwise
+    enemy*: int     ## deal/reveal events: the enemy card shown; -1 otherwise
     points*: int    ## score events: points awarded; 0 otherwise
 
   Seat* = object
@@ -72,7 +91,11 @@ type
     deathIndex*: int  ## order of elimination, -1 while alive
     friend*: int      ## this round's secret friend card
     enemy*: int       ## this round's secret enemy card
-    enemyKill*: bool  ## fatally shot its enemy this round
+    hitEnemy*: bool   ## landed at least one hit on its enemy this round
+    foeScored*: bool  ## its enemy went out after it landed a hit on them
+    whispers*: int    ## whispers sent this round
+    revealed*: bool   ## already showed a card this round
+    pledges*: seq[int] ## cogs it promised not to shoot this round
 
 proc defaultGameConfig*(): GameConfig =
   GameConfig(
@@ -84,7 +107,7 @@ proc defaultGameConfig*(): GameConfig =
     survivorsKnown: true,
     maxSkips: 3,
     reactions: true,
-    maxReactions: 3,
+    maxReactions: 2,
     turnDelayMs: 1200,
     playerConnectTimeoutSeconds: 180,
     episodeTimeoutSeconds: 20 * 60,

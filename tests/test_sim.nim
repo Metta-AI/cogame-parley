@@ -55,7 +55,7 @@ suite "parley sim":
     for i in 0 ..< 3:
       var expected = 0.0
       if w[i]: expected += 3
-      if sim.seats[i].enemyKill: expected += 1
+      if sim.seats[i].foeScored: expected += 1
       if sim.seats[i].friend >= 0 and w[sim.seats[i].friend]: expected += 1
       check sim.scores()[i] == expected
 
@@ -126,22 +126,27 @@ suite "parley sim":
 
   test "results json shape":
     var match = initMatch(fixtureConfig(2, hp = 1, rounds = 2))
+    var turns = 0
     while not match.done:
-      match.sim.applyShot(match.sim.itSeat,
-        match.sim.validTargets(match.sim.itSeat)[0])
+      while not match.sim.done:
+        match.sim.applyShot(match.sim.itSeat,
+          match.sim.validTargets(match.sim.itSeat)[0])
+        inc turns
       match.finishRound()
     let results = match.resultsJson()
     check results["names"].len == 2
-    ## Scores are the share of the episode ceiling (5 points x 2 rounds).
+    ## Point shares are against the episode ceiling (5 points x 2 rounds);
+    ## scores are within-table placings, so a tie places both at one half.
     check results["pointsAvailable"].getFloat() == 10.0
     check results["rawScores"][0].getFloat() == 3.0
-    check results["scores"][0].getFloat() == 0.3
-    check results["scores"][1].getFloat() == 0.3
+    check results["pointShares"][0].getFloat() == 0.3
+    check results["scores"][0].getFloat() == 0.5
+    check results["scores"][1].getFloat() == 0.5
     check results["win"][0].getBool()
     check results["win"][1].getBool()
     check results["roundWins"][0].getInt() == 1
     check results["rounds"].getInt() == 2
-    check results["turns"].getInt() == 2
+    check results["turns"].getInt() == turns
 
   test "replay re-derivation matches the live match":
     var config = fixtureConfig(4, hp = 2, rounds = 2)
@@ -221,8 +226,9 @@ suite "parley sim":
     ## only.
     var match = initMatch(fixtureConfig(2, hp = 1, rounds = 1))
     while not match.done:
-      match.sim.applyShot(match.sim.itSeat,
-        match.sim.validTargets(match.sim.itSeat)[0])
+      while not match.sim.done:
+        match.sim.applyShot(match.sim.itSeat,
+          match.sim.validTargets(match.sim.itSeat)[0])
       match.finishRound()
     let results = match.resultsJson()
     check results["names"][0].getStr() == "P1"
@@ -267,8 +273,9 @@ suite "parley sim":
     var match = initMatch(config)
     match.sim.applySkip(match.sim.itSeat)
     check match.sim.skipsLeft() == 0
-    match.sim.applyShot(match.sim.itSeat,
-      match.sim.validTargets(match.sim.itSeat)[0])
+    while not match.sim.done:
+      match.sim.applyShot(match.sim.itSeat,
+        match.sim.validTargets(match.sim.itSeat)[0])
     match.finishRound()
     check match.sim.skipsLeft() == 1
 
@@ -285,17 +292,18 @@ suite "parley sim":
     for index in 0 ..< 3:
       check frames[^1].sim.seats[index].hp == sim.seats[index].hp
 
-  test "long tables price the pass allowance out":
+  test "every table gets the same talk allowance":
+    ## Talk is the game: no draw prices reactions or passes out.
     for seed in 0 .. 60:
       var config = fixtureConfig(5)
       config.sampled = false
       config.seed = seed
       let drawn = sampleEpisode(config)
-      check drawn.maxSkips <= config.maxSkips
-      if drawn.rounds > 10:
-        check drawn.maxSkips == 0
+      check drawn.maxSkips == config.maxSkips
+      check drawn.maxReactions == config.maxReactions
+      check drawn.reactions
 
-  test "fatally shooting your enemy scores the bonus":
+  test "your enemy going out after your hit scores the bonus":
     var sim = initSim(fixtureConfig(4, hp = 1))
     ## Play the round out: each "it" shoots its enemy when alive, else the
     ## first legal target.
@@ -311,7 +319,7 @@ suite "parley sim":
     for i in 0 ..< 4:
       var expected = 0.0
       if w[i]: expected += 3
-      if sim.seats[i].enemyKill:
+      if sim.seats[i].foeScored:
         expected += 1
         sawEnemyKill = true
       if sim.seats[i].friend >= 0 and w[sim.seats[i].friend]: expected += 1
@@ -414,8 +422,9 @@ suite "parley sim":
     for rounds in [3, 11, 20]:
       var match = initMatch(fixtureConfig(2, hp = 1, rounds = rounds))
       while not match.done:
-        match.sim.applyShot(match.sim.itSeat,
-          match.sim.validTargets(match.sim.itSeat)[0])
+        while not match.sim.done:
+          match.sim.applyShot(match.sim.itSeat,
+            match.sim.validTargets(match.sim.itSeat)[0])
         match.finishRound()
       check match.roundsPlayed == rounds
       check match.pointsAvailable() == float(rounds) * PointsPerRound
@@ -425,8 +434,9 @@ suite "parley sim":
   test "a match cut short is scored over the rounds it played":
     var match = initMatch(fixtureConfig(2, hp = 1, rounds = 12))
     for _ in 0 ..< 3:
-      match.sim.applyShot(match.sim.itSeat,
-        match.sim.validTargets(match.sim.itSeat)[0])
+      while not match.sim.done:
+        match.sim.applyShot(match.sim.itSeat,
+          match.sim.validTargets(match.sim.itSeat)[0])
       match.finishRound(endMatch = match.sim.round == 2)
     check match.done
     check match.roundsPlayed == 3
@@ -482,8 +492,9 @@ suite "parley sim":
     check hits in 70 .. 130
     check misses in 170 .. 230
 
-  test "a head-shot never misses":
-    for seed in 0 ..< 50:
+  test "a head-shot misses one time in six, so a miss proves nothing":
+    var misses = 0
+    for seed in 0 ..< 600:
       var config = fixtureConfig(3)
       config.seed = seed
       var sim = initSim(config)
@@ -491,8 +502,13 @@ suite "parley sim":
       let target = sim.validTargets(it)[0]
       sim.applyShot(it, target)
       check sim.lastShot().aim == aimHead
-      check not sim.lastShot().miss
-      check sim.seats[target].hp == 2
+      if sim.lastShot().miss:
+        inc misses
+        check sim.seats[target].hp == 3
+      else:
+        check sim.seats[target].hp == 2
+      check sim.itSeat == target
+    check misses in 70 .. 130
 
   test "a fatal hip-shot keeps the gun and scores the foe point":
     var found = false
@@ -510,7 +526,7 @@ suite "parley sim":
       found = true
       check not sim.seats[target].alive
       check sim.itSeat == it
-      check sim.seats[it].enemyKill
+      check sim.seats[it].foeScored
       check sim.events[^1].kind == evScore
     check found
 
@@ -539,7 +555,7 @@ suite "parley sim":
       if event.kind == evShot and event.miss:
         sawMiss = true
         check event.eventToJson()["miss"].getBool()
-        check event.eventToJson()["aim"].getStr() == "hip"
+        check event.eventToJson(){"aim"}.getStr("head") == $event.aim
     check sawMiss
     let frames = replayMatch(config, sim.events)
     for index in 0 ..< 4:
@@ -597,6 +613,133 @@ suite "parley sim":
       for index, seat in snapshot["seats"].getElems():
         if index != slot:
           check seat["friend"].getInt() == -1
+
+  test "from four seats up the friend deal always holds a mutual pair":
+    for players in [4, 5, 6]:
+      for seed in 0 ..< 40:
+        var config = fixtureConfig(players)
+        config.seed = seed
+        for round in 0 ..< 3:
+          let sim = initSim(config, round)
+          var mutual = false
+          for index, seat in sim.seats:
+            check seat.friend != index and seat.enemy != index
+            check seat.friend != seat.enemy
+            if sim.seats[seat.friend].friend == index: mutual = true
+          check mutual
+
+  test "a foe point goes to every cog whose hit landed before its enemy went out":
+    ## The assist rule: the final blow is not required, only a landed hit.
+    var checked = false
+    for seed in 0 ..< 200:
+      var config = fixtureConfig(4, hp = 2)
+      config.seed = seed
+      var sim = initSim(config)
+      let a = sim.itSeat
+      let b = (a + 1) mod 4
+      let c = (a + 2) mod 4
+      sim.seats[a].enemy = b
+      sim.seats[c].enemy = b
+      sim.applyShot(a, b)
+      if sim.lastShot().miss: continue
+      sim.applyShot(b, c)
+      if sim.lastShot().miss: continue
+      sim.applyShot(c, b)
+      if sim.lastShot().miss: continue
+      checked = true
+      check not sim.seats[b].alive
+      check sim.itSeat == c
+      check sim.seats[a].foeScored and sim.seats[c].foeScored
+      var foes: seq[int]
+      for event in sim.events:
+        if event.kind == evScore and event.text == "foe": foes.add(event.seat)
+      check foes == @[a, c]
+      break
+    check checked
+
+  test "side actions: private whispers and reveals, public and enforced pledges and gifts":
+    var config = fixtureConfig(4, hp = 3, rounds = 2)
+    var match = initMatch(config)
+    match.totals = @[2.0, 0.0, 0.0, 0.0]
+    match.sim = initSim(config, 0, match.totals)
+    var sim = match.sim
+    let a = 0
+    let b = 1
+    let c = 2
+    sim.applyExtras(a, Extras(whisperTo: some(b), whisperText: "meet me", revealTo: some(b),
+      revealCard: cardFriend, giveTo: some(b), pledgeTo: some(c)))
+    check sim.transfers == @[-1.0, 1.0, 0.0, 0.0]
+    ## Illegal side actions raise and change nothing.
+    let before = sim.events.len
+    expect ParleyError:
+      sim.applyExtras(a, Extras(whisperTo: some(c), whisperText: "x", revealTo: some(c),
+        revealCard: cardEnemy))  # second reveal
+    expect ParleyError:
+      sim.applyExtras(c, Extras(giveTo: some(a)))  # nothing banked
+    expect ParleyError:
+      sim.applyExtras(a, Extras(pledgeTo: some(a)))  # self
+    check sim.events.len == before
+    sim.applyExtras(a, Extras(whisperTo: some(c), whisperText: "two"))
+    expect ParleyError:
+      sim.applyExtras(a, Extras(whisperTo: some(c), whisperText: "three"))
+    ## Only the two cogs involved see a whisper's text or a revealed card.
+    var events = newJArray()
+    for event in sim.events: events.add(event.eventToJson())
+    for slot in [b, c, -1]:
+      var snapshot = %*{"seats": sim.seatStates(newSeq[float](4), newSeq[int](4)),
+        "events": events.copy()}
+      snapshot.redactSecrets(slot)
+      for event in snapshot["events"]:
+        if event["kind"].getStr() == "whisper":
+          check event.hasKey("text") == (slot == event["target"].getInt())
+        if event["kind"].getStr() == "reveal":
+          check event.hasKey("friend") == (slot == b)
+          if slot == b: check event["friend"].getInt() == sim.seats[a].friend
+    ## Shooting a pledged cog moves a point from the shooter to its victim,
+    ## hit or miss.
+    check sim.itSeat == a
+    sim.applyShot(a, c)
+    check sim.transfers == @[-2.0, 1.0, 1.0, 0.0]
+    while not sim.done:
+      sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[0])
+    match.sim = sim
+    let roundScores = match.sim.scores()
+    match.finishRound()
+    for index in 0 ..< 4:
+      let start = (if index == 0: 2.0 else: 0.0)
+      check match.totals[index] == start + roundScores[index] + sim.transfers[index]
+    ## Transfers replay into the same running totals.
+    let frames = replayMatch(config, match.allEvents())
+    for index in 0 ..< 4:
+      check frames[^1].totals[index] == match.totals[index] - (if index == 0: 2.0 else: 0.0)
+    check match.sim.banked == match.totals
+
+  test "reaction speakers are a seeded shuffle that includes cogs who are out":
+    var config = fixtureConfig(5, hp = 1)
+    config.maxReactions = 2
+    var sim = initSim(config)
+    var spoke = newSeq[int](5)
+    var deadSpoke = false
+    for turn in 0 ..< 60:
+      sim.turn = turn
+      let speakers = sim.reactionSpeakers()
+      check speakers.len == 2
+      check sim.itSeat notin speakers
+      check speakers == sim.reactionSpeakers()
+      for seat in speakers: inc spoke[seat]
+    sim.applyShot(sim.itSeat, sim.validTargets(sim.itSeat)[0])
+    for turn in 0 ..< 40:
+      sim.turn = turn
+      for seat in sim.reactionSpeakers():
+        if not sim.seats[seat].alive: deadSpoke = true
+    for seat in 0 ..< 5:
+      if seat != sim.itSeat: check spoke[seat] > 0
+    check deadSpoke or sim.aliveCount() == 5
+
+  test "platform scores are within-table placings":
+    var match = initMatch(fixtureConfig(4))
+    match.totals = @[5.0, 3.0, 3.0, -1.0]
+    check match.placings() == @[1.0, 0.5, 0.5, 0.0]
 
   test "the episode clock is carried by the config and defaults to the platform's":
     ## The hosted platform never tells the game container its kill time, so

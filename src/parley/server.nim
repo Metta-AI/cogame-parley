@@ -163,6 +163,8 @@ proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
     "legalActions": legalActions}
 
 proc registerExternal(gs: var GameState, slot: int, prompt: string) =
+  if gs.config.modelRoster.isSome:
+    raise newException(ParleyError, "Frozen native model roster rejects external player control")
   if prompt.len > MaxPromptLen:
     raise newException(ParleyError, "external operator prompt exceeds limit")
   gs.prompts[slot] = prompt
@@ -340,7 +342,9 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
       "maxReactions": gs.config.maxReactions,
       "maxSkips": gs.config.maxSkips,
       "sampled": true,
-      "seed": gs.config.seed
+      "seed": gs.config.seed,
+      "model_roster": (if gs.config.modelRoster.isSome:
+        gs.config.modelRoster.get().rosterJson() else: newJNull())
     },
     "events": events,
     "decisionRefs": gs.decisionRefs,
@@ -694,7 +698,11 @@ proc websocketHandler(
         if payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()
           let scripted = payload{"scripted"}.getBool()
-          if prompt.len > MaxPromptLen:
+          if state.config.modelRoster.isSome:
+            if scripted or prompt.len > MaxPromptLen:
+              raise newException(ParleyError, "Frozen model seat rejects scripted or truncated registration")
+            state.config.modelRoster.get().bindings[slot].validatePrompt(prompt)
+          elif prompt.len > MaxPromptLen:
             prompt = prompt[0 ..< MaxPromptLen]
           withLock stateLock:
             state.prompts[slot] = prompt
@@ -783,6 +791,10 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.config = config
   state.inputConfig = parseJson(runtimeConfig.config)
   state.inputConfig.delete("tokens")
+  if config.modelRoster.isSome:
+    if config.players.len != 5:
+      raise newException(ParleyError, "Frozen model roster requires five player slots")
+    state.inputConfig["model_roster"] = config.modelRoster.get().rosterJson()
   state.match = initMatch(config)
   state.prompts = newSeq[string](config.players.len)
   state.external = newSeq[bool](config.players.len)

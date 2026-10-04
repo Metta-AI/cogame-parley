@@ -56,6 +56,7 @@ type
     bedrockModel: int           ## index into bedrockModels
     bedrockToken: string
     model: string
+    modelRoster: Option[ModelRoster]
     maxOutputTokens: int
     temperature: float
     timeoutSeconds: int
@@ -111,6 +112,7 @@ proc bedrockUrl(client: LlmClient): string =
 proc newLlmClient*(config: GameConfig): LlmClient =
   result = LlmClient(
     model: config.model,
+    modelRoster: config.modelRoster,
     maxOutputTokens: config.maxOutputTokens,
     temperature: parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "1")),
     timeoutSeconds: config.llmTimeoutSeconds,
@@ -123,10 +125,17 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     result.rand[seat] = initRand(config.seed xor 0x5EED xor
       ((seat + 1) shl 16))
   let sidecarEndpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
+  if config.modelRoster.isSome and (sidecarEndpoint.len == 0 or config.players.len != 5):
+    raise newException(ValueError, "Frozen model seats require five players and an identity-checked sidecar")
   if sidecarEndpoint.len > 0:
     result.transport = ltSidecar
     result.sidecarEndpoint = sidecarEndpoint.strip(chars = {'/'}, leading = false)
-    result.model = getEnv("COWORLD_LLM_MODEL", "anthropic/claude-sonnet-4.6")
+    if config.modelRoster.isNone:
+      result.model = getEnv("COWORLD_LLM_MODEL", "anthropic/claude-sonnet-4.6")
+    else:
+      for seat, binding in config.modelRoster.get().bindings:
+        if binding.policyId != config.players[seat].name:
+          raise newException(ValueError, "Player policy differs from frozen model seat")
     result.curl = newCurly()
     echo "parley llm: hosted sidecar transport, model ", result.model
     return
@@ -388,11 +397,21 @@ proc parseJsonObject*(text: string): JsonNode =
   if result.kind != JObject:
     raise newException(ParleyError, "response must be a JSON object")
 
+proc modelForSeat*(client: LlmClient, seat: int): string =
+  if client.modelRoster.isSome: client.modelRoster.get().bindings[seat].model
+  else: client.model
+
 proc completeText(client: LlmClient, seat: int, system, user: string,
     schema: JsonNode, evidence: var DecisionAttempt): string =
+  let model = client.modelForSeat(seat)
+  let binding = if client.modelRoster.isSome:
+      some(client.modelRoster.get().bindings[seat])
+    else: none(ModelSeatBinding)
+  let temperature = if binding.isSome: binding.get().temperature else: client.temperature
+  let maxTokens = if binding.isSome: binding.get().maxOutputTokens else: client.maxOutputTokens
   var body = %*{
-    "max_tokens": client.maxOutputTokens,
-    "temperature": client.temperature,
+    "max_tokens": maxTokens,
+    "temperature": temperature,
     "system": system,
     "messages": [{"role": "user", "content": user}],
     "thinking": {"type": "disabled"},
@@ -407,20 +426,26 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
       headers["authorization"] = "Bearer " & client.bedrockToken
     url = client.bedrockUrl()
   elif client.transport == ltSidecar:
-    body["model"] = %client.model
+    body["model"] = %model
     headers["anthropic-version"] = AnthropicVersion
     headers["x-coworld-player-slot"] = $seat
     url = client.sidecarEndpoint & "/v1/messages"
   else:
-    body["model"] = %client.model
+    body["model"] = %model
     headers["x-api-key"] = client.apiKey
     headers["anthropic-version"] = AnthropicVersion
     url = AnthropicUrl
   evidence.request = copy(body)
-  evidence.model = some(client.model)
-  evidence.decoder = %*{"temperature": client.temperature,
-    "max_tokens": client.maxOutputTokens, "thinking": body["thinking"],
+  evidence.model = some(model)
+  evidence.decoder = %*{"temperature": temperature,
+    "max_tokens": maxTokens, "thinking": body["thinking"],
     "output_config": body["output_config"]}
+  if binding.isSome:
+    headers["x-coworld-model-roster-sha256"] = client.modelRoster.get().sha256
+    headers["x-coworld-actor-id"] = binding.get().actorId
+    headers["x-coworld-policy-id"] = binding.get().policyId
+    evidence.decoder["seat_binding"] = binding.get().bindingJson()
+    evidence.decoder["model_roster_sha256"] = %client.modelRoster.get().sha256
   let response = client.curl.post(
     url, headers, $body, client.timeoutSeconds
   )
@@ -445,7 +470,8 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
     let detail = response.body[0 .. min(response.body.high, 400)]
     if "Model access is denied" in response.body and client.tryNextBedrockModel("no model access"):
       raise newException(ParleyError, "bedrock model access denied: " & detail)
-    client.disabled = true
+    if binding.isNone:
+      client.disabled = true
     raise newException(ParleyError,
       "llm auth failed (" & $response.code & ") at " & url & ": " & detail)
   if response.headers["x-softmax-llm-error-category"] == "spend_limit":
@@ -461,7 +487,15 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
       "anthropic error " & $response.code & ": " & response.body[0 .. min(response.body.high, 300)])
   let payload = parseJson(response.body)
   evidence.rawResponse = payload
-  evidence.model = some(payload["model"].getStr())
+  if binding.isSome:
+    let expected = binding.get()
+    if payload["model"].getStr() != expected.model or
+        evidence.modelIdentity != some(expected.model) or
+        evidence.tokenizerIdentity != some(expected.tokenizerIdentity) or
+        evidence.chatTemplateSha256 != some(expected.chatTemplateSha256):
+      raise newException(ParleyError, "Provider response identity differs from frozen acting seat")
+  else:
+    evidence.model = some(payload["model"].getStr())
   evidence.stopReason = some(payload["stop_reason"].getStr())
   evidence.inputTokens = some(payload["usage"]["input_tokens"].getInt())
   evidence.outputTokens = some(payload["usage"]["output_tokens"].getInt())
@@ -550,6 +584,8 @@ proc decide*(
     result.response = newJNull()
     return
 
+  if client.modelRoster.isSome:
+    client.modelRoster.get().bindings[seat].validatePrompt(prompt)
   let system = systemPrompt(sim, seat)
   for attempt in 0 .. 1:
     var user = userPrompt(sim, seat, prompt, wantShot, header)
@@ -557,7 +593,11 @@ proc decide*(
       user.add("\nYour previous reply was invalid. Respond with ONLY the " &
         "requested JSON object and a legal target.")
     var raw = ""
-    var evidence = newDecisionAttempt("attempt-" & $attempt, client.model, aoModel)
+    let policy = if client.modelRoster.isSome:
+        client.modelRoster.get().bindings[seat].policyId
+      else: client.modelForSeat(seat)
+    var evidence = newDecisionAttempt("attempt-" & $attempt, policy, aoModel)
+    evidence.model = some(client.modelForSeat(seat))
     evidence.prompt = %*[{"role": "system", "content": system},
       {"role": "user", "content": user}]
     try:

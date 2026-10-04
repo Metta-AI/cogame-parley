@@ -10,3 +10,5 @@ requires "bitworld >= 0.1.0"
 requires "mummy >= 0.4.7"
 requires "curly >= 1.1.1"
 requires "whisky"
+
+requires "checksums >= 0.2.2"

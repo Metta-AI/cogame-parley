@@ -1,4 +1,6 @@
-import std/[json, strutils]
+import std/[json, options, strutils]
+import model_routes
+export model_routes
 
 type
   ParleyError* = object of CatchableError
@@ -29,6 +31,7 @@ type
     ## manifest's episode_timeout_minutes and the env overrides it if present.
     episodeTimeoutSeconds*: float
     model*: string
+    modelRoster*: Option[ModelRoster]
     maxOutputTokens*: int
     llmTimeoutSeconds*: int
 
@@ -135,6 +138,8 @@ proc update*(config: var GameConfig, configJson: string) =
       node["player_connect_timeout_seconds"].getFloat()
   if node.hasKey("episodeTimeoutSeconds"):
     config.episodeTimeoutSeconds = node["episodeTimeoutSeconds"].getFloat()
+  if node.hasKey("model_roster"):
+    config.modelRoster = some(parseModelRoster(node["model_roster"]))
   if node.hasKey("model"):
     config.model = node["model"].getStr()
   if node.hasKey("maxOutputTokens"):

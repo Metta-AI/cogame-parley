@@ -5,8 +5,9 @@ inference. Publish and qualify a new release before collecting under this ID; ol
 The manifest is the authoritative configuration;
 `src/parley/sim.nim`, `server.nim`, and `llm.nim` own rules, prompts, action validation, and score semantics.
 
-Use ordinary seed-driven sampling (`sampled: false`): 3–20 rounds, 2–5 hit points, 1–3 survivors, and independently
-announced or hidden round/survivor counts. Preserve speech, passes, reactions, private cards, persistent conversation,
+Use ordinary seed-driven sampling (`sampled: false`): 3–6 rounds, 2–3 hit points, 1–3 survivors, and independently
+announced or hidden round/survivor counts. Preserve speech, passes, reactions, side actions (whispers, card reveals,
+gifts, pledges), private cards, persistent conversation,
 and manifest defaults for pacing, output limits, deadlines, and episode timeout. Certification's fixed two-round fixture
 is an infrastructure smoke, not the training or evaluation environment. Do not substitute a four-seat bridge,
 head-shot-only action menu, or shortened rules to fit a compute budget.
@@ -26,7 +27,8 @@ attempts, fallback origins, terminal scores, latency, tokens, and cost alongside
 Hosted prompt players call the Coworld LLM sidecar using the configured teacher and attribute each call to its seat.
 The game uses `COWORLD_LLM_ENDPOINT`; do not put provider secrets in the hosted manifest.
 Saved-model external players receive the exact game-rendered `input.system` and `input.user`, register the same operator
-prompt, generate full actions including speech and reactions, and submit them over the ordinary player socket.
+prompt, generate full actions including speech, reactions, and side actions, and submit them over the ordinary player
+socket.
 The game remains the sole parser and rule owner. Record structured decoding, thinking mode, token limits, and deadlines;
 use identical inference settings for base and trained evaluation. A supported platform model route is required for
 hosted Qwen. Local endpoint transport does not establish hosted inference parity.
@@ -54,7 +56,7 @@ player observations, or model prompts. Update native consumers and qualify the r
 the previous published source retains its original outcome format.
 Local files are created privately with mode 0600.
 
-Replay v3 carries decision IDs, origins, canonical actions, event offsets,
+Replay v4 carries decision IDs, origins, canonical actions, event offsets,
 round settings, and terminal scores. Operator guidance and model responses stay
 out of public replay bytes and standard output. Download the elevated
 `trajectory` artifact separately; public replay alone is insufficient for

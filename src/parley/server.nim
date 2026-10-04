@@ -15,9 +15,13 @@
 ##   game -> player: {"type":"welcome","slot":N,"name":...}
 ##                   {"type":"state",...} after every event batch
 ##                   {"type":"final","scores":[...],"win":[...]}
-##   player -> game: {"type":"prompt","prompt":"..."} (max 4000 chars)
+##   player -> game: {"type":"prompt","prompt":"...","scripted":bool,
+##                    "baseline":"random|finisher|retaliator|protector|hoarder"}
+##                   (prompt max 4000 chars; baseline defaults to random)
 ##   player -> game: {"type":"register","control":"external","prompt":"..."}
 ##   game -> external player: decision {decision_id, observation, transport}
+##     observation.extras lists the optional whisper/reveal/give/pledge
+##     side actions the seat may attach to its action
 ##   player -> game: attempt_started/action {decision_id, training_attempt}
 ##   game -> external player: stop {decision_id, reason, cleanup_budget_ms}
 ##   player -> game: stopped {decision_id, worker_status, attempts}
@@ -38,7 +42,7 @@ import
 const
   MaxPromptLen = 4000
   MaxPlayerMessageLen = 16 * 1024 * 1024
-  ReplayVersion = 3
+  ReplayVersion = 4
   ParleySourceRevision {.strdefine.} = ""
   ParleyGameVersion {.strdefine.} = ""
 
@@ -57,6 +61,7 @@ type
     prompts: seq[string]
     external: seq[bool]
     scripted: seq[bool]
+    baselines: seq[Baseline]
     promptSet: seq[bool]
     awaitingSeat: int
     awaitingId: string
@@ -124,8 +129,8 @@ proc snapshotJson(gs: GameState): JsonNode =
   var connected = newJArray()
   for slot in 0 ..< gs.config.tokens.len:
     connected.add(%gs.playerSockets.hasKey(slot))
-  ## Mid-round foe points show up in the scorebug as soon as they land
-  ## (match.totals itself only folds them in at round end).
+  ## Mid-round gifts and pledge payments show up in the scorebug as soon as
+  ## they land (match.totals itself only folds them in at round end).
   var liveTotals = newSeq[float](gs.config.players.len)
   for event in gs.match.allEvents():
     if event.kind == evScore:
@@ -176,12 +181,30 @@ proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
     for target in sim.validTargets(seat):
       for aim in ["head", "hip"]:
         legalActions.add(%*{"shoot": sim.seats[target].name, "aim": aim})
+  ## Side actions combine freely with any legal action, so they are offered
+  ## as allowances rather than multiplied into `legalActions`.
+  let me = sim.seats[seat]
+  var others = newJArray()
+  var living = newJArray()
+  for index, other in sim.seats:
+    if index == seat: continue
+    others.add(%other.name)
+    if other.alive and me.alive and index notin me.pledges:
+      living.add(%other.name)
   %*{
     "phase": (if wantShot: "shot" else: "reaction"),
     "observation": gs.liveFrameJson(seat),
     "input": {"system": systemPrompt(sim, seat),
               "user": userPrompt(sim, seat, prompt, wantShot, header)},
-    "legalActions": legalActions}
+    "legalActions": legalActions,
+    "extras": {
+      "whisper": {"to": (if me.whispers < MaxWhispers: others else: newJArray()),
+                  "left": MaxWhispers - me.whispers},
+      "reveal": {"to": (if me.friend >= 0 and not me.revealed: others else: newJArray()),
+                 "cards": ["friend", "enemy"]},
+      "give": {"to": (if sim.banked[seat] + sim.transfers[seat] >= 1: others else: newJArray()),
+               "banked": sim.banked[seat] + sim.transfers[seat]},
+      "pledge": {"to": living}}}
 
 proc registerExternal(gs: var GameState, slot: int, prompt: string) =
   if gs.started or gs.stopping or gs.finished:
@@ -193,7 +216,8 @@ proc registerExternal(gs: var GameState, slot: int, prompt: string) =
   gs.promptSet[slot] = true
 
 proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
-    wantShot: bool, header: string, scripted: bool, playDeadline: MonoTime): DecisionResult =
+    wantShot: bool, header: string, scripted: bool, baseline: Baseline,
+    playDeadline: MonoTime): DecisionResult =
   ## Finish the current round without more model/player waits after the play budget.
   if getMonoTime() >= playDeadline:
     result.decision =
@@ -238,7 +262,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
       return
     if scripted:
       result.decision =
-        if wantShot: client.scriptedShot(sim, seat)
+        if wantShot: client.scriptedShot(sim, seat, baseline)
         else: client.scriptedReaction(sim, seat)
       result.origin = "scripted_policy"
       result.input = newJNull()
@@ -615,12 +639,17 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
     echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",
       (timeoutSeconds * PlayBudgetFraction).int, "s"
+    ## Rounds are dealt only while the longest round so far would still fit,
+    ## so a match ends between rounds rather than finishing one on fallbacks.
+    var roundStartedAt = getMonoTime()
+    var longestRound = initDuration()
 
     while not interruptionRequested():
       var simCopy: Sim
       var itSeat: int
       var itPrompt: string
       var itScripted: bool
+      var itBaseline: Baseline
       var header: string
       var shotObservation: JsonNode
       withLock stateLock:
@@ -630,13 +659,15 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         itSeat = state.match.sim.itSeat
         itPrompt = state.prompts[itSeat]
         itScripted = state.scripted[itSeat]
+        itBaseline = state.baselines[itSeat]
         header = state.match.matchHeader()
         shotObservation = state.liveFrameJson(itSeat)
 
       ## The slow part (Sonnet) runs outside the lock on a snapshot; only
       ## this thread mutates the match, so the snapshot cannot go stale.
       var shot = client.decideSeat(simCopy, itSeat, itPrompt,
-        wantShot = true, header = header, scripted = itScripted, playDeadline = playDeadline)
+        wantShot = true, header = header, scripted = itScripted, baseline = itBaseline,
+        playDeadline = playDeadline)
 
       if interruptionRequested():
         withLock stateLock:
@@ -649,6 +680,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         state.match.sim.recordSay(itSeat, shot.decision.say)
         var accepted = true
         try:
+          state.match.sim.applyExtras(itSeat, shot.decision.extras)
           if shot.decision.skip:
             ## "It" holds fire: the gun stays put, the reaction chatter below
             ## still runs, and the same seat decides again next loop.
@@ -673,50 +705,51 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       if roundEnded:
         ## Let the last shot land before deciding whether to deal another round.
         ## This includes deadlines reached during spectator pacing.
+        let roundEndedAt = getMonoTime()
+        longestRound = max(longestRound, roundEndedAt - roundStartedAt)
+        roundStartedAt = roundEndedAt
         withLock stateLock:
-          let timedOut = getMonoTime() >= playDeadline
+          let timedOut = roundEndedAt + longestRound >= playDeadline
           state.match.finishRound(endMatch = timedOut)
-          if timedOut:
+          if timedOut and state.match.roundsPlayed < config.rounds:
             echo "parley: episode deadline reached after ",
               state.match.roundsPlayed, "/", config.rounds, " rounds"
           state.broadcastLocked()
         continue
 
       if config.reactions and getMonoTime() < playDeadline:
-        ## Table talk between shots: the new "it" acts next turn, so let a
-        ## few of the other living cogs speak, in seat order after the new IT.
+        ## Table talk between shots: the new "it" acts next turn, so a few
+        ## other cogs speak first, eliminated ones included, in seeded order.
         var speakers: seq[int]
         withLock stateLock:
-          let nextIt = state.match.sim.itSeat
-          for offset in 1 ..< state.match.sim.seats.len:
-            let seat = (nextIt + offset) mod state.match.sim.seats.len
-            if state.match.sim.seats[seat].alive and seat != nextIt:
-              speakers.add(seat)
-        if speakers.len > config.maxReactions:
-          speakers.setLen(config.maxReactions)
+          speakers = state.match.sim.reactionSpeakers()
         for seat in speakers:
           if getMonoTime() >= playDeadline or interruptionRequested():
             break
           var reactionCopy: Sim
           var reactionPrompt: string
           var reactionScripted: bool
+          var reactionBaseline: Baseline
           var reactionObservation: JsonNode
           withLock stateLock:
             reactionCopy = state.match.decisionSim()
             reactionPrompt = state.prompts[seat]
             reactionScripted = state.scripted[seat]
+            reactionBaseline = state.baselines[seat]
             header = state.match.matchHeader()
             reactionObservation = state.liveFrameJson(seat)
           let reaction = client.decideSeat(reactionCopy, seat, reactionPrompt,
-            wantShot = false, header = header, scripted = reactionScripted, playDeadline = playDeadline)
+            wantShot = false, header = header, scripted = reactionScripted,
+            baseline = reactionBaseline, playDeadline = playDeadline)
           if interruptionRequested():
             withLock stateLock:
               state.recordInterruptedDecision(seat, reaction, reactionObservation)
             break
           withLock stateLock:
             let beforeEvent = state.match.allEvents().len
-            if reaction.decision.say.len > 0:
-              state.match.sim.recordSay(seat, reaction.decision.say)
+            state.match.sim.recordSay(seat, reaction.decision.say)
+            state.match.sim.applyExtras(seat, reaction.decision.extras)
+            if state.match.allEvents().len > beforeEvent:
               state.broadcastLocked()
             state.recordDecision(reactionCopy, seat, false, reaction, beforeEvent, true, reactionObservation)
           if config.turnDelayMs > 0 and
@@ -907,6 +940,8 @@ proc websocketHandler(
         if payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()
           let scripted = payload{"scripted"}.getBool()
+          ## Images built before baselines existed send no baseline: random.
+          let baseline = parseEnum[Baseline](payload{"baseline"}.getStr($blRandom))
           if prompt.len > MaxPromptLen:
             prompt = prompt[0 ..< MaxPromptLen]
           withLock stateLock:
@@ -915,10 +950,11 @@ proc websocketHandler(
             state.prompts[slot] = prompt
             state.external[slot] = false
             state.scripted[slot] = scripted
+            state.baselines[slot] = baseline
             state.promptSet[slot] = true
           echo "parley: slot ", slot, " delivered a prompt (",
             prompt.len, " chars",
-            (if scripted: ", scripted" else: ""), ")"
+            (if scripted: ", scripted " & $baseline else: ""), ")"
       except CatchableError as error:
         withLock stateLock:
           if state.awaitingSeat == slot and not state.hasPendingDecision and
@@ -1014,6 +1050,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.external = newSeq[bool](config.players.len)
   state.awaitingSeat = -1
   state.scripted = newSeq[bool](config.players.len)
+  state.baselines = newSeq[Baseline](config.players.len)
   state.promptSet = newSeq[bool](config.players.len)
   if getEnv(CogameSaveTrajectoryUriEnv).len > 0:
     let metadata = getEnv("LLM_REQUEST_METADATA")

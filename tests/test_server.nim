@@ -33,7 +33,8 @@ suite "player state":
     let seat = sim.itSeat
     state.registerExternal(seat, "Protect my friend")
     let outcome = decideSeat(newLlmClient(config), sim, seat,
-      state.prompts[seat], true, matchHeader(state.match), false, getMonoTime() + initDuration(seconds = 60))
+      state.prompts[seat], true, matchHeader(state.match), false, blRandom,
+      getMonoTime() + initDuration(seconds = 60))
     check outcome.origin == "scripted_after_external_disconnect"
     check outcome.input.kind == JNull
     check outcome.response.kind == JNull
@@ -60,8 +61,14 @@ suite "player state":
         userPrompt(sim, seat, "Protect my friend", wantShot, header)
       check packet["observation"]["seats"][seat]["friend"].getInt() >= 0
       check not packet.hasKey("id") and not packet.hasKey("transport")
+      ## Side actions are offered as allowances: every other cog is reachable.
+      check packet["extras"]["whisper"]["to"].len == 4
+      check packet["extras"]["pledge"]["to"].len == 4
+      check packet["extras"]["give"]["to"].len == 0
 
-  test "foe points appear once before and after the final verdict":
+  test "foe points stay unannounced until the round's verdict":
+    ## A mid-round foe event would tell the table whose enemy card named the
+    ## fallen cog, so the point is earned at once but published at the verdict.
     var config = defaultGameConfig()
     config.rounds = 1
     config.hitPoints = 1
@@ -69,15 +76,18 @@ suite "player state":
       config.players.add(PlayerConfig(name: "P" & $index))
     var game = GameState(config: config, match: initMatch(config))
     let shooter = game.match.sim.itSeat
-    game.match.sim.applyShot(shooter, game.match.sim.seats[shooter].enemy)
-    check game.snapshotJson()["seats"][shooter]["score"].getFloat() == 1.0
-    check game.match.totals[shooter] == 0.0
+    let enemy = game.match.sim.seats[shooter].enemy
+    game.match.sim.applyShot(shooter, enemy)
+    check not game.match.sim.seats[enemy].alive
+    check game.match.sim.seats[shooter].foeScored
     while not game.match.sim.done:
       game.match.sim.applyShot(game.match.sim.itSeat,
         game.match.sim.validTargets(game.match.sim.itSeat)[0])
     let beforeVerdict = game.snapshotJson()
     for index in 0 ..< config.players.len:
-      check beforeVerdict["seats"][index]["score"].getFloat() == float(game.match.sim.seats[index].enemyKill)
+      check beforeVerdict["seats"][index]["score"].getFloat() == 0.0
+    for event in beforeVerdict["events"]:
+      check event["kind"].getStr() != "score"
     game.match.finishRound()
     let snapshot = game.snapshotJson()
     for index, total in game.match.totals:

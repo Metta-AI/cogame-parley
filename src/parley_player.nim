@@ -5,22 +5,28 @@
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <parley-image> --name my-parley \
 ##     --run /bin/parley-player --secret-env PLAYER_PROMPT="<your strategy>"
+##
+## PLAYER_SCRIPTED selects a no-model baseline instead: random (or 1),
+## finisher, retaliator, protector, or hoarder. Empty or 0 plays the prompt.
 
 import
   std/[json, math, monotimes, os, strutils, times],
-  bitworld/[native_stop, native_websocket]
+  bitworld/[native_stop, native_websocket],
+  parley/types
 
 const DefaultPrompt = """
 Play to win, but make it fun. Your secret cards run the round: steer shots
-toward your ENEMY without being obvious about it (a point for the fatal
-shot yourself is even better), quietly keep your FRIEND alive, and never
-reveal either card. Shoot whoever threatens you or your friend most, and
-aim for the head when you mean it. Shoot from the hip when you want the gun
+toward your ENEMY without being obvious about it (land at least one hit on
+them yourself to earn its point), quietly keep your FRIEND alive, and never
+reveal either card out loud. Shoot whoever threatens you or your friend
+most, and aim for the head when you mean it. Shoot from the hip when you want the gun
 to move without the damage - handing it to your friend, or staging a grudge
 the table will believe - since nobody learns how you aimed, only whether it
 landed. Keep your table talk short, funny, and a little scheming - propose
 truces you may or may not honor, and let the table do your dirty work when
-it will.
+it will. Whisper to firm up a private deal, show a card when proof would win
+you an ally, pledge when a public promise buys you safety, and pay a point
+when a bribe is cheaper than a loss.
 """
 
 when isMainModule:
@@ -40,7 +46,14 @@ when isMainModule:
   of wsReady: discard
   else: quit("player connection failed", 1)
   let socket = connection.socket
-  let scripted = getEnv("PLAYER_SCRIPTED") == "1"
+  let scriptedEnv = getEnv("PLAYER_SCRIPTED").strip().toLowerAscii()
+  let scripted = scriptedEnv notin ["", "0"]
+  ## Fail at startup on an unknown baseline rather than registering a
+  ## seat the game cannot field.
+  let baseline =
+    if scriptedEnv == "1": blRandom
+    elif scripted: parseEnum[Baseline](scriptedEnv)
+    else: blRandom
   var prompt = getEnv("PLAYER_PROMPT")
   if prompt.len == 0 and not scripted:
     prompt = DefaultPrompt
@@ -59,8 +72,10 @@ when isMainModule:
       of "welcome":
         if registered:
           raise newException(ValueError, "duplicate player welcome")
-        let registration = $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
-        let sent = sendNativeText(socket, registration, deadline)
+        var registration = %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
+        if scripted:
+          registration["baseline"] = %($baseline)
+        let sent = sendNativeText(socket, $registration, deadline)
         case sent.kind
         of wsInterrupted, wsDeadline: break
         of wsReady: registered = true

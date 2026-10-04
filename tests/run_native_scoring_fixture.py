@@ -27,16 +27,24 @@ class Scorer(BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers["Content-Length"]))
         request = json.loads(body)
-        assert self.path == "/v1/parley/score-choices"
-        seat = request["seat"]
+        generated = self.server.mode.startswith("generated-")
+        assert self.path == ("/v1/messages" if generated else "/v1/parley/score-choices")
+        seat = int(self.headers["x-coworld-player-slot"])
+        if not generated:
+            assert request["seat"] == seat
         assert seat == (int(self.server.mode[5:]) if self.server.mode.startswith("seat-") else 2)
         assert self.headers["x-coworld-player-slot"] == str(seat)
-        assert self.headers["x-coworld-actor-id"] == request["actor_id"] == f"actor-{seat}"
-        assert self.headers["x-coworld-policy-id"] == request["policy_id"] == f"policy-{seat}"
-        assert self.headers["x-coworld-model-roster-sha256"] == request["model_roster_sha256"]
+        assert self.headers["x-coworld-actor-id"] == f"actor-{seat}"
+        assert self.headers["x-coworld-policy-id"] == f"policy-{seat}"
+        if not generated:
+            assert request["actor_id"] == f"actor-{seat}"
+            assert request["policy_id"] == f"policy-{seat}"
+            assert self.headers["x-coworld-model-roster-sha256"] == request["model_roster_sha256"]
         assert request["model"] == "local-sha256:" + str(seat) * 64
-        actions = [json.loads(candidate) for candidate in request["candidates"]]
-        assert digest(actions) == request["candidate_sha256"]
+        actions = ([{"say": "", "shoot": request["output_config"]["format"]["schema"]["properties"]["shoot"]["enum"][0], "aim": "head"}]
+                   if generated else [json.loads(candidate) for candidate in request["candidates"]])
+        if not generated:
+            assert digest(actions) == request["candidate_sha256"]
         call_id = str(uuid4())
         response = {
             "protocol": "parley.legal-choice-score-response.v1",
@@ -44,8 +52,8 @@ class Scorer(BaseHTTPRequestHandler):
             "model_identity": request["model"],
             "tokenizer_identity": "b" * 64,
             "chat_template_sha256": "c" * 64,
-            "candidate_sha256": request["candidate_sha256"],
-            "score_rule": request["score_rule"],
+            "candidate_sha256": digest(actions),
+            "score_rule": "sum-target-token-logprobs-including-template-assistant-terminator",
             "candidates": [
                 {"action_sha256": digest(action), "score": -3.0,
                  "full_input_token_ids": [10, 20, 30, 40], "scored_token_positions": [2, 3],
@@ -54,6 +62,11 @@ class Scorer(BaseHTTPRequestHandler):
             ],
         }
         mode = self.server.mode
+        header_call_id = "not-a-uuid" if mode.endswith("malformed-provider") else call_id
+        if generated:
+            response = {"id": call_id, "model": request["model"], "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 20, "output_tokens": 10},
+                        "content": [{"type": "text", "text": json.dumps(actions[0])}]}
         status = 200
         if mode == "pass":
             assert actions[-1] == {"say": "", "shoot": "pass"}
@@ -85,12 +98,12 @@ class Scorer(BaseHTTPRequestHandler):
         self.server.exchanges.append({"path": self.path, "request_headers": dict(self.headers),
                                       "request_body": body.decode(), "response_body": raw.decode(),
                                       "status": status, "generated_provider_call_id": call_id,
-                                      "provider_call_id_header": None if mode == "missing-provider" else call_id})
+                                      "provider_call_id_header": None if mode == "missing-provider" else header_call_id})
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
         if mode != "missing-provider":
-            self.send_header("x-softmax-llm-call-id", call_id)
+            self.send_header("x-softmax-llm-call-id", header_call_id)
         self.send_header("x-coworld-checkpoint-sha256", "foreign" if mode == "header-identity" else request["model"])
         self.send_header("x-coworld-tokenizer-sha256", "b" * 64)
         self.send_header("x-coworld-chat-template-sha256", "c" * 64)
@@ -99,11 +112,12 @@ class Scorer(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
 
-binary, destination = sys.argv[1:]
+binary, destination = sys.argv[1:3]
 directory = Path(destination)
 directory.mkdir(mode=0o700)
 results = []
-for mode in ["shot", "pass", "reaction", "unsupported", "identity", "provider", "prefix", "mask", "sum", "order", "extra", "auth", "header-identity", "malformed", "missing-provider", "seat-0", "seat-1", "seat-3", "seat-4"]:
+modes = sys.argv[3:] or ["shot", "pass", "reaction", "unsupported", "identity", "provider", "prefix", "mask", "sum", "order", "extra", "auth", "header-identity", "malformed", "missing-provider", "seat-0", "seat-1", "seat-3", "seat-4", "malformed-provider", "generated-malformed-provider"]
+for mode in modes:
     server = HTTPServer(("127.0.0.1", 0), Scorer)
     server.mode = mode
     server.exchanges = []
@@ -133,14 +147,16 @@ for mode in ["shot", "pass", "reaction", "unsupported", "identity", "provider", 
             assert raw == exchange["response_body"]
         else:
             assert (json.loads(raw) if isinstance(raw, str) else raw) == json.loads(exchange["response_body"])
-        assert attempt["platform_call_id"] == exchange["provider_call_id_header"]
+        assert attempt["platform_call_id"] == (None if mode.endswith("malformed-provider") else exchange["provider_call_id_header"])
+        if mode.endswith("malformed-provider"):
+            assert attempt["decoder"]["transport"]["response_headers"]["x-softmax-llm-call-id"] == "not-a-uuid"
         response_headers = base64.b64decode(exchange["response_headers_b64"]).decode("latin-1")
         if mode == "missing-provider":
             assert "x-softmax-llm-call-id:" not in response_headers.lower()
             assert exchange["generated_provider_call_id"] != attempt["platform_call_id"]
         else:
             assert "x-softmax-llm-call-id: " + exchange["provider_call_id_header"] in response_headers.lower()
-        assert attempt["response"] is None
+        assert attempt["response"] == ("" if mode.startswith("generated-") else None)
         assert attempt["sampled_token_ids"] is None and attempt["behavior_logprobs"] is None
     results.append({"case": mode, "attempts": len(attempts), "status": events[0]["action_status"]})
 (directory / "results.json").write_text(json.dumps({"protocol": "parley.synthetic-native-scoring-cpu.v1",

@@ -457,7 +457,13 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
       ("x-coworld-chat-template-sha256", "template")]:
     if response.headers[header].len > 0:
       case field
-      of "call": evidence.platformCallId = some(response.headers[header])
+      of "call":
+        evidence.decoder["transport"] = %*{"http_status": response.code,
+          "response_headers": {"x-softmax-llm-call-id": response.headers[header]}}
+        if isProviderCallId(response.headers[header]):
+          evidence.platformCallId = some(response.headers[header])
+        else:
+          raise newException(ParleyError, "Malformed provider call ID header")
       of "model": evidence.modelIdentity = some(response.headers[header])
       of "tokenizer": evidence.tokenizerIdentity = some(response.headers[header])
       else: evidence.chatTemplateSha256 = some(response.headers[header])
@@ -546,7 +552,7 @@ proc rankChoices(client: LlmClient, sim: Sim, seat: int, wantShot: bool,
       "x-coworld-tokenizer-sha256", "x-coworld-chat-template-sha256"]:
     if response.headers[name].len > 0:
       evidence.decoder["transport"]["response_headers"][name] = %response.headers[name]
-  if response.headers["x-softmax-llm-call-id"].len > 0:
+  if isProviderCallId(response.headers["x-softmax-llm-call-id"]):
     evidence.platformCallId = some(response.headers["x-softmax-llm-call-id"])
   if response.headers["x-softmax-llm-error-category"] == "spend_limit":
     client.budgetExhausted[seat] = true

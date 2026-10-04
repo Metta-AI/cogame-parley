@@ -11,6 +11,7 @@ config.sampled = true
 config.seed = seat
 config.maxSkips = 1
 config.llmTimeoutSeconds = 2
+let generated = mode.startsWith("generated-")
 var roster: ModelRoster
 for index in 0 ..< 5:
   config.players.add(PlayerConfig(name: "policy-" & $index))
@@ -18,8 +19,10 @@ for index in 0 ..< 5:
     policyId: "policy-" & $index, role: (if index == seat: "learner" else: "opponent"),
     model: "local-sha256:" & repeat($index, 64), tokenizerIdentity: repeat('b', 64),
     chatTemplateSha256: repeat('c', 64), promptSha256: sha256Text("operator-" & $index),
-    actionMode: "legal_choice_ranking", assistanceId: "legal-private-actions-v1",
-    assistanceSha256: sha256Text(canonicalJson(legalAssistanceProfile())),
+    actionMode: (if generated: "generated-json" else: "legal_choice_ranking"),
+    assistanceId: (if generated: "none" else: "legal-private-actions-v1"),
+    assistanceSha256: (if generated: sha256Text("{\"id\":\"none\",\"version\":1}")
+      else: sha256Text(canonicalJson(legalAssistanceProfile()))),
     temperature: 0, maxOutputTokens: 300))
 roster.sha256 = sha256Text(canonicalJson(roster.rosterPayload()))
 config.modelRoster = some(parseModelRoster(roster.rosterJson()))
@@ -39,8 +42,15 @@ else:
   for attempt in outcome.nativeAttempts:
     doAssert not attempt.accepted
     doAssert attempt.parsedAction.kind == JNull
-    doAssert attempt.response.kind == JNull
-    doAssert attempt.actionEvidence.get()["scoring_result"]["status"].getStr() == "rejected"
+    if generated:
+      doAssert attempt.response == %""
+      doAssert attempt.actionEvidence.isNone
+    else:
+      doAssert attempt.response.kind == JNull
+      doAssert attempt.actionEvidence.get()["scoring_result"]["status"].getStr() == "rejected"
+    if mode.endsWith("malformed-provider"):
+      doAssert attempt.platformCallId.isNone
+      doAssert attempt.decoder["transport"]["response_headers"]["x-softmax-llm-call-id"] == %"not-a-uuid"
 
 game.recordSay(seat, outcome.decision.say)
 if wantShot:

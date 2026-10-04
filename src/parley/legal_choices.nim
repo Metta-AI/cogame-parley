@@ -60,12 +60,8 @@ proc rejectedChoiceEvidence*(binding: ModelSeatBinding, rosterHash: string,
 
 proc validateChoices*(response: ChoiceResponse, binding: ModelSeatBinding,
     actions: JsonNode, providerId: string): ChoiceValidation =
-  if response.provider_call_id != providerId or providerId.len != 36:
+  if response.provider_call_id != providerId or not isProviderCallId(providerId):
     return ChoiceValidation(valid: false, fault: cfProviderId)
-  for index, character in providerId:
-    if (index in [8, 13, 18, 23] and character != '-') or
-        (index notin [8, 13, 18, 23] and character notin {'0'..'9', 'a'..'f', 'A'..'F'}):
-      return ChoiceValidation(valid: false, fault: cfProviderId)
   if response.model_identity != binding.model or
       response.tokenizer_identity != binding.tokenizerIdentity or
       response.chat_template_sha256 != binding.chatTemplateSha256:

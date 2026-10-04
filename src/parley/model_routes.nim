@@ -43,6 +43,14 @@ proc sha256Text*(text: string): string =
   state.update(text)
   ($state.digest()).toLowerAscii()
 
+proc isProviderCallId*(value: string): bool =
+  if value.len != 36: return false
+  for index, character in value:
+    if (index in [8, 13, 18, 23] and character != '-') or
+        (index notin [8, 13, 18, 23] and character notin {'0'..'9', 'a'..'f', 'A'..'F'}):
+      return false
+  true
+
 proc bindingJson*(binding: ModelSeatBinding): JsonNode =
   %*{"seat": binding.seat, "actor_id": binding.actorId,
     "policy_id": binding.policyId, "role": binding.role,

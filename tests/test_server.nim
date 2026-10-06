@@ -65,6 +65,50 @@ suite "player state":
       check packet["extras"]["whisper"]["to"].len == 4
       check packet["extras"]["pledge"]["to"].len == 4
       check packet["extras"]["give"]["to"].len == 0
+      let schema = packet["actionSchema"]
+      check schema["additionalProperties"].getBool() == false
+      check schema["required"] == (if wantShot: %*["say", "shoot"] else: %*["say"])
+      check schema["properties"].hasKey("shoot") == wantShot
+      check schema["properties"]["whisper"]["properties"]["to"]["enum"] ==
+        packet["extras"]["whisper"]["to"]
+      for other in 0 ..< 5:
+        if other != seat:
+          check packet["observation"]["seats"][other]["friend"].getInt() == -1
+
+  test "native schema preserves combined side actions and exhausted allowances":
+    var config = defaultGameConfig()
+    config.seed = 17
+    for index in 0 ..< 5:
+      config.players.add(PlayerConfig(name: "Policy" & $index))
+    var game = GameState(config: config, match: initMatch(config))
+    let seat = game.match.sim.itSeat
+    let target = game.match.sim.validTargets(seat)[0]
+    let name = game.match.sim.seats[target].name
+    game.match.sim.banked[seat] = 1
+    for wantShot in [true, false]:
+      let packet = game.externalObservation(game.match.sim, seat, "", wantShot, "")
+      let properties = packet["actionSchema"]["properties"]
+      check properties["reveal"]["properties"]["card"]["enum"] == %*["friend", "enemy"]
+      check %name in properties["give"]["enum"].getElems()
+      check %name in properties["pledge"]["enum"].getElems()
+      var action = %*{"say": "Truce", "whisper": {"to": name, "text": "Private"},
+        "reveal": {"to": name, "card": "enemy"}, "give": name, "pledge": name}
+      if wantShot:
+        action["shoot"] = %name
+        action["aim"] = %"hip"
+        check %"pass" in properties["shoot"]["enum"].getElems()
+      let decision = parseDecision(game.match.sim, seat, action, wantShot)
+      check decision.extras.giveTo.get() == target
+      check decision.extras.revealCard == cardEnemy
+    game.match.sim.seats[seat].whispers = MaxWhispers
+    game.match.sim.seats[seat].revealed = true
+    game.match.sim.seats[seat].alive = false
+    game.match.sim.banked[seat] = 0
+    let properties = game.externalObservation(game.match.sim, seat, "", false, "")["actionSchema"]["properties"]
+    for field in ["whisper", "reveal", "give", "pledge"]:
+      check properties[field] == %*{"type": "null"}
+    expect ParleyError:
+      discard parseDecision(game.match.sim, seat, %*{"say": "", "give": name}, false)
 
   test "foe points stay unannounced until the round's verdict":
     ## A mid-round foe event would tell the table whose enemy card named the

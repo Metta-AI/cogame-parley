@@ -20,6 +20,7 @@
 ##                   (prompt max 4000 chars; baseline defaults to random)
 ##   player -> game: {"type":"register","control":"external","prompt":"..."}
 ##   game -> external player: decision {decision_id, observation, transport}
+##     observation.actionSchema describes the game-owned JSON action contract
 ##     observation.extras lists the optional whisper/reveal/give/pledge
 ##     side actions the seat may attach to its action
 ##   player -> game: attempt_started/action {decision_id, training_attempt}
@@ -191,20 +192,51 @@ proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
     others.add(%other.name)
     if other.alive and me.alive and index notin me.pledges:
       living.add(%other.name)
+  let extras = %*{
+    "whisper": {"to": (if me.whispers < MaxWhispers: others else: newJArray()),
+                "left": MaxWhispers - me.whispers},
+    "reveal": {"to": (if me.friend >= 0 and not me.revealed: others else: newJArray()),
+               "cards": ["friend", "enemy"]},
+    "give": {"to": (if sim.banked[seat] + sim.transfers[seat] >= 1: others else: newJArray()),
+             "banked": sim.banked[seat] + sim.transfers[seat]},
+    "pledge": {"to": living}}
+  ## Describe the same allowances, without another copy of eligibility rules.
+  var actionSchema = %*{"type": "object", "additionalProperties": false,
+    "properties": {"say": {"type": "string"}},
+    "required": ["say"]}
+  let properties = actionSchema["properties"]
+  if wantShot:
+    var targets = newJArray()
+    for action in legalActions:
+      if action["shoot"] notin targets.getElems():
+        targets.add(action["shoot"])
+    properties["shoot"] = %*{"type": "string", "enum": targets}
+    properties["aim"] = %*{"type": "string", "enum": [$aimHead, $aimHip]}
+    actionSchema["required"].add(%"shoot")
+  for field in ["whisper", "reveal", "give", "pledge"]:
+    let targets = extras[field]["to"]
+    if targets.len == 0:
+      properties[field] = %*{"type": "null"}
+    elif field in ["whisper", "reveal"]:
+      let detail = if field == "whisper": "text" else: "card"
+      properties[field] = %*{"type": ["object", "null"], "additionalProperties": false,
+        "properties": {"to": {"type": "string", "enum": targets}},
+        "required": ["to", detail]}
+      properties[field]["properties"][detail] =
+        if field == "whisper": %*{"type": "string", "minLength": 1}
+        else: %*{"type": "string", "enum": extras["reveal"]["cards"]}
+    else:
+      let nullableTargets = copy(targets)
+      nullableTargets.add(newJNull())
+      properties[field] = %*{"type": ["string", "null"], "enum": nullableTargets}
   %*{
     "phase": (if wantShot: "shot" else: "reaction"),
     "observation": gs.liveFrameJson(seat),
     "input": {"system": systemPrompt(sim, seat),
               "user": userPrompt(sim, seat, prompt, wantShot, header)},
     "legalActions": legalActions,
-    "extras": {
-      "whisper": {"to": (if me.whispers < MaxWhispers: others else: newJArray()),
-                  "left": MaxWhispers - me.whispers},
-      "reveal": {"to": (if me.friend >= 0 and not me.revealed: others else: newJArray()),
-                 "cards": ["friend", "enemy"]},
-      "give": {"to": (if sim.banked[seat] + sim.transfers[seat] >= 1: others else: newJArray()),
-               "banked": sim.banked[seat] + sim.transfers[seat]},
-      "pledge": {"to": living}}}
+    "actionSchema": actionSchema,
+    "extras": extras}
 
 proc registerExternal(gs: var GameState, slot: int, prompt: string) =
   if gs.started or gs.stopping or gs.finished:

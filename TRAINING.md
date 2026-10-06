@@ -64,6 +64,8 @@ training.
 
 The production renderer and parser serve both prompt players and external
 players. External observations include `input.system` and `input.user`.
+`actionSchema` describes the current window's JSON action, including optional side actions from `extras`.
+Forward this game-owned schema to structured decoding; do not infer a smaller action space from `legalActions`.
 Register with `{"type":"register","control":"external","prompt":"..."}`
 and receive `decision` frames with a string `decision_id`, the unchanged private `observation`, and a separate
 `transport` budget. Send `attempt_started` before native inference, then an `action` frame carrying that same identity,

@@ -2,10 +2,11 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Parley — Replay</title>
 <link rel="stylesheet" href="./chrome.css">
 </head>
-<body>
+<body class="replay-viewer">
 <div id="layout">
   <div id="stage">
     <div id="topband">
@@ -13,10 +14,10 @@
       <div id="clock">ROUND 1</div>
       <div id="topright">
         <span id="statuschip">replay</span>
-        <button id="feedtoggle">LOG »</button>
+        <button id="feedtoggle">CHAT »</button>
       </div>
     </div>
-    <div id="scorebug"></div>
+    <div id="scorebug" role="region" aria-label="Current match points"></div>
     <div id="board-wrap">
       <canvas id="table" width="960" height="640"></canvas>
       <div id="lightpool"></div>
@@ -31,7 +32,13 @@
       </div>
     </div>
     </div>
-  <div id="feed"></div>
+  <aside id="replay-sidebar" aria-label="Table chat">
+    <div class="chat-header">
+      <div><h1>Table chat</h1><p>Conversation and points · follows playback</p></div>
+      <button id="chat-follow" class="tbtn" type="button">Following</button>
+    </div>
+    <div id="feed" role="region" aria-label="Replay conversation" tabindex="0"></div>
+  </aside>
 </div>
 <div id="loading">LOADING REPLAY…</div>
 <script src="./renderer.js"></script>
@@ -46,7 +53,7 @@
   window.addEventListener("resize", fit);
   window.addEventListener("load", fit);
   fit();
-  ParleyRenderer.bindFeedToggle(document.getElementById("feedtoggle"), true);
+  ParleyRenderer.bindFeedToggle(document.getElementById("feedtoggle"));
   // attach happens in static_replay.js once the wasm module loads
 </script>
 </body>

@@ -100,6 +100,7 @@ pass, reaction, and side actions. The game validates each action and owns result
 
 ```bash
 export PATH="$HOME/.nimby/nim/bin:$PATH"
+node --test tests/test_renderer.cjs              # replay chat and seek behavior (Node 22+)
 bash tools/nim_local.sh r tests/test_sim.nim       # rules and replay tests
 bash tools/nim_local.sh r tests/test_scripted.nim  # player prompts
 bash tools/nim_local.sh r tests/test_server.nim    # private states and scoring

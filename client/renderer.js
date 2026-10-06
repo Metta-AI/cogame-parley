@@ -739,19 +739,18 @@
     }
   }
 
-  // Renders the full transcript grouped into one sub-section per turn.
-  // currentIndex (replay) marks how far playback has reached: later events
-  // render dimmed, and the section containing the playhead is highlighted
-  // and scrolled into view. Omit currentIndex for live views (everything is
-  // "played"; the feed follows the bottom).
+  // Replay chat contains only the played prefix, matching the board and scores.
+  // Live views receive already-redacted events from their socket.
   function renderFeed(element, events, nameMap, currentIndex) {
-    var live = currentIndex === undefined;
-    var limit = live ? events.length : currentIndex;
+    var limit = currentIndex === undefined ? events.length : currentIndex;
+    var scrollTop = element.scrollTop;
     var html = "";
     var lastKey = null;
     var lastRound = null;
     var open = false;
-    for (var i = 0; i < events.length; i++) {
+    var activeEvent = events[limit - 1];
+    var activeKey = activeEvent ? activeEvent.round + ":" + activeEvent.turn : null;
+    for (var i = 0; i < limit; i++) {
       var event = events[i];
       if (event.kind === "deal") continue;  // cards render on the table
       var key = event.round + ":" + event.turn;
@@ -766,47 +765,29 @@
         if (open) html += "</div>";
         var label = event.turn === 0 ? "The table gathers" :
           "Turn " + event.turn;
-        html += '<div class="feed-turn" data-key="' + key + '">' +
+        html += '<div class="feed-turn' + (key === activeKey ? " feed-active" : "") + '">' +
           '<div class="feed-turn-head">' + label + "</div>";
         lastKey = key;
         open = true;
       }
       var cls = "feed-line feed-" + event.kind +
         (event.kind === "roundEnd" ? " feed-rwin" : "") +
-        (event.kind === "score" ? " feed-score seat" + (event.seat % COLORS.length) : "") +
-        (i >= limit ? " feed-future" : "");
-      html += '<div class="' + cls + '">' +
-        escapeHtml(describeEvent(event, nameMap)) + "</div>";
-    }
-    if (open) html += "</div>";
-    element.innerHTML = html;
-
-    if (live || limit >= events.length) {
-      element.scrollTop = element.scrollHeight;
-      return;
-    }
-    var activeEvent = limit > 0 ? events[limit - 1] :
-      (events.length ? events[0] : null);
-    if (!activeEvent) return;
-    var activeKey = activeEvent.round + ":" + activeEvent.turn;
-    var sections = element.querySelectorAll(".feed-turn");
-    for (var s = 0; s < sections.length; s++) {
-      var section = sections[s];
-      if (section.getAttribute("data-key") === activeKey) {
-        section.classList.add("feed-active");
-        // Only scroll when the playhead enters a new section, so autoplay
-        // doesn't fight the user's own scrolling within a section — and
-        // keep the two previous sections visible above it for context.
-        if (element.dataset.activeKey !== activeKey) {
-          element.dataset.activeKey = activeKey;
-          var anchor = sections[Math.max(0, s - 2)];
-          element.scrollTo({
-            top: Math.max(anchor.offsetTop - element.offsetTop - 8, 0),
-            behavior: "smooth"
-          });
-        }
+        (event.kind === "score" ? " feed-score " + seatColor(event.seat) : "");
+      if (event.kind === "say" || event.kind === "whisper") {
+        var recipient = event.kind === "whisper" ?
+          " → " + nameMap.seat(event.target) + " · whisper" : "";
+        html += '<div class="' + cls + ' chat-message ' + seatColor(event.seat) + '">' +
+          '<div class="chat-speaker">' + escapeHtml(nameMap.seat(event.seat) + recipient) + "</div>" +
+          '<div class="chat-text">' + escapeHtml(event.text ? nameMap.text(event.text) :
+            "Private message") + "</div></div>";
+      } else {
+        html += '<div class="' + cls + '">' +
+          escapeHtml(describeEvent(event, nameMap)) + "</div>";
       }
     }
+    if (open) html += "</div>";
+    element.innerHTML = html || '<p class="chat-empty">The conversation will appear as the replay plays.</p>';
+    element.scrollTop = element.dataset.follow === "false" ? scrollTop : element.scrollHeight;
   }
 
   function escapeHtml(text) {
@@ -889,8 +870,8 @@
 
   // Per-cog plates for the top band: colored name, cumulative match score,
   // one amber pip per round win, and an IT chip on the armed cog.
-  // Policy display names are arbitrary strings; a long one blows out whatever
-  // row it lands in. One clamp, used by every place a name is shown as text.
+  // Event summaries abbreviate long policy names. Chat keeps the full name;
+  // score plates use CSS ellipsis with the complete name in their title.
   function clampName(name) {
     var n = name || "";
     return n.length > 24 ? n.slice(0, 23) + "\u2026" : n;
@@ -918,6 +899,7 @@
 
   function updateScorebug(container, seats, nameMap) {
     if (!container || !seats) return;
+    container.style.setProperty("--seat-count", seats.length);
     var html = "";
     seats.forEach(function (seat, index) {
       var pips = "";
@@ -927,11 +909,13 @@
       var plateName = nameMap ? nameMap.seat(index) : seat.name;
       html += '<div class="plate ' + seatColor(index) +
         (seat.alive ? "" : " dead") + '">' +
-        '<span class="plate-name">' + escapeHtml(clampName(plateName)) + "</span>" +
+        '<span class="plate-name" title="' + escapeHtml(plateName) + '">' +
+        escapeHtml(plateName) + "</span>" +
         (seat.isIt ? '<span class="plate-it">IT</span>' : "") +
-        '<span class="plate-score">' + (seat.score || 0) + "</span>" +
-        '<span class="plate-label">pts</span>' +
-        '<span class="plate-pips">' + pips + "</span>" +
+        '<span class="plate-total"><span class="plate-score">' + (seat.score || 0) + "</span>" +
+        '<span class="plate-label">match pts</span></span>' +
+        '<span class="plate-pips" aria-label="' + (seat.roundWins || 0) +
+        ' round wins" title="' + (seat.roundWins || 0) + ' round wins">' + pips + "</span>" +
         "</div>";
     });
     if (container.dataset.html !== html) {
@@ -996,21 +980,14 @@
     container.innerHTML = html;
   }
 
-  function bindFeedToggle(button, startCollapsed) {
+  function bindFeedToggle(button) {
     if (!button) return;
-    // Replays open on the table, not the transcript: the log is a click away
-    // and the arena gets the whole frame until someone asks for it.
-    if (startCollapsed) {
-      document.body.classList.add("feed-collapsed");
-      // The page sized its canvas before this ran; let the collapse reflow
-      // land, then tell it to re-measure against the now-full-width arena.
-      requestAnimationFrame(function () {
-        window.dispatchEvent(new Event("resize"));
-      });
-    }
     function refresh() {
-      button.textContent =
-        document.body.classList.contains("feed-collapsed") ? "\u00ab LOG" : "LOG \u00bb";
+      var collapsed = document.body.classList.contains("feed-collapsed");
+      var label = document.body.classList.contains("replay-viewer") ? "CHAT" : "LOG";
+      button.textContent = collapsed ? "\u00ab " + label : label + " \u00bb";
+      button.setAttribute("aria-expanded", String(!collapsed));
+      button.setAttribute("aria-controls", document.getElementById("replay-sidebar") ? "replay-sidebar" : "feed");
     }
     button.onclick = function () {
       document.body.classList.toggle("feed-collapsed");
@@ -1132,7 +1109,7 @@
       var kind = event.kind;
       if (kind !== "shot" && kind !== "death" && kind !== "roundEnd") return;
       var marker = document.createElement("div");
-      marker.className = "beat-marker seat" + (event.seat % COLORS.length) +
+      marker.className = "beat-marker " + seatColor(event.seat) +
         (kind === "death" ? " death" : "") +
         (kind === "roundEnd" ? " rwin" : "");
       if (kind === "roundEnd") {
@@ -1182,6 +1159,31 @@
     var playing = true;
     var lastStep = 0;
 
+    function followChat(follow) {
+      if (!options.feed) return;
+      options.feed.dataset.follow = String(follow);
+      if (options.followButton) {
+        options.followButton.textContent = follow ? "Following" : "Follow playback";
+        options.followButton.setAttribute("aria-pressed", String(follow));
+      }
+      if (follow) options.feed.scrollTop = options.feed.scrollHeight;
+    }
+    if (options.feed) {
+      options.feed.addEventListener("scroll", function () {
+        var feed = options.feed;
+        followChat(feed.scrollHeight - feed.clientHeight - feed.scrollTop < 24);
+      });
+    }
+    window.addEventListener("resize", function () {
+      if (options.feed && options.feed.dataset.follow === "true") followChat(true);
+    });
+    if (options.followButton) {
+      options.followButton.onclick = function () {
+        followChat(options.feed.dataset.follow !== "true");
+      };
+    }
+    followChat(true);
+
     makeRenderer(options.canvas, options.assetBase, function (renderer) {
       var effects = makeEffects();
       var scrub = buildScrub(options.scrub, events, function (next) {
@@ -1200,6 +1202,7 @@
         index = Math.max(0, Math.min(next, events.length));
         scrub.update(index);
         if (jumped) {
+          followChat(true);
           effects.reset();
           effects.absorb(events.slice(0, index));
         } else {

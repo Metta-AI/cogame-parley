@@ -202,11 +202,11 @@ canvas#table {
   z-index: 2;
 }
 .beat-marker.death { top: 2px; height: 14px; width: 3px; }
-.seat0 { --tc: var(--red); }
-.seat1 { --tc: var(--blue); }
-.seat2 { --tc: var(--green); }
-.seat3 { --tc: var(--yellow); }
-.seat4 { --tc: var(--violet); }
+.red { --tc: var(--red); }
+.blue { --tc: var(--blue); }
+.green { --tc: var(--green); }
+.yellow { --tc: var(--yellow); }
+.violet { --tc: var(--violet); }
 
 /* ---------- feed ---------- */
 #feed {
@@ -244,7 +244,6 @@ canvas#table {
 .feed-death { color: var(--red); font-weight: 700; }
 .feed-it { color: var(--paper-dim); }
 .feed-end { color: var(--amber); font-weight: 700; }
-.feed-future { opacity: 0.32; }
 
 #loading {
   position: absolute;
@@ -420,3 +419,91 @@ body.feed-collapsed #feed { display: none; }
 .end-row-winner .end-cell.name { color: var(--tc, var(--amber)); }
 
 .feed-score { color: var(--tc, var(--amber)); font-weight: 600; }
+
+/* Replay conversation stays readable beside the table, or below it on phones. */
+#replay-sidebar {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 clamp(320px, 34vw, 480px);
+  min-width: 0;
+  min-height: 0;
+  background: var(--stage-lo);
+  border-left: 1px solid rgba(242, 232, 216, 0.14);
+  z-index: 10;
+}
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid rgba(242, 232, 216, 0.14);
+}
+.chat-header h1 { font-size: 16px; font-weight: 600; }
+.chat-header p { color: var(--paper-dim); font-size: 11px; margin-top: 4px; }
+#chat-follow { flex: none; font-family: var(--finefont); line-height: 1.4; }
+#chat-follow[aria-pressed="true"] { color: var(--amber); }
+#replay-sidebar #feed {
+  flex: 1;
+  min-height: 0;
+  width: auto;
+  border: 0;
+  padding: 12px 16px;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+}
+.chat-message {
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  background: rgba(242, 232, 216, 0.04);
+  border-left: 2px solid var(--tc);
+}
+.chat-speaker { color: var(--tc); font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+.chat-text { color: var(--paper); white-space: pre-wrap; overflow-wrap: anywhere; }
+.feed-whisper .chat-speaker { font-style: italic; }
+.chat-empty { color: var(--paper-dim); }
+body.feed-collapsed #replay-sidebar { display: none; }
+.plate-total { display: flex; align-items: baseline; gap: 5px; flex: none; }
+.replay-viewer #scorebug { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; padding: 8px 14px 12px; }
+.replay-viewer .plate {
+  position: relative;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 9px 10px;
+  border-top: 3px solid var(--tc);
+  background: rgba(242, 232, 216, 0.05);
+}
+.replay-viewer .plate-name { font-family: var(--finefont); font-size: 12px; letter-spacing: 0; }
+.replay-viewer .plate:has(.plate-it) .plate-name { padding-right: 22px; }
+.replay-viewer .plate-score { font-size: 32px; font-variant-numeric: tabular-nums; }
+.replay-viewer .plate-label { font-size: 9px; letter-spacing: 0.06em; }
+.replay-viewer .plate-it { position: absolute; top: 9px; right: 7px; }
+.replay-viewer .plate-pips { align-self: flex-start; min-height: 7px; }
+.replay-viewer #clock { white-space: normal; font-size: 13px; }
+.replay-viewer #topband { grid-template-columns: auto 1fr auto; }
+.replay-viewer #board-wrap { overflow: hidden; }
+button:focus-visible, #feed:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+
+@media (max-width: 760px) {
+  .replay-viewer #layout { flex-direction: column; }
+  .replay-viewer #stage { flex: 1; min-height: 0; }
+  #replay-sidebar { flex: 0 0 42%; border-left: 0; border-top: 1px solid rgba(242, 232, 216, 0.14); }
+  .chat-header { padding: 8px 12px; }
+  .chat-header p { display: none; }
+  .replay-viewer #scorebug { grid-template-columns: repeat(var(--seat-count, 5), minmax(0, 1fr)); gap: 4px; padding: 4px 8px 8px; }
+  .replay-viewer .plate { padding: 6px 4px; gap: 4px; }
+  .replay-viewer .plate-total { flex-direction: column; gap: 2px; }
+  .replay-viewer .plate-score { font-size: 26px; }
+  .replay-viewer .plate-label { font-size: 8px; letter-spacing: 0; }
+  .replay-viewer .plate-it { top: 28px; right: 4px; }
+  .replay-viewer .plate:has(.plate-it) .plate-name { padding-right: 0; }
+  .replay-viewer #wordmark { font-size: 14px; }
+  .replay-viewer #statuschip { display: none; }
+  .replay-viewer #topband { gap: 8px; padding: 6px 8px; }
+  .replay-viewer #clock { font-size: 10px; }
+  .replay-viewer .end-panel { min-width: 0; max-width: 96%; padding: 10px; }
+  .replay-viewer .end-rows { gap: 4px 8px; }
+  .replay-viewer .end-cell { font-size: 12px; }
+  .replay-viewer .end-verdict { font-size: 18px; margin: 4px 0 8px; }
+}

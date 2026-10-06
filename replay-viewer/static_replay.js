@@ -36,6 +36,7 @@
     ParleyRenderer.attachReplay({
       canvas: document.getElementById("table"),
       feed: document.getElementById("feed"),
+      followButton: document.getElementById("chat-follow"),
       scrub: document.getElementById("scrub"),
       playButton: document.getElementById("play"),
       label: document.getElementById("pos"),

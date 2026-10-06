@@ -23,16 +23,17 @@ binary, output, revision = sys.argv[1:]
 root = Path(output)
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
 reports = []
-for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
+for mode in ["accepted", "retry", "fallback", "registration", "seat-budget", "random-seed",
              "interrupted-started-term", "interrupted-partial-term", "interrupted-partial-int", "runtime-failure",
              "artifact-http", "interrupted-partial-http-term", "artifact-upload-failure"]:
+    seats = 5 if mode == "registration" else 4
     folder = root / mode
     folder.mkdir(mode=0o700)
     requests = []
     uploads = []
     entered = threading.Event()
     release = threading.Event()
-    seat_calls = [0] * 4
+    seat_calls = [0] * seats
 
     class Native(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -136,17 +137,17 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
     listener.close()
     config = {
         "seed": 17,
-        "sampled": True,
+        "sampled": mode != "registration",
         "rounds": 2,
         "hitPoints": 1,
         "survivors": 1,
         "reactions": True,
-        "maxReactions": 1,
+        "maxReactions": 3 if mode == "registration" else 1,
         "turnDelayMs": 0,
         "player_connect_timeout_seconds": 3,
         "episodeTimeoutSeconds": 60,
-        "tokens": ["private-auth-sentinel-" + str(i) for i in range(4)],
-        "players": [{"name": "fixture-" + str(i)} for i in range(4)],
+        "tokens": ["private-auth-sentinel-" + str(i) for i in range(seats)],
+        "players": [{"name": "fixture-" + str(i)} for i in range(seats)],
     }
     if mode == "random-seed":
         del config["seed"]
@@ -192,10 +193,13 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
                 connect(
                     f"ws://127.0.0.1:{port}/player?slot={slot}&token={config['tokens'][slot]}"
                 )
-                for slot in range(4)
+                for slot in range(seats)
             ]
             try:
-                for seat in sockets:
+                for index, seat in enumerate(sockets):
+                    if mode == "registration" and index == seats - 1:
+                        time.sleep(0.8)
+                        assert not requests, "Decision requested before final control registration"
                     seat.send(
                         json.dumps(
                             {"type": "prompt", "prompt": "PRIVATE OPERATOR SENTINEL"}
@@ -279,7 +283,10 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
     outcome = events[-1]["outcome"]
     assert outcome["protocol"] == "parley.native-outcome.v1"
     assert outcome["results"] == json.loads((folder / "results.json").read_text())
-    assert outcome["results"]["rounds"] == 2
+    if mode == "registration":
+        assert 3 <= outcome["results"]["rounds"] <= 6
+    else:
+        assert outcome["results"]["rounds"] == 2
     assert outcome["input_config"] == {k: v for k, v in config.items() if k != "tokens"}
     assert str(outcome["selected_seed"]) == events[-1]["seed_family"]
     assert (
@@ -342,6 +349,8 @@ for mode in ["accepted", "retry", "fallback", "seat-budget", "random-seed",
         {
             "mode": mode,
             "complete_episodes": 1,
+            "seats": seats,
+            "completed_rounds": outcome["results"]["rounds"],
             "decisions": len(decisions),
             "native_call_joins": len(requests),
             "source_revision": revision,

@@ -29,13 +29,6 @@
 <script src="/client/renderer.js"></script>
 <script>
   var canvas = document.getElementById("table");
-  function fit() {
-    canvas.width = canvas.clientWidth;
-    canvas.height = canvas.clientHeight;
-  }
-  window.addEventListener("resize", fit);
-  window.addEventListener("load", fit);
-  fit();
   ParleyRenderer.bindFeedToggle(document.getElementById("feedtoggle"));
   var params = new URLSearchParams(location.search);
   ParleyRenderer.attachLive({

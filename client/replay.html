@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -17,24 +17,33 @@
         <button id="feedtoggle">CHAT »</button>
       </div>
     </div>
-    <div id="scorebug" role="region" aria-label="Current match points"></div>
     <div id="board-wrap">
-      <canvas id="table" width="960" height="640"></canvas>
+      <canvas id="table" width="960" height="600" role="img" aria-label="Parley table: cogs, health, and friend and enemy cards"></canvas>
+      <div class="table-legend"><span>♥ Friend</span><span>× Enemy</span><span>Hover a cog to see its cards</span></div>
       <div id="lightpool"></div>
       <div id="grain"></div>
       <div id="endscreen"></div>
     </div>
+    <div id="now-playing" role="region" tabindex="0" aria-label="Current replay event"></div>
     <div id="transport">
       <div class="scrub" id="scrub"></div>
       <div class="tbar">
-        <button class="tbtn" id="play">❚❚</button>
+        <button class="tbtn" id="previous" type="button" aria-label="Previous event">‹</button>
+        <button class="tbtn" id="play" type="button" aria-label="Pause replay">Pause</button>
+        <button class="tbtn" id="next" type="button" aria-label="Next event">›</button>
+        <span class="transport-hint">Drag to explore</span>
         <span class="tpos" id="pos">0 / 0</span>
       </div>
     </div>
     </div>
-  <aside id="replay-sidebar" aria-label="Table chat">
+  <aside id="replay-sidebar" aria-label="Match points and table chat">
+    <section class="standings" aria-label="Current match points">
+      <div class="section-label"><span>Match points</span><span>PTS</span></div>
+      <div id="scorebug"></div>
+      <p class="score-key">Survive +3 <span>Friend +1</span> Enemy +1</p>
+    </section>
     <div class="chat-header">
-      <div><h1>Table chat</h1><p>Conversation and points · follows playback</p></div>
+      <div><h1>Table chat</h1><p>Promises, deals, and double-crosses</p></div>
       <button id="chat-follow" class="tbtn" type="button">Following</button>
     </div>
     <div id="feed" role="region" aria-label="Replay conversation" tabindex="0"></div>
@@ -44,13 +53,6 @@
 <script src="/client/renderer.js"></script>
 <script>
   var canvas = document.getElementById("table");
-  function fit() {
-    canvas.width = canvas.clientWidth;
-    canvas.height = canvas.clientHeight;
-  }
-  window.addEventListener("resize", fit);
-  window.addEventListener("load", fit);
-  fit();
   ParleyRenderer.bindFeedToggle(document.getElementById("feedtoggle"));
   var scheme = location.protocol === "https:" ? "wss://" : "ws://";
   var socket = new WebSocket(scheme + location.host + "/replay");
@@ -58,13 +60,15 @@
     var payload = JSON.parse(frame.data);
     if (payload.type !== "replay") return;
     document.getElementById("loading").style.display = "none";
-    fit();
     ParleyRenderer.attachReplay({
       canvas: canvas,
       feed: document.getElementById("feed"),
       followButton: document.getElementById("chat-follow"),
       scrub: document.getElementById("scrub"),
       playButton: document.getElementById("play"),
+      previousButton: document.getElementById("previous"),
+      nextButton: document.getElementById("next"),
+      nowPlaying: document.getElementById("now-playing"),
       label: document.getElementById("pos"),
       clock: document.getElementById("clock"),
       scorebug: document.getElementById("scorebug"),

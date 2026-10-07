@@ -77,8 +77,8 @@
       var rect = canvas.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       hover = {
-        x: (evt.clientX - rect.left) * canvas.width / rect.width,
-        y: (evt.clientY - rect.top) * canvas.height / rect.height
+        x: evt.clientX - rect.left,
+        y: evt.clientY - rect.top
       };
     });
     canvas.addEventListener("pointerleave", function () { hover = null; });
@@ -99,7 +99,26 @@
         });
       });
       onReady({
-        draw: function (view) { draw(ctx, canvas, images, view, hover); }
+        draw: function (view) {
+          // CSS geometry and device resolution are separate: browser zoom must
+          // not change the table composition or blur its labels.
+          var width = canvas.clientWidth, height = canvas.clientHeight;
+          var dpr = window.devicePixelRatio || 1;
+          var pixelsWide = Math.round(width * dpr), pixelsHigh = Math.round(height * dpr);
+          if (canvas.width !== pixelsWide || canvas.height !== pixelsHigh) {
+            canvas.width = pixelsWide;
+            canvas.height = pixelsHigh;
+          }
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          ctx.clearRect(0, 0, width, height);
+          var scale = view.replay ? Math.min(width / 960, height / 600) : 1;
+          var x = view.replay ? (width - 960 * scale) / 2 : 0;
+          var y = view.replay ? (height - 600 * scale) / 2 : 0;
+          ctx.translate(x, y);
+          ctx.scale(scale, scale);
+          var pointer = hover && { x: (hover.x - x) / scale, y: (hover.y - y) / scale };
+          draw(ctx, view.replay ? 960 : width, view.replay ? 600 : height, images, view, pointer);
+        }
       });
     });
   }
@@ -158,7 +177,7 @@
     return false;
   }
 
-  function computeLayout(width, height, count) {
+  function computeLayout(width, height, count, replay) {
     // Every seat is allocated one spot — bubble headroom above the cog, the
     // name/hearts/cards stack below, ext.half to each side — and the ring is
     // pushed all the way to the canvas edges so the table FILLS the panel
@@ -171,9 +190,13 @@
     var layout;
     for (var attempt = 0; attempt < 40; attempt++) {
       var ext = seatExtent(size);
+      // Replay speech lives in the readable caption and transcript, so the
+      // table does not reserve four lines of bubble space above every seat.
+      if (replay) ext.above = size * 0.7;
       // The largest ellipse whose top seat still has full bubble headroom,
       // whose bottom seat's cards still fit, and whose side seats stay in.
       var rx = (width - 2 * margin - 2 * ext.half) / 2;
+      if (replay) rx = Math.min(rx, width * 0.36);
       var ry = (height - 2 * margin - ext.above - ext.below) / 2;
       layout = {
         size: size,
@@ -324,30 +347,46 @@
     ctx.restore();
   }
 
-  function draw(ctx, canvas, images, view, hover) {
-    var w = canvas.width;
-    var h = canvas.height;
+  function draw(ctx, w, h, images, view, hover) {
     var seats = view.seats || [];
     var count = Math.max(seats.length, 2);
     var now = view.now || Date.now();
-    var layout = computeLayout(w, h, count);
+    var layout = computeLayout(w, h, count, view.replay);
     var hovered = hoveredSeat(seats, count, layout, hover);
 
-    // Floor.
-    var floor = images["arena_floor.png"];
-    if (floor && floor.width) {
-      var pattern = ctx.createPattern(floor, "repeat");
-      ctx.fillStyle = pattern;
-    } else {
-      ctx.fillStyle = "#16110d";
-    }
-    ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = "rgba(18, 13, 9, 0.45)";
-    ctx.fillRect(0, 0, w, h);
-
-    // No table is drawn: the cogs and their cards are the composition.
-    // cx/cy stay the center the paint splats and seat ring reference.
     var cx = layout.cx, cy = layout.cy;
+    if (view.replay) {
+      // A single table gives the seats and paint trajectories a stable anchor.
+      ctx.fillStyle = "#171c1b";
+      ctx.beginPath();
+      ctx.ellipse(cx, cy + 18, layout.rx * 0.85, layout.ry * 0.78, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#65513a";
+      ctx.lineWidth = 14;
+      ctx.stroke();
+      ctx.strokeStyle = "#b5935d";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.ellipse(cx, cy + 18, layout.rx * 0.77, layout.ry * 0.64, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = "#343d36";
+      ctx.setLineDash([3, 7]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#a6987c";
+      ctx.font = "600 24px 'rajdhani', system-ui, sans-serif";
+      ctx.fillText("P A R L E Y", cx, cy + 14);
+      ctx.fillStyle = "#a69f8e";
+      ctx.font = "12px system-ui, sans-serif";
+      ctx.fillText("Trust is a temporary arrangement.", cx, cy + 37);
+    } else {
+      var floor = images["arena_floor.png"];
+      ctx.fillStyle = floor && floor.width ? ctx.createPattern(floor, "repeat") : "#16110d";
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = "rgba(18, 13, 9, 0.45)";
+      ctx.fillRect(0, 0, w, h);
+    }
 
     // Old paint splats on the table (from shot history).
     (view.splats || []).forEach(function (splat) {
@@ -407,6 +446,11 @@
         drawSpotlight(ctx, seatPosition(hs.enemy, count, layout), layout.size,
           COLOR_HEX.red, "ENEMY", layout.scale);
       }
+    }
+
+    if (view.speaker >= 0 && view.speaker < seats.length) {
+      drawSpotlight(ctx, seatPosition(view.speaker, count, layout), layout.size,
+        COLOR_HEX[seatColor(view.speaker)], "SPEAKING", layout.scale);
     }
 
     // Cogs.
@@ -504,7 +548,7 @@
     }
 
     // Speech bubbles (drawn last, on top).
-    (view.bubbles || []).forEach(function (bubble) {
+    (view.replay ? [] : view.bubbles || []).forEach(function (bubble) {
       var age = now - bubble.at;
       if (age > BUBBLE_MS) return;
       var pos = seatPosition(bubble.seat, count, layout);
@@ -914,7 +958,7 @@
         (seat.isIt ? '<span class="plate-it">IT</span>' : "") +
         '<span class="plate-total"><span class="plate-score">' + (seat.score || 0) + "</span>" +
         '<span class="plate-label">match pts</span></span>' +
-        '<span class="plate-pips" aria-label="' + (seat.roundWins || 0) +
+        '<span class="plate-pips" role="img" aria-label="' + (seat.roundWins || 0) +
         ' round wins" title="' + (seat.roundWins || 0) + ' round wins">' + pips + "</span>" +
         "</div>";
     });
@@ -949,7 +993,7 @@
       var winnerIndex = results.win.indexOf(true);
       if (winnerIndex >= 0) verdictColor = seatColor(winnerIndex);
     }
-    var html = '<div class="end-panel">' +
+    var html = '<div class="end-panel" tabindex="0">' +
       '<div class="end-title">FINAL \u2014 ' + (results.rounds || 1) +
       ' ROUND' + ((results.rounds || 1) > 1 ? "S" : "") + "</div>" +
       '<div class="end-verdict ' + verdictColor + '">' +
@@ -985,14 +1029,13 @@
     function refresh() {
       var collapsed = document.body.classList.contains("feed-collapsed");
       var label = document.body.classList.contains("replay-viewer") ? "CHAT" : "LOG";
-      button.textContent = collapsed ? "\u00ab " + label : label + " \u00bb";
+      button.textContent = collapsed ? "Show " + label.toLowerCase() : "Hide " + label.toLowerCase();
       button.setAttribute("aria-expanded", String(!collapsed));
       button.setAttribute("aria-controls", document.getElementById("replay-sidebar") ? "replay-sidebar" : "feed");
     }
     button.onclick = function () {
       document.body.classList.toggle("feed-collapsed");
       refresh();
-      window.dispatchEvent(new Event("resize"));
     };
     refresh();
   }
@@ -1078,6 +1121,22 @@
   // shooter's seat; knockouts draw taller).
   function buildScrub(container, events, onSeek) {
     container.innerHTML = "";
+    container.tabIndex = 0;
+    container.setAttribute("role", "slider");
+    container.setAttribute("aria-label", "Replay timeline");
+    container.setAttribute("aria-valuemin", "0");
+    container.setAttribute("aria-valuemax", String(events.length));
+    var currentIndex = 0;
+    container.addEventListener("keydown", function (evt) {
+      var next;
+      if (evt.key === "ArrowRight" || evt.key === "ArrowUp") next = currentIndex + 1;
+      else if (evt.key === "ArrowLeft" || evt.key === "ArrowDown") next = currentIndex - 1;
+      else if (evt.key === "Home") next = 0;
+      else if (evt.key === "End") next = events.length;
+      else return;
+      evt.preventDefault();
+      onSeek(next);
+    });
     var track = document.createElement("div");
     track.className = "scrub-track";
     container.appendChild(track);
@@ -1131,16 +1190,20 @@
     var dragging = false;
     container.addEventListener("pointerdown", function (evt) {
       dragging = true;
-      try { container.setPointerCapture(evt.pointerId); } catch (ignore) {}
+      container.setPointerCapture(evt.pointerId);
       seekFromEvent(evt);
     });
     container.addEventListener("pointermove", function (evt) {
       if (dragging) seekFromEvent(evt);
     });
     container.addEventListener("pointerup", function () { dragging = false; });
+    container.addEventListener("pointercancel", function () { dragging = false; });
 
     return {
       update: function (index) {
+        currentIndex = index;
+        container.setAttribute("aria-valuenow", String(index));
+        container.setAttribute("aria-valuetext", "Event " + index + " of " + events.length);
         var pct = events.length ? (index / events.length * 100) : 0;
         fill.style.width = pct + "%";
         head.style.left = pct + "%";
@@ -1197,6 +1260,14 @@
         };
       }
 
+      [[options.previousButton, -1], [options.nextButton, 1]].forEach(function (entry) {
+        if (!entry[0]) return;
+        entry[0].onclick = function () {
+          playing = false;
+          setIndex(index + entry[1], true);
+        };
+      });
+
       function setIndex(next, jumped) {
         var previous = index;
         index = Math.max(0, Math.min(next, events.length));
@@ -1212,7 +1283,7 @@
         }
         if (options.feed) renderFeed(options.feed, events, nameMap, index);
         if (options.label) {
-          options.label.textContent = index + " / " + events.length;
+          options.label.textContent = "Event " + index + " / " + events.length;
         }
         if (options.clock) {
           var current = index > 0 ? events[index - 1] : null;
@@ -1220,6 +1291,26 @@
           var turn = current ? current.turn : 0;
           options.clock.textContent =
             matchHeader(payload.config, round, turn);
+        }
+        if (options.previousButton) options.previousButton.disabled = index === 0;
+        if (options.nextButton) options.nextButton.disabled = index === events.length;
+        if (options.nowPlaying) {
+          var event = events[index - 1];
+          var speech = event && (event.kind === "say" || event.kind === "whisper");
+          var captionLabel = "At the table";
+          var caption = "A few promises. One paintgun. Play to join the table.";
+          if (speech) {
+            captionLabel = nameMap.seat(event.seat) +
+              (event.kind === "whisper" ? " · whisper" : " · speaking");
+            caption = nameMap.text(event.text || "Private message");
+          } else if (event) {
+            caption = event.kind === "deal" ?
+              "Friend and enemy cards are dealt for this round." : describeEvent(event, nameMap);
+          }
+          options.nowPlaying.className = event ? seatColor(event.seat) : "";
+          options.nowPlaying.innerHTML = '<span class="now-label">' +
+            escapeHtml(captionLabel) + '</span><p>' + escapeHtml(caption) + '</p>';
+          options.nowPlaying.scrollTop = 0;
         }
         updateScorebug(options.scorebug,
           states[Math.min(index, states.length - 1)], nameMap);
@@ -1236,11 +1327,16 @@
         }
         if (options.playButton) {
           var running = playing && index < events.length;
-          options.playButton.textContent = running ? "❚❚" : "▶";
+          var playLabel = running ? "Pause" : index >= events.length ? "Replay" : "Play";
+          options.playButton.textContent = playLabel;
+          options.playButton.setAttribute("aria-label", (playLabel === "Replay" ? "Restart" : playLabel) + " replay");
           options.playButton.classList.toggle("on", running);
         }
         var state = states[Math.min(index, states.length - 1)] || [];
         var view = effects.view();
+        view.replay = true;
+        var currentEvent = events[index - 1];
+        view.speaker = currentEvent && currentEvent.kind === "say" ? currentEvent.seat : -1;
         view.seats = applyNames(effects.seats(state, Date.now()), nameMap);
         view.bubbles = renameBubbles(view.bubbles, nameMap);
         view.hitPoints = (payload.config || {}).hitPoints || 3;

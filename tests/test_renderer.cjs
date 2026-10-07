@@ -53,3 +53,89 @@ test("reading earlier chat preserves the scroll position until follow resumes", 
   renderFeed(element, events, names, 1);
   assert.equal(element.scrollTop, 1000);
 });
+
+function replayFixture() {
+  const images = [];
+  let frame;
+  const drawing = new Proxy({}, {
+    get: (target, key) => target[key] || (() => {}),
+  });
+  drawing.measureText = (text) => ({ width: text.length * 6 });
+  function element() {
+    return {
+      ...feed(),
+      attributes: {},
+      listeners: {},
+      style: { setProperty() {} },
+      classList: { toggle() {} },
+      appendChild() {},
+      setAttribute(name, value) { this.attributes[name] = value; },
+      addEventListener(name, callback) { this.listeners[name] = callback; },
+      getContext: () => drawing,
+    };
+  }
+  const window = { devicePixelRatio: 1, addEventListener() {} };
+  const sandbox = vm.createContext({
+    window,
+    document: { createElement: element, documentElement: element() },
+    Image: class { constructor() { images.push(this); } },
+    requestAnimationFrame: (callback) => { frame = callback; },
+  });
+  vm.runInContext(readFileSync(path.join(__dirname, "../client/renderer.js"), "utf8"), sandbox);
+  const options = {
+    canvas: Object.assign(element(), { clientWidth: 960, clientHeight: 600 }),
+    feed: element(), scrub: element(), label: element(), nowPlaying: element(),
+    previousButton: element(), nextButton: element(), playButton: element(),
+    assetBase: "/assets",
+    payload: {
+      names: ["Sprocket"],
+      events: [
+        { kind: "say", seat: 0, round: 0, turn: 1, text: "Opening bargain" },
+        { kind: "say", seat: 0, round: 0, turn: 2, text: "Future promise" },
+      ],
+      states: [[], [], []],
+    },
+  };
+  window.ParleyRenderer.attachReplay(options);
+  images.forEach((image) => image.onload());
+  return { options, window, drawing, draw: () => frame(0) };
+}
+
+test("canvas resolution follows zoom and container resize without changing table proportions", () => {
+  const { options, window, drawing, draw } = replayFixture();
+  const scales = [];
+  drawing.scale = (x, y) => scales.push([x, y]);
+  window.devicePixelRatio = 2;
+  draw();
+  assert.equal(options.canvas.width, 1920);
+  assert.equal(options.canvas.height, 1200);
+  assert.deepEqual(scales.pop(), [1, 1]);
+
+  // A sidebar can resize the canvas without a window resize event.
+  options.canvas.clientWidth = 600;
+  options.canvas.clientHeight = 300;
+  window.devicePixelRatio = 1.5;
+  draw();
+  assert.equal(options.canvas.width, 900);
+  assert.equal(options.canvas.height, 450);
+  assert.deepEqual(scales.pop(), [0.5, 0.5]);
+});
+
+test("keyboard seeking and event buttons keep the caption and transcript on the played prefix", () => {
+  const { options } = replayFixture();
+  const key = (value) => options.scrub.listeners.keydown({ key: value, preventDefault() {} });
+  key("ArrowRight");
+  assert.match(options.nowPlaying.innerHTML, /Opening bargain/);
+  assert.doesNotMatch(options.feed.innerHTML, /Future promise/);
+  options.nextButton.onclick();
+  assert.match(options.nowPlaying.innerHTML, /Future promise/);
+  assert.equal(options.nextButton.disabled, true);
+  options.previousButton.onclick();
+  assert.doesNotMatch(options.feed.innerHTML, /Future promise/);
+  key("Home");
+  assert.equal(options.previousButton.disabled, true);
+  assert.doesNotMatch(options.feed.innerHTML, /Opening bargain|Future promise/);
+  key("End");
+  assert.match(options.feed.innerHTML, /Future promise/);
+  assert.equal(options.scrub.attributes["aria-valuenow"], "2");
+});

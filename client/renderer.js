@@ -192,7 +192,10 @@
       var ext = seatExtent(size);
       // Replay speech lives in the readable caption and transcript, so the
       // table does not reserve four lines of bubble space above every seat.
-      if (replay) ext.above = size * 0.7;
+      if (replay) {
+        ext.above = size * 0.7;
+        ext.below += CARD_H * 0.1 * size / SEAT_BASE;
+      }
       // The largest ellipse whose top seat still has full bubble headroom,
       // whose bottom seat's cards still fit, and whose side seats stay in.
       var rx = (width - 2 * margin - 2 * ext.half) / 2;
@@ -527,10 +530,11 @@
       // the target cog's portrait.
       if (seat.friend >= 0 && seat.enemy >= 0 && seat.alive) {
         var cardY = pos.y + size * 0.62 + CARD_DROP * scale;
-        drawCard(ctx, images, pos.x - CARD_GAP * scale, cardY,
-          seat.friend, "#45a85e", "\u2665", -0.05, false, scale);
-        drawCard(ctx, images, pos.x + CARD_GAP * scale, cardY,
-          seat.enemy, "#e0523a", "\u2715", 0.05, seat.enemyDone, scale);
+        var cardScale = scale * (view.replay ? 1.2 : 1);
+        drawCard(ctx, images, pos.x - CARD_GAP * cardScale, cardY,
+          seat.friend, "#45a85e", "\u2665", -0.05, false, cardScale);
+        drawCard(ctx, images, pos.x + CARD_GAP * cardScale, cardY,
+          seat.enemy, "#e0523a", "\u2715", 0.05, seat.enemyDone, cardScale);
       }
     });
 
@@ -1226,8 +1230,9 @@
       if (!options.feed) return;
       options.feed.dataset.follow = String(follow);
       if (options.followButton) {
-        options.followButton.textContent = follow ? "Following" : "Follow playback";
+        options.followButton.textContent = follow ? "Following" : "Follow";
         options.followButton.setAttribute("aria-pressed", String(follow));
+        options.followButton.setAttribute("aria-label", "Follow playback");
       }
       if (follow) options.feed.scrollTop = options.feed.scrollHeight;
     }

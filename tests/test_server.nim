@@ -380,12 +380,16 @@ suite "external training authority":
     let targets = before.validTargets(seat)
     game.trajectory = some(newDecisionTrajectory("engine-fallback", "parley-17", "parley",
       "source-test", repeat('a', 40)))
+    let issued = game.externalObservation(before, seat, "private rejected prompt", true, matchHeader(game.match))
+    game.issuedWindows["1"] = issued
     let start = game.match.allEvents().len
     game.match.sim.recordSay(seat, "actually spoken")
     game.match.sim.applyShot(seat, targets[1], aimHip)
     let outcome = DecisionResult(origin: "scripted_after_rejected_action",
       decision: Decision(target: targets[0], say: "unused proposal", aim: aimHead))
     game.recordDecision(before, seat, true, outcome, start, false, newJObject())
+    check game.staged[0].observation == issued
+    check "private rejected prompt" notin game.replayPayload(game.match.resultsJson())
     let executed = game.staged[0].action
     check executed["shoot"].getStr() == before.seats[targets[1]].name
     check executed["say"].getStr() == "actually spoken"

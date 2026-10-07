@@ -7,4 +7,3 @@ services:
       args:
         PARLEY_SOURCE_REVISION: ${PARLEY_SOURCE_REVISION:?Set the immutable source commit}
         PARLEY_GAME_VERSION: ${PARLEY_GAME_VERSION:?Set the release version}
-      network: host

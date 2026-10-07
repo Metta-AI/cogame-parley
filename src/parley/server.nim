@@ -415,8 +415,10 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
     elif attempts.len > 0 and attempts[^1].accepted:
       attempts[^1].accepted = false
       attempts[^1].rejectionReason = some("engine rejected proposal")
-    gs.staged.add(StagedDecision(id: $reference["id"].getInt(), seat: $seat,
-      observation: observation, attempts: attempts, selected: selected, action: action,
+    let id = $reference["id"].getInt()
+    let visible = if gs.issuedWindows.hasKey(id): gs.issuedWindows[id] else: observation
+    gs.staged.add(StagedDecision(id: id, seat: $seat,
+      observation: visible, attempts: attempts, selected: selected, action: action,
       status: (if proposalAccepted: asAccepted else: asFallback),
       fallback: (if proposalAccepted: none(string) else: some(outcome.origin))))
 
@@ -430,8 +432,10 @@ proc recordInterruptedDecision(gs: var GameState, seat: int,
       attempt.accepted = false
       if attempt.rejectionReason.isNone:
         attempt.rejectionReason = some("interrupted before engine acceptance")
-    gs.staged.add(StagedDecision(id: $(gs.decisionRefs.len + 1), seat: $seat,
-      observation: observation, attempts: attempts, selected: none(string),
+    let id = $(gs.decisionRefs.len + 1)
+    let visible = if gs.issuedWindows.hasKey(id): gs.issuedWindows[id] else: observation
+    gs.staged.add(StagedDecision(id: id, seat: $seat,
+      observation: visible, attempts: attempts, selected: none(string),
       action: newJNull(), status: asMissing))
 
 proc broadcast() =
@@ -574,6 +578,8 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
             else:
               received.rejectionReason = some("native evidence arrived after engine decision")
             attempts = @[received]
+        for attempt in attempts.mitems:
+          attempt.policy = state.config.players[parseInt(staged.seat)].name
         trajectory.recordDecision(staged.id, staged.seat, staged.observation,
           attempts, staged.selected, staged.action, staged.status, fallbackOrigin = staged.fallback)
     if interruptionRequested() or status == esFailed or unresolved:
@@ -966,6 +972,9 @@ proc websocketHandler(
             if state.pendingAttempts.len == 0 or state.pendingAttempts[^1].rejectionReason.isSome:
               var rejected = newDecisionAttempt("external-rejected-" & $state.pendingRejected.len,
                 "external", aoUnknown)
+              let issued = state.issuedWindows[state.awaitingId]["input"]
+              rejected.prompt = %*[{"role": "system", "content": issued["system"]},
+                {"role": "user", "content": issued["user"]}]
               rejected.response = %message.data
               rejected.rejectionReason = some(error.msg)
               state.pendingAttempts.add(rejected)

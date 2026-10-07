@@ -17,7 +17,7 @@ operator prompt, model identities, tokenizer, and decoding settings. Move collec
 when qualifying another release. Base and trained players share the same settings and rotate through all five seats;
 freeze the remaining four opponents. Different opponent panels are separate cohorts in this same environment.
 
-The [Metta five-seat guide](https://github.com/Metta-AI/metta/blob/main/packages/metta-posttrain/docs/slime-parley-hosted-sft.md)
+The [Metta five-seat guide](https://github.com/Metta-AI/metta/blob/main/packages/metta-training/docs/parley.md)
 owns Qwen3.5-4B training commands, upstream SLIME pins, review, dataset splits, and promotion gates.
 Bound complete-game count and optimizer updates instead of changing game rules. Report invalid responses, rejected
 attempts, fallback origins, terminal scores, latency, tokens, and cost alongside paired game-family uncertainty.
@@ -77,11 +77,14 @@ An unsolicited final evidence delivery uses a null `stop_id` and cannot acknowle
 All registered external seats must acknowledge engine-issued stops, including seats that disconnect. Missing or late
 acknowledgements seal a private truncated episode and prevent public results or replay publication. Earlier unsolicited
 stop evidence can preserve received bytes but cannot acknowledge a later engine stop.
+The private decision observation retains the exact issued external window, including its rendered input and legal
+action allowances, even when every proposal is rejected. The top-level prompt identifies only the selected attempt
+and can be null on fallback. Final attempt policy attribution comes from the authenticated seat roster.
 Unattested external frames have unknown origin and do not become model labels.
 Two invalid prompt responses invoke the scripted fallback. Preserve failed
 attempts for audits; train only on accepted model or approved teacher targets.
 
-Use Metta’s `metta-posttrain export-parley-native` command to convert reviewed complete five-seat episodes into SLIME
+Use Metta’s `metta-posttrain prepare-data` command to convert reviewed complete five-seat episodes into SLIME
 inputs. Supply the published manifest, private trajectories containing the original token-free input and selected seed,
 independent provider archive, and content-bound decision approvals. No separate runtime configuration or authentication
 tokens are required. The converter checks ordinary settings, episode/source pins, selected

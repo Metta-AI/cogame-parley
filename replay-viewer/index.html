@@ -8,8 +8,7 @@
 </head>
 <body class="replay-viewer">
 <div id="layout">
-  <div id="stage">
-    <div id="topband">
+  <div id="topband">
       <div id="wordmark">PAR<span>LEY</span></div>
       <div id="clock">ROUND 1</div>
       <div id="topright">
@@ -17,6 +16,7 @@
         <button id="feedtoggle">CHAT »</button>
       </div>
     </div>
+  <div id="stage">
     <div id="board-wrap">
       <canvas id="table" width="960" height="600" role="img" aria-label="Parley table: cogs, health, and friend and enemy cards"></canvas>
       <div class="table-legend"><span>♥ Friend</span><span>× Enemy</span><span>Hover a cog to see its cards</span></div>
@@ -43,7 +43,7 @@
       <p class="score-key">Survive +3 <span>Friend +1</span> Enemy +1</p>
     </section>
     <div class="chat-header">
-      <div><h1>Table chat</h1><p>Promises, deals, and double-crosses</p></div>
+      <h1>Table chat</h1>
       <button id="chat-follow" class="tbtn" type="button">Following</button>
     </div>
     <div id="feed" role="region" aria-label="Replay conversation" tabindex="0"></div>

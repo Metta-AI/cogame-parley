@@ -341,26 +341,6 @@
   },
   "player": [
     {
-      "id": "parley-player",
-      "name": "Parley Prompt Player",
-      "type": "player",
-      "description": "The reference Parley policy: delivers its PLAYER_PROMPT (or a default scheming-table-talk personality) to the game and spectates until the final frame. Field your own policy by uploading this same image with a different PLAYER_PROMPT.",
-      "image": "{{PARLEY_IMAGE}}",
-      "run": [
-        "/bin/parley-player"
-      ],
-      "resources": {
-        "requests": {
-          "cpu": "100m",
-          "memory": "64Mi"
-        },
-        "limits": {
-          "cpu": "1"
-        }
-      },
-      "source_url": "https://github.com/Metta-AI/cogame-parley/tree/main"
-    },
-    {
       "id": "parley-scripted",
       "name": "Parley Scripted Baseline",
       "type": "player",

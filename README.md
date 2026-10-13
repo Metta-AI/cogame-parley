@@ -66,9 +66,11 @@ Every table gets the configured passes (default three) and reactions (default
 two in `table5`). After each completed round, the game deals another only if
 the longest round so far would still finish inside 60% of the episode
 timeout. Prompts say that running out of time can end the match early. A
-round is never truncated. If the play budget still expires mid-round, the
-scripted fallback finishes the round without further model/player waits,
-reactions, or spectator pacing. Results and replay report completed rounds.
+policy failure terminates the episode: rejected actions, disconnects, timeouts,
+missing inference, and exhausted budgets never select substitute actions.
+Private failure evidence is saved with no selected or executed action for the
+failed decision. The process exits nonzero and publishes no results or replay.
+Explicitly selected scripted baselines remain valid policies.
 
 Seats use **anonymous cog names** (Sprocket, Gizmo, …). Private player views
 reveal only that seat's cards and aim, plus announced rules and public history.
@@ -88,7 +90,7 @@ pass, reaction, and side actions. The game validates each action and owns result
 
 - `src/parley.nim` — entrypoint (Coworld runtime contract, live vs replay mode)
 - `src/parley/sim.nim` — pure rules; shared by server, tests, and wasm viewer
-- `src/parley/llm.nim` — Sonnet client + scripted fallback
+- `src/parley/llm.nim` — native model client + explicit scripted baselines
 - `src/parley/server.nim` — mummy HTTP/WS server (player, global, replay)
 - `src/parley_player.nim` — registers prompt or scripted policies
 - `client/` — shared canvas renderer + global/player/replay pages

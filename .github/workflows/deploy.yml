@@ -9,8 +9,7 @@
 # Toolchain: Docker only. tools/build_replay_viewer.sh (the `coworld build` replay-viewer hook)
 # builds the wasm viewer inside Dockerfile.replay-viewer (emscripten/emsdk:4.0.15) whenever emcc or
 # nim is missing, which is the case on ubuntu-latest, so no Nim/emsdk setup is needed here.
-# Certification runs without LLM credentials: src/parley/llm.nim falls back to the scripted
-# baseline so offline certification completes.
+# Certification runs without LLM credentials using explicitly selected scripted policies.
 name: Deploy Coworld
 
 on:

@@ -1,4 +1,4 @@
-"""Real five-seat game: a rejected action closes its decision without a timeout."""
+"""Real five-seat policies fail without executing replacement actions."""
 
 import asyncio
 import json
@@ -13,7 +13,7 @@ import websockets
 
 async def main():
     binary, output = sys.argv[1:3]
-    duplicate = sys.argv[3:] == ["duplicate"]
+    mode = sys.argv[3] if len(sys.argv) > 3 else "rejected"
     root = Path(output).resolve()
     root.mkdir(mode=0o700)
     with socket.socket() as listener:
@@ -28,6 +28,11 @@ async def main():
     (root / "config.json").write_text(json.dumps(config))
     env = dict(os.environ)
     env.pop("COWORLD_LLM_ENDPOINT", None)
+    if mode == "missing-endpoint":
+        env.update(
+            ANTHROPIC_API_KEY="retired-test-key",
+            AWS_ENDPOINT_URL_BEDROCK_RUNTIME="http://127.0.0.1:1",
+        )
     env.update(
         COGAME_HOST="127.0.0.1",
         COGAME_PORT=str(port),
@@ -38,6 +43,8 @@ async def main():
     )
     rejected = []
     following = []
+    stop_reasons = []
+    rejection_to_stop = []
     players = []
     with (root / "game.log").open("w") as log:
         process = await asyncio.create_subprocess_exec(
@@ -56,9 +63,24 @@ async def main():
                 ) as connection:
                     await connection.send(
                         json.dumps(
-                            {"type": "register", "control": "external", "prompt": ""}
+                            (
+                                {
+                                    "type": "prompt",
+                                    "prompt": "",
+                                    "scripted": mode == "baseline",
+                                }
+                                if mode in {"missing-endpoint", "baseline"}
+                                else {
+                                    "type": "register",
+                                    "control": "external",
+                                    "prompt": "",
+                                }
+                            )
                         )
                     )
+                    if mode in {"missing-endpoint", "baseline"}:
+                        await process.wait()
+                        return
                     async for raw in connection:
                         packet = json.loads(raw)
                         if packet["type"] == "decision":
@@ -70,25 +92,47 @@ async def main():
                             action = next(
                                 (a for a in actions if a["shoot"] != "pass"), {}
                             )
-                            invalid = not rejected and observation["phase"] == "shot"
+                            invalid = not rejected and observation["phase"] == (
+                                "reaction" if mode == "reaction" else "shot"
+                            )
                             if invalid:
                                 rejected.append((latest, time.monotonic()))
-                                action = {"shoot": f"diagnostic-{seat}", "aim": "head"}
+                                if mode == "disconnect":
+                                    await connection.close()
+                                    return
+                                if mode == "timeout":
+                                    continue
+                                action = (
+                                    {"give": "not-a-cog"}
+                                    if mode == "reaction"
+                                    else {"shoot": "not-a-cog", "aim": "head"}
+                                )
+                            if invalid and mode == "fallback":
+                                action = next(
+                                    a for a in actions if a["shoot"] != "pass"
+                                )
                             frame = {
                                 "type": "action",
                                 "decision_id": latest,
-                                "source": "scripted",
+                                "source": "fallback"
+                                if mode == "fallback"
+                                else "scripted",
                                 "training_attempt": None,
                                 "action": action,
                             }
                             await connection.send(json.dumps(frame))
-                            if invalid and duplicate:
+                            if invalid and mode == "duplicate":
                                 # A duplicate proposal cannot replace the terminal rejection.
                                 frame["action"] = next(
                                     a for a in actions if a["shoot"] != "pass"
                                 )
                                 await connection.send(json.dumps(frame))
                         elif packet["type"] == "stop":
+                            stop_reasons.append(packet["reason"])
+                            if rejected:
+                                rejection_to_stop.append(
+                                    time.monotonic() - rejected[0][1]
+                                )
                             await connection.send(
                                 json.dumps(
                                     {
@@ -106,35 +150,58 @@ async def main():
             players = [asyncio.create_task(play(seat)) for seat in range(5)]
             async with asyncio.timeout(1300):
                 await asyncio.gather(*players)
-                assert await process.wait() == 0
+                status = await process.wait()
+                assert (status == 0) == (mode == "baseline")
             events = [
                 json.loads(line)
                 for line in (root / "trajectory.jsonl").read_text().splitlines()
             ]
             decisions = [event for event in events if event["event_type"] == "decision"]
-            first = decisions[0]
+            episode = events[-1]
             report = {
-                "rejection_to_next_decision_seconds": following[0],
+                "mode": mode,
+                "exit_code": status,
                 "decisions": len(decisions),
-                "first_decision": first,
-                "episode": events[-1],
+                "post_failure_decisions": len(following),
+                "episode": episode,
             }
             (root / "report.json").write_text(json.dumps(report, indent=2))
-            print(
-                json.dumps(
-                    {
-                        "rejection_to_next_decision_seconds": following[0],
-                        "decisions": len(decisions),
-                    }
+            if mode == "baseline":
+                assert episode["status"] == "completed"
+                assert (root / "results.json").exists() and (
+                    root / "replay.json"
+                ).exists()
+            else:
+                assert episode["status"] == "failed"
+                assert episode["participant_outcomes"] is None
+                assert episode["outcome"]["termination"] == "policy_failure"
+                assert (
+                    not (root / "results.json").exists()
+                    and not (root / "replay.json").exists()
                 )
-            )
-            assert following[0] < 5, "rejected action waited for the 45-second deadline"
-            assert first["fallback_origin"] == "scripted_after_rejected_action"
-            assert first["action_status"] == "fallback"
-            assert first["selected_attempt_id"] is None
-            assert any(attempt["rejection_reason"] for attempt in first["attempts"])
-            assert events[-1]["status"] == "completed"
-            assert (root / "results.json").exists() and (root / "replay.json").exists()
+                assert not following, (
+                    "game issued another decision after policy failure"
+                )
+                failed = decisions[-1]
+                assert failed["action_status"] == "rejected"
+                assert failed["selected_attempt_id"] is None
+                assert failed["executed_action"] is None
+                assert failed["fallback_origin"] is None
+                assert all(not attempt["accepted"] for attempt in failed["attempts"])
+                if mode in {"rejected", "duplicate", "reaction", "fallback"}:
+                    assert min(rejection_to_stop) < 5, (
+                        "policy rejection waited for its decision timeout"
+                    )
+                    assert len(failed["attempts"]) == 1
+                    assert failed["attempts"][0]["rejection_reason"]
+                expected = {
+                    "missing-endpoint": "missing_native_endpoint",
+                    "disconnect": "external_disconnect",
+                    "timeout": "external_timeout",
+                }.get(mode, "rejected_action")
+                assert episode["outcome"]["policy_failure"]["reason"] == expected
+                assert all(reason == "terminal" for reason in stop_reasons)
+            print(json.dumps({k: v for k, v in report.items() if k != "episode"}))
         finally:
             for player in players:
                 player.cancel()

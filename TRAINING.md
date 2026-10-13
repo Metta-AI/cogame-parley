@@ -47,7 +47,7 @@ The engine writes canonical private decision JSONL to
 `LLM_REQUEST_METADATA.episode_request_id`; local runs generate an explicitly local identity. The artifact contains
 seat-private observations, every native attempt, exact prompts and requests,
 raw responses, platform response call IDs, parsed and executed actions,
-rejections, scripted fallbacks, and the completed or truncated terminal outcome.
+rejections, explicit scripted policies, and the completed, truncated, or failed terminal outcome.
 The private outcome uses `parley.native-outcome.v1`: `results` contains the unchanged game results,
 `input_config` preserves the original game input with seat authentication tokens removed, and
 `selected_seed` records the actual seed selected before rule sampling. An unpinned input keeps its seed absent;
@@ -75,14 +75,19 @@ Wait for `evidence_received` with the same `decision_id` and `stop_id` before cl
 cleanup deadline. This confirms private fact retention, not stop credit or model receipt authority.
 An unsolicited final evidence delivery uses a null `stop_id` and cannot acknowledge an engine-issued stop.
 All registered external seats must acknowledge engine-issued stops, including seats that disconnect. Missing or late
-acknowledgements seal a private truncated episode and prevent public results or replay publication. Earlier unsolicited
+acknowledgements seal a private incomplete episode and prevent public results or replay publication. Earlier unsolicited
 stop evidence can preserve received bytes but cannot acknowledge a later engine stop.
 The private decision observation retains the exact issued external window, including its rendered input and legal
 action allowances, even when every proposal is rejected. The top-level prompt identifies only the selected attempt
-and can be null on fallback. Final attempt policy attribution comes from the authenticated seat roster.
+and is null for failed decisions. Final attempt policy attribution comes from the authenticated seat roster.
 Unattested external frames have unknown origin and do not become model labels.
-Two invalid prompt responses invoke the scripted fallback. Preserve failed
-attempts for audits; train only on accepted model or approved teacher targets.
+A failed policy terminates the episode immediately: invalid actions, native inference failures,
+missing endpoints, timeouts, disconnects, and exhausted budgets never invoke a substitute policy.
+The failed decision retains its attempts with no selected or executed action; the private episode
+is marked failed, the process exits nonzero, and no public scores or replay are published.
+The terminal stop handshake still joins readers and retains their original evidence.
+Explicitly selected scripted baselines remain supported. Preserve failed attempts for audits;
+train only on accepted model or approved teacher targets.
 
 Use Metta’s `metta-posttrain prepare-data` command to convert reviewed complete five-seat episodes into SLIME
 inputs. Supply the published manifest, private trajectories containing the original token-free input and selected seed,

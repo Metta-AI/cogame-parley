@@ -139,3 +139,8 @@ register over the ordinary player socket and use its private observation.
 The canonical certification fixture seats four prompt players and the declared
 scripted baseline. Its image and manifest passed all ten local Coworld checks
 with `coworld[auth]==0.1.53`, including startup, results, and replay.
+
+The offline-certified bundle declares the explicit `parley-scripted` baseline.
+Prompt policies require a native inference endpoint and must be registered as
+custom players using `/bin/parley-player` and `PLAYER_PROMPT`; they are not
+advertised as an offline-certified bundled player.

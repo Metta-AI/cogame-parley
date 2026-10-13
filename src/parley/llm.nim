@@ -1,6 +1,5 @@
 ## Native-sidecar decisions through the same private seat prompts and parser.
-## Without COWORLD_LLM_ENDPOINT, offline diagnostics use unsupervised scripted
-## fallback; provider credentials never select a transport.
+## Model failures retain their evidence and never substitute a scripted action.
 
 import
   std/[base64, json, monotimes, options, os, random, sets, strutils, tables],
@@ -23,7 +22,18 @@ type
     aim*: ShotAim     ## head (lands 5 in 6) or hip (lands 1 in 3, gun still moves)
     extras*: Extras   ## whisper / reveal / give / pledge alongside the action
 
+  DecisionFailure* = enum
+    dfRejectedAction = "rejected_action"
+    dfExternalTimeout = "external_timeout"
+    dfExternalDisconnect = "external_disconnect"
+    dfMissingEndpoint = "missing_native_endpoint"
+    dfModelFailure = "model_failure"
+    dfBudgetExhausted = "budget_exhausted"
+    dfEpisodeDeadline = "episode_deadline"
+    dfMissingPolicy = "missing_policy"
+
   DecisionResult* = object
+    failure*: Option[DecisionFailure]
     decision*: Decision
     origin*: string
     input*: JsonNode
@@ -60,7 +70,7 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     echo "parley llm: hosted sidecar transport, model ", result.model
     return
   result.disabled = true
-  echo "parley llm: no native endpoint; using unsupervised scripted fallback"
+  echo "parley llm: no native endpoint; model policies cannot run"
 
 const CannedTaunts = [
   "Nothing personal.",
@@ -648,63 +658,40 @@ proc decide*(
   deadline: MonoTime,
   header = ""
 ): DecisionResult =
-  ## One decision for one seat. Never raises: any failure falls back to the
-  ## scripted baseline so the game always advances.
+  ## Keep a failed policy's original evidence; no retries or substitute actions.
+  result.input = newJNull()
+  result.response = newJNull()
   if client.disabled or client.budgetExhausted[seat]:
-    result.decision =
-      if wantShot: client.scriptedShot(sim, seat)
-      else: client.scriptedReaction(sim, seat)
-    result.origin =
-      if client.budgetExhausted[seat]: "scripted_after_budget_exhausted"
-      else: "scripted_no_native_endpoint"
-    result.input = newJNull()
-    result.response = newJNull()
+    result.failure = some(if client.budgetExhausted[seat]: dfBudgetExhausted else: dfMissingEndpoint)
+    return
+  if interruptionRequested() or getMonoTime() >= deadline:
+    result.failure = some(dfEpisodeDeadline)
     return
 
   let system = systemPrompt(sim, seat)
-  var rejection = ""
-  for attempt in 0 .. 1:
+  let user = userPrompt(sim, seat, prompt, wantShot, header)
+  var raw = ""
+  var evidence = newDecisionAttempt("attempt-0", client.model, aoModel)
+  evidence.prompt = %*[{"role": "system", "content": system},
+    {"role": "user", "content": user}]
+  result.input = %*{"system": system, "user": user}
+  try:
+    raw = client.completeText(seat, system, user, evidence, deadline)
+    let payload = parseJsonObject(raw)
+    result.decision = parseDecision(sim, seat, payload, wantShot)
+    evidence.response = %raw
+    evidence.parsedAction = decisionAction(sim, result.decision, wantShot)
     if interruptionRequested() or getMonoTime() >= deadline:
-      break
-    var user = userPrompt(sim, seat, prompt, wantShot, header)
-    if attempt > 0:
-      user.add("\nYour previous reply was invalid (" & rejection & "). Respond " &
-        "with ONLY the requested JSON object, a legal target, and only side " &
-        "actions you can still take.")
-    var raw = ""
-    var evidence = newDecisionAttempt("attempt-" & $attempt, client.model, aoModel)
-    evidence.prompt = %*[{"role": "system", "content": system},
-      {"role": "user", "content": user}]
-    try:
-      raw = client.completeText(seat, system, user, evidence, deadline)
-      let payload = parseJsonObject(raw)
-      result.decision = parseDecision(sim, seat, payload, wantShot)
-      evidence.response = %raw
-      evidence.parsedAction = decisionAction(sim, result.decision, wantShot)
-      if interruptionRequested() or getMonoTime() >= deadline:
-        raise newException(ParleyError, "native response arrived after decision deadline")
-      evidence.accepted = true
-      result.nativeAttempts.add(evidence)
-      result.origin = "model"
-      result.input = %*{"system": system, "user": user}
-      result.response = %*{"raw": raw, "parsed": payload}
-      return
-    except CatchableError as error:
-      evidence.response = %raw
-      evidence.rejectionReason = some(error.msg)
-      rejection = error.msg
-      result.nativeAttempts.add(evidence)
-      result.attempts.add(%*{"system": system, "user": user,
-        "raw": raw, "error": error.msg})
-      echo "parley llm: seat ", seat, " attempt ", attempt, " failed"
-      if client.disabled or client.budgetExhausted[seat]:
-        break
-  echo "parley llm: seat ", seat, " falling back to scripted decision"
-  result.decision =
-    if wantShot: client.scriptedShot(sim, seat)
-    else: client.scriptedReaction(sim, seat)
-  result.origin =
-    if client.budgetExhausted[seat]: "scripted_after_budget_exhausted"
-    else: "scripted_after_model_failure"
-  result.input = newJNull()
-  result.response = newJNull()
+      raise newException(ParleyError, "native response arrived after decision deadline")
+    evidence.accepted = true
+    result.nativeAttempts.add(evidence)
+    result.origin = "model"
+    result.response = %*{"raw": raw, "parsed": payload}
+  except CatchableError as error:
+    evidence.response = %raw
+    evidence.rejectionReason = some(error.msg)
+    result.nativeAttempts.add(evidence)
+    result.attempts.add(%*{"system": system, "user": user,
+      "raw": raw, "error": error.msg})
+    result.failure = some(if client.budgetExhausted[seat]: dfBudgetExhausted else: dfModelFailure)
+    echo "parley llm: seat ", seat, " policy failed"

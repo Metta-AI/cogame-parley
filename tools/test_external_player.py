@@ -37,12 +37,17 @@ async def main():
                 "temperature",
                 "top_p",
                 "max_tokens",
+                "reasoning",
+                "chat_template_kwargs",
+                "response_format",
             }
             user = request["messages"][1]["content"]
             target = re.search(r'<one of "([^"]+)"', user)
             action = {"say": "ordinary five-seat CPU diagnostic"}
             if target:
                 action.update(shoot=target[1], aim="head")
+            if mode == "rejected":
+                action = {"shoot": "not-a-cog", "aim": "head"}
             response = {
                 "model": request["model"],
                 "choices": [
@@ -190,7 +195,8 @@ async def main():
             assert not any(isinstance(result, BaseException) for result in results), (
                 results
             )
-            assert await process.wait() == 0
+            status = await process.wait()
+            assert (status != 0) if mode == "rejected" else (status == 0)
         if handlers:
             await asyncio.wait_for(asyncio.gather(*handlers), 2)
         records = [
@@ -199,6 +205,49 @@ async def main():
         ]
         episode = records[-1]
         decisions = records[:-1]
+        if mode == "rejected":
+            assert (
+                episode["status"] == "failed"
+                and episode["participant_outcomes"] is None
+            )
+            assert len(decisions) == len(calls) == 1
+            decision = decisions[0]
+            assert decision["action_status"] == "rejected"
+            assert (
+                decision["selected_attempt_id"] is None
+                and decision["executed_action"] is None
+            )
+            assert decision["fallback_origin"] is None
+            assert len(decision["attempts"]) == 1
+            attempt = decision["attempts"][0]
+            assert attempt["origin"] == "model" and not attempt["accepted"]
+            assert attempt["rejection_reason"]
+            assert attempt["raw_response"] == calls[0]["raw_response"]
+            assert attempt["request"] == calls[0]["request"]
+            assert attempt["response_complete"] and attempt["response_reader_joined"]
+            assert set(episode["outcome"]["player_cleanup"].values()) == {
+                "acknowledged"
+            }
+            assert (
+                not (root / "results.json").exists()
+                and not (root / "replay.json").exists()
+            )
+            assert all(
+                player.worker is None or player.worker.done()
+                for player in owned_players
+            )
+            proof = {
+                "mode": mode,
+                "status": episode["status"],
+                "decisions": 1,
+                "original_native_response_retained": True,
+                "all_readers_joined": True,
+                "no_executed_action": True,
+                "exit_code": status,
+            }
+            (root / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
+            print(json.dumps(proof))
+            return
         if mode.startswith("signal-"):
             assert (
                 episode["status"] == "truncated"

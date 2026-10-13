@@ -84,16 +84,14 @@ for mode in ["accepted", "retry", "fallback", "registration", "seat-budget", "ra
                 "usage": {"input_tokens": 100, "output_tokens": 20},
             }
             category = ""
-            if mode == "seat-budget" and (
-                slot == 2 or slot == 1 and seat_calls[slot] == 1
-            ):
-                category = "spend_limit" if slot == 2 else "provider_rate_limit"
+            if mode == "seat-budget":
+                category = "spend_limit"
                 response = {
                     "type": "error",
                     "error": {"type": "rate_limit_error", "message": "fixture"},
                     "softmax_error": {
                         "category": category,
-                        "retryable": slot != 2,
+                        "retryable": False,
                         "call_id": call_id,
                     },
                 }
@@ -113,7 +111,7 @@ for mode in ["accepted", "retry", "fallback", "registration", "seat-budget", "ra
             if category:
                 self.send_header("X-Softmax-Llm-Error-Category", category)
                 self.send_header(
-                    "X-Softmax-Llm-Retryable", "false" if slot == 2 else "true"
+                    "X-Softmax-Llm-Retryable", "false"
                 )
             self.send_header("Content-Type", "application/json")
             self.send_header("request-id", "fixture-provider-" + call_id)
@@ -215,7 +213,7 @@ for mode in ["accepted", "retry", "fallback", "registration", "seat-budget", "ra
                     if process.poll() is None:
                         process.send_signal(requested)
                 status = process.wait(timeout=45)
-                assert (status != 0 if mode in {"runtime-failure", "artifact-upload-failure"} else status == 0), (folder / "game.log").read_text()
+                assert (status != 0 if mode in {"runtime-failure", "artifact-upload-failure", "retry", "fallback", "seat-budget"} else status == 0), (folder / "game.log").read_text()
             finally:
                 for seat in sockets:
                     seat.close()
@@ -233,6 +231,29 @@ for mode in ["accepted", "retry", "fallback", "registration", "seat-budget", "ra
         for line in (folder / "trajectory.jsonl").read_text().splitlines()
     ]
     decisions = events[:-1]
+    if mode in {"retry", "fallback", "seat-budget"}:
+        assert events[-1]["status"] == "failed"
+        assert events[-1]["participant_outcomes"] is None
+        assert events[-1]["outcome"]["termination"] == "policy_failure"
+        assert not (folder / "results.json").exists() and not (folder / "replay.json").exists()
+        if mode == "seat-budget":
+            assert events[-1]["outcome"]["policy_failure"]["reason"] == "budget_exhausted"
+        failed = decisions[-1]
+        assert failed["action_status"] == "rejected"
+        assert failed["executed_action"] is None and failed["selected_attempt_id"] is None
+        assert failed["fallback_origin"] is None
+        assert len(failed["attempts"]) == 1
+        attempt = failed["attempts"][0]
+        assert not attempt["accepted"] and attempt["rejection_reason"]
+        archive = next(r for r in requests if r["platform_call_id"] == attempt["platform_call_id"])
+        assert attempt["request"] == archive["caller_request"]
+        assert attempt["raw_response"] == archive["provider_response"]
+        assert base64.b64decode(attempt["response_body_b64"], validate=True).decode() == archive["provider_response"]
+        assert attempt["response_complete"] and attempt["response_reader_joined"]
+        reports.append({"mode": mode, "complete_episodes": 0, "decisions": len(decisions),
+                        "native_call_joins": len(requests), "source_revision": revision,
+                        "failure": events[-1]["outcome"]["policy_failure"]})
+        continue
     if mode == "artifact-upload-failure":
         assert events[-1]["status"] == "completed"
         assert not (folder / "results.json").exists() and not (folder / "replay.json").exists()
@@ -325,22 +346,6 @@ for mode in ["accepted", "retry", "fallback", "registration", "seat-budget", "ra
                 selected["accepted"]
                 and selected["parsed_action"] == decision["executed_action"]
             )
-        else:
-            assert (
-                mode in ("fallback", "seat-budget")
-                and decision["selected_attempt_id"] is None
-            )
-            if mode == "seat-budget":
-                assert decision["seat"] == "2"
-                assert decision["fallback_origin"] == "scripted_after_budget_exhausted"
-    if mode == "seat-budget":
-        assert seat_calls[2] == 1, seat_calls
-        assert seat_calls[1] > 1, seat_calls
-        assert all(
-            d["action_status"] == "accepted" for d in decisions if d["seat"] != "2"
-        )
-        assert sum(len(d["attempts"]) for d in decisions if d["seat"] == "2") == 1
-        assert any(len(d["attempts"]) == 2 for d in decisions if d["seat"] == "1")
     assert "PRIVATE OPERATOR SENTINEL" not in (folder / "replay.json").read_text()
     assert "PRIVATE OPERATOR SENTINEL" not in (folder / "game.log").read_text()
     assert "PRIVATE OPERATOR SENTINEL" in (folder / "trajectory.jsonl").read_text()

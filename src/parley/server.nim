@@ -54,7 +54,12 @@ type
     selected: Option[string]
     status: ActionStatus
     fallback: Option[string]
+  PolicyFailure = object
+    seat: int
+    decisionId: string
+    reason: DecisionFailure
   GameState = object
+    policyFailure: Option[PolicyFailure]
     config: GameConfig
     inputConfig: JsonNode
     match: Match
@@ -218,14 +223,10 @@ proc registerExternal(gs: var GameState, slot: int, prompt: string) =
 proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
     wantShot: bool, header: string, scripted: bool, baseline: Baseline,
     playDeadline: MonoTime): DecisionResult =
-  ## Finish the current round without more model/player waits after the play budget.
+  result.input = newJNull()
+  result.response = newJNull()
   if getMonoTime() >= playDeadline:
-    result.decision =
-      if wantShot: client.scriptedShot(sim, seat)
-      else: client.scriptedReaction(sim, seat)
-    result.origin = "scripted_after_deadline"
-    result.input = newJNull()
-    result.response = newJNull()
+    result.failure = some(dfEpisodeDeadline)
     return
   let decisionDeadline = min(playDeadline, getMonoTime() + initDuration(seconds = state.config.llmTimeoutSeconds))
   var external = false
@@ -253,12 +254,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
           "cleanup_budget_ms": 5000}}))
   if not external:
     if registeredExternal:
-      result.decision =
-        if wantShot: client.scriptedShot(sim, seat)
-        else: client.scriptedReaction(sim, seat)
-      result.origin = "scripted_after_external_disconnect"
-      result.input = newJNull()
-      result.response = newJNull()
+      result.failure = some(dfExternalDisconnect)
       return
     if scripted:
       result.decision =
@@ -272,7 +268,8 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
   while getMonoTime() < decisionDeadline and not interruptionRequested():
     var ready = false
     withLock stateLock:
-      ready = state.hasPendingDecision
+      ready = state.hasPendingDecision or state.pendingRejected.len > 0 or
+        not state.playerSockets.hasKey(seat)
     if ready:
       break
     sleep(20)
@@ -280,18 +277,18 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
     state.awaitingSeat = -1
     if state.hasPendingDecision and state.pendingReceived < decisionDeadline and not interruptionRequested():
       return DecisionResult(decision: state.pendingDecision,
-        origin: (if state.pendingSource == "fallback": "scripted_external_fallback" else: "external"), input: %*{
+        origin: "external", input: %*{
           "packet": observation, "wire": $observation},
         response: state.pendingRawAction,
         attempts: state.pendingRejected, nativeAttempts: state.pendingAttempts)
-  result.decision =
-    if wantShot: client.scriptedShot(sim, seat)
-    else: client.scriptedReaction(sim, seat)
-  result.origin = "scripted_after_external_timeout"
+    result.failure = some(
+      if state.pendingRejected.len > 0: dfRejectedAction
+      elif not state.playerSockets.hasKey(seat): dfExternalDisconnect
+      else: dfExternalTimeout)
+    result.attempts = state.pendingRejected
+    result.nativeAttempts = state.pendingAttempts
   result.input = %*{"packet": observation, "wire": $observation}
   result.response = newJNull()
-  result.attempts = state.pendingRejected
-  result.nativeAttempts = state.pendingAttempts
 
 proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
     evidence: JsonNode, completed: bool) =
@@ -341,7 +338,8 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
     raise newException(ParleyError, "completed native evidence is immutable")
   gs.startedAttempts[id] = copy(evidence)
   if completed: gs.completedAttempts[id] = copy(evidence)
-  if gs.awaitingSeat == seat and gs.awaitingId == id:
+  if gs.awaitingSeat == seat and gs.awaitingId == id and
+      not gs.hasPendingDecision and gs.pendingRejected.len == 0:
     gs.pendingAttempts = @[attempt]
 
 proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
@@ -357,6 +355,8 @@ proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
     gs.retainExternalAttempt(seat, id, evidence, completed = true)
   elif source == "llm":
     raise newException(ParleyError, "model action requires native attempt evidence")
+  if source == "fallback":
+    raise newException(ParleyError, "external policy supplied a fallback instead of an action")
   let proposal = parseDecision(gs.match.sim, seat, payload["action"], gs.awaitingShot)
   let canonical = decisionAction(gs.match.sim, proposal, gs.awaitingShot)
   if source == "llm":
@@ -423,20 +423,23 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
       fallback: (if proposalAccepted: none(string) else: some(outcome.origin))))
 
 
-proc recordInterruptedDecision(gs: var GameState, seat: int,
+proc recordUnexecutedDecision(gs: var GameState, seat: int,
     outcome: DecisionResult, observation: JsonNode) =
-  ## No interrupted proposal is applied; keep every started/received attempt.
+  ## No failed or interrupted proposal is applied; retain every received attempt.
+  let id = $(gs.decisionRefs.len + 1)
+  if outcome.failure.isSome and not interruptionRequested():
+    gs.policyFailure = some(PolicyFailure(seat: seat, decisionId: id, reason: outcome.failure.get()))
   if gs.trajectory.isSome:
     var attempts = outcome.nativeAttempts
     for attempt in attempts.mitems:
       attempt.accepted = false
       if attempt.rejectionReason.isNone:
-        attempt.rejectionReason = some("interrupted before engine acceptance")
-    let id = $(gs.decisionRefs.len + 1)
+        attempt.rejectionReason = some(if outcome.failure.isSome: $outcome.failure.get()
+          else: "interrupted before engine acceptance")
     let visible = if gs.issuedWindows.hasKey(id): gs.issuedWindows[id] else: observation
     gs.staged.add(StagedDecision(id: id, seat: $seat,
       observation: visible, attempts: attempts, selected: none(string),
-      action: newJNull(), status: asMissing))
+      action: newJNull(), status: (if gs.policyFailure.isSome: asRejected else: asMissing)))
 
 proc broadcast() =
   withLock stateLock:
@@ -505,7 +508,8 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
       if state.playerSockets.hasKey(slot):
         let id = if state.latestDecisions.hasKey(slot): %state.latestDecisions[slot] else: newJNull()
         state.playerSockets[slot].send($(%*{"type": "stop", "stop_id": state.stopId, "decision_id": id,
-          "reason": (if interruptionRequested(): "interrupted" elif status == esCompleted: "terminal" else: "episode_deadline"),
+          "reason": (if interruptionRequested(): "interrupted"
+            elif status == esCompleted or state.policyFailure.isSome: "terminal" else: "episode_deadline"),
           "cleanup_budget_ms": max(0, (state.stopAckDeadline - getMonoTime()).inMilliseconds)}))
   let ackDeadline = cleanupDeadline - initDuration(seconds = 1)
   while getMonoTime() < ackDeadline:
@@ -583,9 +587,11 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
         trajectory.recordDecision(staged.id, staged.seat, staged.observation,
           attempts, staged.selected, staged.action, staged.status, fallbackOrigin = staged.fallback)
     if interruptionRequested() or status == esFailed or unresolved:
-      trajectory.finish((if interruptionRequested() or unresolved: esTruncated else: esFailed),
+      trajectory.finish((if interruptionRequested(): esTruncated elif status == esFailed: esFailed else: esTruncated),
         %*{"protocol": "parley.native-outcome.v1", "player_cleanup": cleanup,
-          "termination": (if interruptionRequested(): "interrupted" elif unresolved: "unresolved-player-cleanup" else: "runtime-failure"),
+          "termination": (if interruptionRequested(): "interrupted" elif state.policyFailure.isSome: "policy_failure"
+            elif unresolved: "unresolved-player-cleanup" else: "runtime-failure"),
+          "policy_failure": (if state.policyFailure.isSome: %state.policyFailure.get() else: newJNull()),
           "partial_results": results, "input_config": state.inputConfig,
           "selected_seed": state.config.seed}, newJNull())
     else:
@@ -641,12 +647,18 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         config.tokens.len, " players connected"
       state.broadcastLocked()
 
+    withLock stateLock:
+      for seat, registered in state.promptSet:
+        if not registered:
+          state.policyFailure = some(PolicyFailure(seat: seat, reason: dfMissingPolicy))
+          return
+
     let client = newLlmClient(config)
 
     echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",
       (timeoutSeconds * PlayBudgetFraction).int, "s"
     ## Rounds are dealt only while the longest round so far would still fit,
-    ## so a match ends between rounds rather than finishing one on fallbacks.
+    ## so the episode budget normally ends play at a completed-round boundary.
     var roundStartedAt = getMonoTime()
     var longestRound = initDuration()
 
@@ -675,32 +687,22 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         wantShot = true, header = header, scripted = itScripted, baseline = itBaseline,
         playDeadline = playDeadline)
 
-      if interruptionRequested():
+      if interruptionRequested() or shot.failure.isSome:
         withLock stateLock:
-          state.recordInterruptedDecision(itSeat, shot, shotObservation)
+          state.recordUnexecutedDecision(itSeat, shot, shotObservation)
+        if shot.failure.isSome and not interruptionRequested(): return
         break
 
       var roundEnded = false
       withLock stateLock:
         let beforeEvent = state.match.allEvents().len
         state.match.sim.recordSay(itSeat, shot.decision.say)
-        var accepted = true
-        try:
-          state.match.sim.applyExtras(itSeat, shot.decision.extras)
-          if shot.decision.skip:
-            ## "It" holds fire: the gun stays put, the reaction chatter below
-            ## still runs, and the same seat decides again next loop.
-            state.match.sim.applySkip(itSeat)
-          else:
-            state.match.sim.applyShot(itSeat, shot.decision.target, shot.decision.aim)
-        except ParleyError as error:
-          echo "parley: llm action rejected (", error.msg, "); using fallback"
-          let fallback = client.scriptedShot(state.match.sim, itSeat)
-          state.match.sim.applyShot(itSeat, fallback.target, fallback.aim)
-          shot.decision = fallback
-          shot.origin = "scripted_after_rejected_action"
-          accepted = false
-        state.recordDecision(simCopy, itSeat, true, shot, beforeEvent, accepted, shotObservation)
+        state.match.sim.applyExtras(itSeat, shot.decision.extras)
+        if shot.decision.skip:
+          state.match.sim.applySkip(itSeat)
+        else:
+          state.match.sim.applyShot(itSeat, shot.decision.target, shot.decision.aim)
+        state.recordDecision(simCopy, itSeat, true, shot, beforeEvent, true, shotObservation)
         roundEnded = state.match.sim.done
         state.broadcastLocked()
 
@@ -747,9 +749,10 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           let reaction = client.decideSeat(reactionCopy, seat, reactionPrompt,
             wantShot = false, header = header, scripted = reactionScripted,
             baseline = reactionBaseline, playDeadline = playDeadline)
-          if interruptionRequested():
+          if interruptionRequested() or reaction.failure.isSome:
             withLock stateLock:
-              state.recordInterruptedDecision(seat, reaction, reactionObservation)
+              state.recordUnexecutedDecision(seat, reaction, reactionObservation)
+            if reaction.failure.isSome and not interruptionRequested(): return
             break
           withLock stateLock:
             let beforeEvent = state.match.allEvents().len
@@ -909,7 +912,8 @@ proc websocketHandler(
             if payload["type"].getStr() == "attempt_started":
               state.retainExternalAttempt(slot, id, payload["training_attempt"], completed = false)
             elif state.awaitingSeat == slot and state.awaitingId == id and
-                not state.hasPendingDecision and not interruptionRequested() and receivedAt < state.awaitingDeadline:
+                not state.hasPendingDecision and state.pendingRejected.len == 0 and
+                not interruptionRequested() and receivedAt < state.awaitingDeadline:
               state.acceptExternalAction(slot, payload, message.data, receivedAt)
             elif payload["training_attempt"].kind != JNull:
               state.retainExternalAttempt(slot, id, payload["training_attempt"], completed = true)
@@ -963,7 +967,7 @@ proc websocketHandler(
             (if scripted: ", scripted " & $baseline else: ""), ")"
       except CatchableError as error:
         withLock stateLock:
-          if state.awaitingSeat == slot and not state.hasPendingDecision and
+          if state.awaitingSeat == slot and not state.hasPendingDecision and state.pendingRejected.len == 0 and
               payload.kind == JObject and payload{"type"}.getStr() == "action" and
               payload{"decision_id"}.getStr() == state.awaitingId and
               receivedAt >= state.issuedAt[state.awaitingId] and receivedAt < state.awaitingDeadline:
@@ -1081,3 +1085,6 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
     requestNativeStop()
     if gameThreadStarted:
       joinThread(gameThread)
+
+  if state.policyFailure.isSome:
+    raise newException(ParleyError, "policy failed: " & $state.policyFailure.get().reason)

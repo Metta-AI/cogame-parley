@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+from websockets.sync.client import connect
+
 binary, output = sys.argv[1:3]
 root = Path(output)
 root.mkdir(mode=0o700)
@@ -27,7 +29,7 @@ for mode in sys.argv[3:] or ("missing-seats", "pacing-term", "pacing-int"):
         "players": [{"name": f"fixture-{i}"} for i in range(5)],
         "tokens": [str(i) for i in range(5)],
         "episodeTimeoutSeconds": 2 if mode == "missing-seats" else 60,
-        "player_connect_timeout_seconds": 30 if mode == "missing-seats" else 0.05,
+        "player_connect_timeout_seconds": 30 if mode == "missing-seats" else 3,
         "turnDelayMs": 30000,
     }
     config_path = folder / "config.json"
@@ -48,8 +50,20 @@ for mode in sys.argv[3:] or ("missing-seats", "pacing-term", "pacing-int"):
         process = subprocess.Popen(
             [binary], env=env, stdout=log, stderr=subprocess.STDOUT
         )
+        sockets = []
         try:
             if mode != "missing-seats":
+                while "serving on" not in log_path.read_text():
+                    assert process.poll() is None and time.monotonic() < started + 3
+                    time.sleep(0.01)
+                sockets = [
+                    connect(f"ws://127.0.0.1:{port}/player?slot={i}&token={i}")
+                    for i in range(5)
+                ]
+                for connection in sockets:
+                    connection.send(
+                        json.dumps({"type": "prompt", "prompt": "", "scripted": True})
+                    )
                 wait_deadline = time.monotonic() + 3
                 while "parley: starting" not in log_path.read_text():
                     assert process.poll() is None and time.monotonic() < wait_deadline
@@ -62,16 +76,21 @@ for mode in sys.argv[3:] or ("missing-seats", "pacing-term", "pacing-int"):
             deadline = started + 4
             while process.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.01)
-            assert process.poll() == 0, (
-                f"{mode}: process exceeded four-second original bound"
-            )
+            assert process.poll() is not None and (
+                process.returncode != 0
+                if mode == "missing-seats"
+                else process.returncode == 0
+            ), f"{mode}: process exceeded four-second original bound"
             elapsed = time.monotonic() - started
             events = [
                 json.loads(line)
                 for line in (folder / "trajectory.jsonl").read_text().splitlines()
             ]
             assert events[-1]["event_type"] == "episode"
-            if mode != "missing-seats":
+            if mode == "missing-seats":
+                assert events[-1]["status"] == "failed"
+                assert not (folder / "results.json").exists()
+            else:
                 assert elapsed < 1
                 assert events[-1]["status"] == "truncated"
                 assert (
@@ -89,6 +108,8 @@ for mode in sys.argv[3:] or ("missing-seats", "pacing-term", "pacing-int"):
                 )
             )
         finally:
+            for connection in sockets:
+                connection.close()
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=1)

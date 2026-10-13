@@ -272,7 +272,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
   while getMonoTime() < decisionDeadline and not interruptionRequested():
     var ready = false
     withLock stateLock:
-      ready = state.hasPendingDecision
+      ready = state.hasPendingDecision or state.pendingRejected.len > 0
     if ready:
       break
     sleep(20)
@@ -287,7 +287,9 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
   result.decision =
     if wantShot: client.scriptedShot(sim, seat)
     else: client.scriptedReaction(sim, seat)
-  result.origin = "scripted_after_external_timeout"
+  result.origin =
+    if state.pendingRejected.len > 0: "scripted_after_rejected_action"
+    else: "scripted_after_external_timeout"
   result.input = %*{"packet": observation, "wire": $observation}
   result.response = newJNull()
   result.attempts = state.pendingRejected
@@ -341,7 +343,8 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
     raise newException(ParleyError, "completed native evidence is immutable")
   gs.startedAttempts[id] = copy(evidence)
   if completed: gs.completedAttempts[id] = copy(evidence)
-  if gs.awaitingSeat == seat and gs.awaitingId == id:
+  if gs.awaitingSeat == seat and gs.awaitingId == id and
+      not gs.hasPendingDecision and gs.pendingRejected.len == 0:
     gs.pendingAttempts = @[attempt]
 
 proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
@@ -909,7 +912,8 @@ proc websocketHandler(
             if payload["type"].getStr() == "attempt_started":
               state.retainExternalAttempt(slot, id, payload["training_attempt"], completed = false)
             elif state.awaitingSeat == slot and state.awaitingId == id and
-                not state.hasPendingDecision and not interruptionRequested() and receivedAt < state.awaitingDeadline:
+                not state.hasPendingDecision and state.pendingRejected.len == 0 and
+                not interruptionRequested() and receivedAt < state.awaitingDeadline:
               state.acceptExternalAction(slot, payload, message.data, receivedAt)
             elif payload["training_attempt"].kind != JNull:
               state.retainExternalAttempt(slot, id, payload["training_attempt"], completed = true)
@@ -963,7 +967,7 @@ proc websocketHandler(
             (if scripted: ", scripted " & $baseline else: ""), ")"
       except CatchableError as error:
         withLock stateLock:
-          if state.awaitingSeat == slot and not state.hasPendingDecision and
+          if state.awaitingSeat == slot and not state.hasPendingDecision and state.pendingRejected.len == 0 and
               payload.kind == JObject and payload{"type"}.getStr() == "action" and
               payload{"decision_id"}.getStr() == state.awaitingId and
               receivedAt >= state.issuedAt[state.awaitingId] and receivedAt < state.awaitingDeadline:

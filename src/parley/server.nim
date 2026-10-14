@@ -83,7 +83,7 @@ type
     awaitingShot: bool
     pendingDecision: Decision
     pendingRawAction: JsonNode
-    pendingRejected: seq[JsonNode]
+    pendingRejected: bool
     pendingAttempts: seq[DecisionAttempt]
     hasPendingDecision: bool
     awaitingDeadline, pendingReceived, stopAckStart, stopAckDeadline: MonoTime
@@ -241,7 +241,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
       state.awaitingShot = wantShot
       state.awaitingDeadline = decisionDeadline
       state.hasPendingDecision = false
-      state.pendingRejected = @[]
+      state.pendingRejected = false
       state.pendingAttempts = @[]
       observation = state.externalObservation(sim, seat, prompt, wantShot, header)
       state.issuedWindows[state.awaitingId] = observation
@@ -268,7 +268,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
   while getMonoTime() < decisionDeadline and not interruptionRequested():
     var ready = false
     withLock stateLock:
-      ready = state.hasPendingDecision or state.pendingRejected.len > 0 or
+      ready = state.hasPendingDecision or state.pendingRejected or
         not state.playerSockets.hasKey(seat)
     if ready:
       break
@@ -280,12 +280,11 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
         origin: "external", input: %*{
           "packet": observation, "wire": $observation},
         response: state.pendingRawAction,
-        attempts: state.pendingRejected, nativeAttempts: state.pendingAttempts)
+        nativeAttempts: state.pendingAttempts)
     result.failure = some(
-      if state.pendingRejected.len > 0: dfRejectedAction
+      if state.pendingRejected: dfRejectedAction
       elif not state.playerSockets.hasKey(seat): dfExternalDisconnect
       else: dfExternalTimeout)
-    result.attempts = state.pendingRejected
     result.nativeAttempts = state.pendingAttempts
   result.input = %*{"packet": observation, "wire": $observation}
   result.response = newJNull()
@@ -339,7 +338,7 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
   gs.startedAttempts[id] = copy(evidence)
   if completed: gs.completedAttempts[id] = copy(evidence)
   if gs.awaitingSeat == seat and gs.awaitingId == id and
-      not gs.hasPendingDecision and gs.pendingRejected.len == 0:
+      not gs.hasPendingDecision and not gs.pendingRejected:
     gs.pendingAttempts = @[attempt]
 
 proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
@@ -384,14 +383,14 @@ proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
 
 proc recordDecision(gs: var GameState, sim: Sim, seat: int,
     wantShot: bool, outcome: DecisionResult, beforeEvent: int,
-    accepted: bool, observation: JsonNode) =
+    observation: JsonNode) =
   let action = appliedDecisionAction(sim, gs.match.allEvents(), beforeEvent, seat, wantShot)
   let reference = %*{
     "id": gs.decisionRefs.len + 1,
     "seat": seat,
     "phase": (if wantShot: "shot" else: "reaction"),
     "origin": outcome.origin,
-    "accepted": accepted,
+    "accepted": true,
     "eventBefore": beforeEvent,
     "eventAfter": gs.match.allEvents().len,
     "action": action
@@ -400,8 +399,8 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
   if gs.trajectory.isSome:
     var attempts = outcome.nativeAttempts
     var selected = none(string)
-    let proposalAccepted = accepted and outcome.origin in ["model", "external"]
-    if proposalAccepted and outcome.origin == "external":
+    let proposalAccepted = outcome.origin in ["model", "external"]
+    if outcome.origin == "external":
       if attempts.len == 0 or attempts[^1].rejectionReason.isSome:
         var external = newDecisionAttempt("external-action", "external", aoUnknown)
         external.prompt = outcome.input
@@ -412,9 +411,6 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
       attempts[^1].accepted = true
     if proposalAccepted:
       selected = some(attempts[^1].attemptId)
-    elif attempts.len > 0 and attempts[^1].accepted:
-      attempts[^1].accepted = false
-      attempts[^1].rejectionReason = some("engine rejected proposal")
     let id = $reference["id"].getInt()
     let visible = if gs.issuedWindows.hasKey(id): gs.issuedWindows[id] else: observation
     gs.staged.add(StagedDecision(id: id, seat: $seat,
@@ -681,7 +677,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         header = state.match.matchHeader()
         shotObservation = state.liveFrameJson(itSeat)
 
-      ## The slow part (Sonnet) runs outside the lock on a snapshot; only
+      ## The model call runs outside the lock on a snapshot; only
       ## this thread mutates the match, so the snapshot cannot go stale.
       var shot = client.decideSeat(simCopy, itSeat, itPrompt,
         wantShot = true, header = header, scripted = itScripted, baseline = itBaseline,
@@ -702,7 +698,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           state.match.sim.applySkip(itSeat)
         else:
           state.match.sim.applyShot(itSeat, shot.decision.target, shot.decision.aim)
-        state.recordDecision(simCopy, itSeat, true, shot, beforeEvent, true, shotObservation)
+        state.recordDecision(simCopy, itSeat, true, shot, beforeEvent, shotObservation)
         roundEnded = state.match.sim.done
         state.broadcastLocked()
 
@@ -760,7 +756,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             state.match.sim.applyExtras(seat, reaction.decision.extras)
             if state.match.allEvents().len > beforeEvent:
               state.broadcastLocked()
-            state.recordDecision(reactionCopy, seat, false, reaction, beforeEvent, true, reactionObservation)
+            state.recordDecision(reactionCopy, seat, false, reaction, beforeEvent, reactionObservation)
           if config.turnDelayMs > 0 and
               getMonoTime() < playDeadline:
             waitUntil(min(playDeadline, getMonoTime() + initDuration(milliseconds = config.turnDelayMs div 2)))
@@ -912,7 +908,7 @@ proc websocketHandler(
             if payload["type"].getStr() == "attempt_started":
               state.retainExternalAttempt(slot, id, payload["training_attempt"], completed = false)
             elif state.awaitingSeat == slot and state.awaitingId == id and
-                not state.hasPendingDecision and state.pendingRejected.len == 0 and
+                not state.hasPendingDecision and not state.pendingRejected and
                 not interruptionRequested() and receivedAt < state.awaitingDeadline:
               state.acceptExternalAction(slot, payload, message.data, receivedAt)
             elif payload["training_attempt"].kind != JNull:
@@ -967,14 +963,13 @@ proc websocketHandler(
             (if scripted: ", scripted " & $baseline else: ""), ")"
       except CatchableError as error:
         withLock stateLock:
-          if state.awaitingSeat == slot and not state.hasPendingDecision and state.pendingRejected.len == 0 and
+          if state.awaitingSeat == slot and not state.hasPendingDecision and not state.pendingRejected and
               payload.kind == JObject and payload{"type"}.getStr() == "action" and
               payload{"decision_id"}.getStr() == state.awaitingId and
               receivedAt >= state.issuedAt[state.awaitingId] and receivedAt < state.awaitingDeadline:
-            state.pendingRejected.add(%*{
-              "wire": message.data, "error": error.msg})
+            state.pendingRejected = true
             if state.pendingAttempts.len == 0 or state.pendingAttempts[^1].rejectionReason.isSome:
-              var rejected = newDecisionAttempt("external-rejected-" & $state.pendingRejected.len,
+              var rejected = newDecisionAttempt("external-rejected-1",
                 "external", aoUnknown)
               let issued = state.issuedWindows[state.awaitingId]["input"]
               rejected.prompt = %*[{"role": "system", "content": issued["system"]},

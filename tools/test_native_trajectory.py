@@ -23,7 +23,7 @@ binary, output, revision = sys.argv[1:]
 root = Path(output)
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
 reports = []
-for mode in ["accepted", "retry", "fallback", "registration", "seat-budget", "random-seed",
+for mode in ["accepted", "invalid-response", "registration", "seat-budget", "random-seed",
              "interrupted-started-term", "interrupted-partial-term", "interrupted-partial-int", "runtime-failure",
              "artifact-http", "interrupted-partial-http-term", "artifact-upload-failure"]:
     seats = 5 if mode == "registration" else 4
@@ -67,11 +67,7 @@ for mode in ["accepted", "retry", "fallback", "registration", "seat-budget", "ra
             if target:
                 action.update(shoot=target[1], aim="head")
             raw = json.dumps(action, separators=(",", ":"))
-            if (
-                mode == "fallback"
-                or mode == "retry"
-                and "previous reply was invalid" not in user
-            ):
+            if mode == "invalid-response":
                 raw = "invalid-json-fixture"
             call_id = str(uuid.uuid4())
             response = {
@@ -213,7 +209,7 @@ for mode in ["accepted", "retry", "fallback", "registration", "seat-budget", "ra
                     if process.poll() is None:
                         process.send_signal(requested)
                 status = process.wait(timeout=45)
-                assert (status != 0 if mode in {"runtime-failure", "artifact-upload-failure", "retry", "fallback", "seat-budget"} else status == 0), (folder / "game.log").read_text()
+                assert (status != 0 if mode in {"runtime-failure", "artifact-upload-failure", "invalid-response", "seat-budget"} else status == 0), (folder / "game.log").read_text()
             finally:
                 for seat in sockets:
                     seat.close()
@@ -231,7 +227,7 @@ for mode in ["accepted", "retry", "fallback", "registration", "seat-budget", "ra
         for line in (folder / "trajectory.jsonl").read_text().splitlines()
     ]
     decisions = events[:-1]
-    if mode in {"retry", "fallback", "seat-budget"}:
+    if mode in {"invalid-response", "seat-budget"}:
         assert events[-1]["status"] == "failed"
         assert events[-1]["participant_outcomes"] is None
         assert events[-1]["outcome"]["termination"] == "policy_failure"

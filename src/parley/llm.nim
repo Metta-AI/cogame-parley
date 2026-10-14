@@ -38,7 +38,6 @@ type
     origin*: string
     input*: JsonNode
     response*: JsonNode
-    attempts*: seq[JsonNode]
     nativeAttempts*: seq[DecisionAttempt]
 
   LlmClient* = ref object
@@ -691,7 +690,5 @@ proc decide*(
     evidence.response = %raw
     evidence.rejectionReason = some(error.msg)
     result.nativeAttempts.add(evidence)
-    result.attempts.add(%*{"system": system, "user": user,
-      "raw": raw, "error": error.msg})
     result.failure = some(if client.budgetExhausted[seat]: dfBudgetExhausted else: dfModelFailure)
     echo "parley llm: seat ", seat, " policy failed"

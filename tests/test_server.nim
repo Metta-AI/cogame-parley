@@ -149,7 +149,7 @@ suite "player state":
     )
     game.match.sim.recordSay(seat, outcome.decision.say)
     game.match.sim.applyShot(seat, target, outcome.decision.aim)
-    game.recordDecision(context, seat, true, outcome, before, true, privateObservation)
+    game.recordDecision(context, seat, true, outcome, before, privateObservation)
     let replay = parseJson(game.replayPayload(game.match.resultsJson()))
     let reference = replay["decisionRefs"][0]
     check reference["eventBefore"].getInt() == before
@@ -307,7 +307,7 @@ suite "external training authority":
       "worker_status": "joined", "attempts": [evidence]}
     websocketHandler(socket, MessageEvent, Message(kind: TextMessage, data: $stop))
     check state.completedAttempts["older"] == evidence
-    check state.pendingAttempts == active and state.pendingRejected.len == 0
+    check state.pendingAttempts == active and not state.pendingRejected
     check seat notin state.stoppedSlots
     state.finished = true
     attempt.responseBodyB64 = some(encode("rewritten"))
@@ -352,7 +352,7 @@ suite "external training authority":
     websocketHandler(socket, MessageEvent, Message(kind: TextMessage, data: $ack))
     check 0 in state.stoppedSlots
 
-  test "executed action comes from engine events even after fallback":
+  test "executed scripted action comes from engine events":
     var config = defaultGameConfig()
     config.seed = 17
     for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
@@ -360,18 +360,18 @@ suite "external training authority":
     let before = game.match.sim
     let seat = before.itSeat
     let targets = before.validTargets(seat)
-    game.trajectory = some(newDecisionTrajectory("engine-fallback", "parley-17", "parley",
+    game.trajectory = some(newDecisionTrajectory("engine-scripted", "parley-17", "parley",
       "source-test", repeat('a', 40)))
-    let issued = game.externalObservation(before, seat, "private rejected prompt", true, matchHeader(game.match))
+    let issued = game.externalObservation(before, seat, "private operator prompt", true, matchHeader(game.match))
     game.issuedWindows["1"] = issued
     let start = game.match.allEvents().len
     game.match.sim.recordSay(seat, "actually spoken")
     game.match.sim.applyShot(seat, targets[1], aimHip)
-    let outcome = DecisionResult(origin: "scripted_after_rejected_action",
+    let outcome = DecisionResult(origin: "scripted",
       decision: Decision(target: targets[0], say: "unused proposal", aim: aimHead))
-    game.recordDecision(before, seat, true, outcome, start, false, newJObject())
+    game.recordDecision(before, seat, true, outcome, start, newJObject())
     check game.staged[0].observation == issued
-    check "private rejected prompt" notin game.replayPayload(game.match.resultsJson())
+    check "private operator prompt" notin game.replayPayload(game.match.resultsJson())
     let executed = game.staged[0].action
     check executed["shoot"].getStr() == before.seats[targets[1]].name
     check executed["say"].getStr() == "actually spoken"

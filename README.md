@@ -82,6 +82,33 @@ offsets, plus whisper, reveal, and pledge events. Exact prompts and raw response
 see [training evidence](TRAINING.md#hosted-decision-evidence).
 Results are reported under policy names.
 
+### Read saved reasoning in a replay
+
+The replay sidebar has **Table chat** and **Reasoning** views. Reasoning is
+model-generated text saved separately from public speech. It is not a verified
+explanation of the model's internal computation.
+
+Download a player artifact from the episode's Debug section, extract the ZIP,
+and choose `inference.jsonl` with **Reasoning → Load private trace**.
+The viewer also accepts the game's private `trajectory.jsonl` file, using only
+the selected attempt for each decision. Files stay in browser memory, with no
+upload or persistence. Load another player's file to replace the current traces.
+
+The decision menu jumps to a recorded action. Seeking and playback show reasoning
+only during that decision's events, with the player name and decision ID.
+The viewer matches decision IDs and seats against replay v4 references.
+It checks canonical trajectory execution against recorded actions. For player
+captures, it warns when the raw response differs from the recorded action, since
+the game can trim speech or normalize optional fields. Confirm the source
+episode when you choose a file; these checks do not prove file authenticity. Older replays without decision references cannot match traces.
+
+Supported responses store text in OpenAI-style `reasoning` or `reasoning_content`
+fields, or native `thinking` blocks. Files without saved reasoning show an empty
+state. Public replay files do not contain private responses, and this viewer
+does not fetch private artifacts automatically. Existing published viewers need
+a new Coworld build to gain these controls; opening an old bundle does not update it.
+
+
 **A policy can use a prompt, a scripted baseline, or the general external action interface.**
 External players receive private seat views and submit complete speech, shot,
 pass, reaction, and side actions. The game validates each action and owns results and replay.
@@ -102,7 +129,7 @@ pass, reaction, and side actions. The game validates each action and owns result
 
 ```bash
 export PATH="$HOME/.nimby/nim/bin:$PATH"
-node --test tests/test_renderer.cjs              # replay chat and seek behavior (Node 22+)
+node --test tests/test*.cjs              # replay chat and seek behavior (Node 22+)
 bash tools/nim_local.sh r tests/test_sim.nim       # rules and replay tests
 bash tools/nim_local.sh r tests/test_scripted.nim  # player prompts
 bash tools/nim_local.sh r tests/test_server.nim    # private states and scoring

@@ -1032,7 +1032,7 @@
     if (!button) return;
     function refresh() {
       var collapsed = document.body.classList.contains("feed-collapsed");
-      var label = document.body.classList.contains("replay-viewer") ? "CHAT" : "LOG";
+      var label = document.body.classList.contains("replay-viewer") ? "DETAILS" : "LOG";
       button.textContent = collapsed ? "Show " + label.toLowerCase() : "Hide " + label.toLowerCase();
       button.setAttribute("aria-expanded", String(!collapsed));
       button.setAttribute("aria-controls", document.getElementById("replay-sidebar") ? "replay-sidebar" : "feed");
@@ -1273,6 +1273,11 @@
         };
       });
 
+      var reasoning = options.reasoning ? window.ParleyReasoning.attach(options.reasoning, payload, nameMap, function (next) {
+        playing = false;
+        setIndex(next, true);
+      }) : null;
+
       function setIndex(next, jumped) {
         var previous = index;
         index = Math.max(0, Math.min(next, events.length));
@@ -1287,6 +1292,7 @@
           effects.absorb(events.slice(0, index), states[previous]);
         }
         if (options.feed) renderFeed(options.feed, events, nameMap, index);
+        if (reasoning) reasoning.update(index);
         if (options.label) {
           options.label.textContent = "Event " + index + " / " + events.length;
         }

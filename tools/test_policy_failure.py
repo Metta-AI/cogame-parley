@@ -40,6 +40,7 @@ async def main():
         COGAME_RESULTS_URI=(root / "results.json").as_uri(),
         COGAME_SAVE_REPLAY_URI=(root / "replay.json").as_uri(),
         COGAME_SAVE_TRAJECTORY_URI=(root / "trajectory.jsonl").as_uri(),
+        COGAME_PLAYER_FAILURE_URI=(root / "player_failure.json").as_uri(),
     )
     rejected = []
     following = []
@@ -171,6 +172,7 @@ async def main():
                 assert (root / "results.json").exists() and (
                     root / "replay.json"
                 ).exists()
+                assert not (root / "player_failure.json").exists()
             else:
                 assert episode["status"] == "failed"
                 assert episode["participant_outcomes"] is None
@@ -200,6 +202,13 @@ async def main():
                     "timeout": "external_timeout",
                 }.get(mode, "rejected_action")
                 assert episode["outcome"]["policy_failure"]["reason"] == expected
+                # The platform scores only a declared seat; otherwise the round is discarded.
+                declared = json.loads((root / "player_failure.json").read_text())
+                assert set(declared) == {"failed_policy_index", "message"}
+                assert declared["failed_policy_index"] == (
+                    episode["outcome"]["policy_failure"]["seat"]
+                )
+                assert expected in declared["message"]
                 assert all(reason == "terminal" for reason in stop_reasons)
             print(json.dumps({k: v for k, v in report.items() if k != "episode"}))
         finally:

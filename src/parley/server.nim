@@ -447,6 +447,20 @@ proc writeArtifact(uri, data, contentType, methodEnv: string, cleanupDeadline: M
   let httpMethod = parseEnum[ArtifactHttpMethod](getEnv(methodEnv, "PUT").toUpperAscii())
   writeCogameArtifact(uri, data, contentType, methodEnv, cleanupDeadline, httpMethod)
 
+proc writePlayerFailure(gs: GameState, failure: PolicyFailure, cleanupDeadline: MonoTime) =
+  ## Declare the failed seat so the platform scores it as that policy's loss.
+  ## Without this file a failed episode is unattributed and gives the league no
+  ## scoring evidence. The game's own play deadline is not a seat fault.
+  if failure.reason == dfEpisodeDeadline:
+    return
+  let message = "Parley seat " & $failure.seat & " (" & gs.config.players[failure.seat].name &
+    ") failed: " & $failure.reason
+  writeArtifact(
+    getEnv("COGAME_PLAYER_FAILURE_URI"),
+    $(%*{"failed_policy_index": failure.seat, "message": message}),
+    "application/json", "COGAME_PLAYER_FAILURE_METHOD", cleanupDeadline
+  )
+
 proc replayPayload(gs: GameState, results: JsonNode): string =
   var names = newJArray()
   for seat in gs.match.sim.seats:
@@ -598,6 +612,8 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
         results["scores"])
     writeTrajectoryArtifact(trajectory, getEnv(CogameSaveTrajectoryUriEnv), cleanupDeadline,
       parseEnum[ArtifactHttpMethod](getEnv("COGAME_SAVE_TRAJECTORY_METHOD", "PUT").toUpperAscii()))
+  if state.policyFailure.isSome and not interruptionRequested():
+    state.writePlayerFailure(state.policyFailure.get(), cleanupDeadline)
   if status != esFailed and not interruptionRequested() and not unresolved:
     writeArtifact(
       runtimeConfig.resultsUri, $results, "application/json",

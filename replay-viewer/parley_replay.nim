@@ -22,33 +22,7 @@ proc ctgLoadReplay(data: ptr uint8, length: cint): cint
     {.exportc: "par_load_replay", cdecl.} =
   try:
     lastError = ""
-    let replay = parseJson(bytesFromPointer(data, int(length)))
-    var config = defaultGameConfig()
-    config.hitPoints = replay["config"]{"hitPoints"}.getInt(3)
-    config.rounds = replay["config"]{"rounds"}.getInt(1)
-    config.survivors = replay["config"]{"survivors"}.getInt(1)
-    config.roundsKnown = replay["config"]{"roundsKnown"}.getBool(true)
-    config.survivorsKnown = replay["config"]{"survivorsKnown"}.getBool(true)
-    config.sampled = true
-    for name in replay["names"]:
-      config.players.add(PlayerConfig(name: name.getStr()))
-    var events: seq[GameEvent]
-    for node in replay["events"]:
-      events.add(eventFromJson(node))
-    var states = newJArray()
-    for frame in replayMatch(config, events):
-      states.add(frame.sim.seatStates(frame.totals, frame.roundWins))
-    payload = $ %*{
-      "type": "replay",
-      "protocol": replay{"protocol"}.getStr("parley.replay.v1"),
-      "names": replay["names"],
-      "policyNames": replay{"policyNames"},
-      "config": replay["config"],
-      "events": replay["events"],
-      "decisionRefs": replay{"decisionRefs"}.getElems(),
-      "results": replay{"results"},
-      "states": states
-    }
+    payload = $enrichReplay(parseJson(bytesFromPointer(data, int(length))))
     return 1
   except CatchableError as error:
     lastError = error.msg

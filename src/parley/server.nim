@@ -437,10 +437,6 @@ proc recordUnexecutedDecision(gs: var GameState, seat: int,
       observation: visible, attempts: attempts, selected: none(string),
       action: newJNull(), status: (if gs.policyFailure.isSome: asRejected else: asMissing)))
 
-proc broadcast() =
-  withLock stateLock:
-    state.broadcastLocked()
-
 proc writeArtifact(uri, data, contentType, methodEnv: string, cleanupDeadline: MonoTime) =
   if uri.len == 0:
     return
@@ -489,12 +485,6 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
     "decisionRefs": gs.decisionRefs,
     "results": results
   }
-
-proc statesFromEvents(config: GameConfig, events: seq[GameEvent]): JsonNode =
-  ## One seat-state array per event prefix, for scrubbing replays.
-  result = newJArray()
-  for frame in replayMatch(config, events):
-    result.add(frame.sim.seatStates(frame.totals, frame.roundWins))
 
 proc waitUntil(deadline: MonoTime) =
   ## Spectator and connection waits share the original lifetime and stop signal.
@@ -761,10 +751,10 @@ proc serveFile(request: Request, path, contentType: string) =
   else:
     request.respond(404)
 
-proc htmlHandler(name: string): RequestHandler =
+proc clientFileHandler(name, contentType: string): RequestHandler =
   proc handler(request: Request) {.gcsafe.} =
     {.gcsafe.}:
-      serveFile(request, clientDir() / name, "text/html; charset=utf-8")
+      serveFile(request, clientDir() / name, contentType)
   handler
 
 proc assetHandler(request: Request) {.gcsafe.} =
@@ -778,20 +768,6 @@ proc assetHandler(request: Request) {.gcsafe.} =
       elif name.endsWith(".ttf"): "font/ttf"
       else: "application/octet-stream"
     serveFile(request, dataDir() / name, contentType)
-
-proc rendererHandler(request: Request) {.gcsafe.} =
-  {.gcsafe.}:
-    serveFile(
-      request, clientDir() / "renderer.js",
-      "application/javascript; charset=utf-8"
-    )
-
-proc chromeCssHandler(request: Request) {.gcsafe.} =
-  {.gcsafe.}:
-    serveFile(
-      request, clientDir() / "chrome.css",
-      "text/css; charset=utf-8"
-    )
 
 proc healthzHandler(request: Request) {.gcsafe.} =
   var headers: HttpHeaders
@@ -972,11 +948,11 @@ proc websocketHandler(
 
 proc buildRouter(replayMode: bool): Router =
   result.get("/healthz", healthzHandler)
-  result.get("/client/global", htmlHandler("global.html"))
-  result.get("/client/player", htmlHandler("player.html"))
-  result.get("/client/replay", htmlHandler("replay.html"))
-  result.get("/client/renderer.js", rendererHandler)
-  result.get("/client/chrome.css", chromeCssHandler)
+  for name in ["global", "player", "replay"]:
+    result.get("/client/" & name, clientFileHandler(name & ".html", "text/html; charset=utf-8"))
+  for name in ["renderer", "reasoning"]:
+    result.get("/client/" & name & ".js", clientFileHandler(name & ".js", "application/javascript; charset=utf-8"))
+  result.get("/client/chrome.css", clientFileHandler("chrome.css", "text/css; charset=utf-8"))
   result.get("/client/assets/@name", assetHandler)
   result.get("/global", globalUpgradeHandler)
   result.get("/replay", replayUpgradeHandler)
@@ -986,32 +962,7 @@ proc buildRouter(replayMode: bool): Router =
 proc runReplayServer*(runtimeConfig: RuntimeConfig) =
   ## Replay mode: parse the recorded replay, precompute the scrub states,
   ## and serve the viewer until the platform tears the container down.
-  let payload = parseJson(runtimeConfig.replay)
-  var config = defaultGameConfig()
-  config.hitPoints = payload["config"]{"hitPoints"}.getInt(3)
-  config.rounds = payload["config"]{"rounds"}.getInt(1)
-  config.survivors = payload["config"]{"survivors"}.getInt(1)
-  config.roundsKnown = payload["config"]{"roundsKnown"}.getBool(true)
-  config.survivorsKnown = payload["config"]{"survivorsKnown"}.getBool(true)
-  ## The replay carries the episode's drawn table; never re-roll it.
-  config.sampled = true
-  for name in payload["names"]:
-    config.players.add(PlayerConfig(name: name.getStr()))
-  var events: seq[GameEvent]
-  for node in payload["events"]:
-    events.add(eventFromJson(node))
-  var enriched = %*{
-    "type": "replay",
-    "protocol": payload{"protocol"}.getStr("parley.replay.v1"),
-    "names": payload["names"],
-    "policyNames": payload{"policyNames"},
-    "config": payload["config"],
-    "events": payload["events"],
-    "decisionRefs": payload{"decisionRefs"}.getElems(),
-    "results": payload{"results"},
-    "states": statesFromEvents(config, events)
-  }
-  replayPayloadGlobal = $enriched
+  replayPayloadGlobal = $enrichReplay(parseJson(runtimeConfig.replay))
 
   let router = buildRouter(replayMode = true)
   gameServer = newServer(router, websocketHandler, workerThreads = 4)

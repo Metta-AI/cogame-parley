@@ -131,44 +131,9 @@ proc update*(config: var GameConfig, configJson: string) =
   let node = parseJson(configJson)
   if node.kind != JObject:
     raise newException(ParleyError, "config must be a JSON object")
-  if node.hasKey("tokens"):
-    config.tokens = @[]
-    for token in node["tokens"]:
-      config.tokens.add(token.getStr())
-  if node.hasKey("players"):
-    config.players = @[]
-    for player in node["players"]:
-      config.players.add(PlayerConfig(name: player["name"].getStr()))
-  if node.hasKey("seed"):
-    config.seed = node["seed"].getInt()
-  if node.hasKey("rounds"):
-    config.rounds = node["rounds"].getInt()
-  if node.hasKey("survivors"):
-    config.survivors = node["survivors"].getInt()
-  if node.hasKey("hitPoints"):
-    config.hitPoints = node["hitPoints"].getInt()
-  if node.hasKey("roundsKnown"):
-    config.roundsKnown = node["roundsKnown"].getBool()
-  if node.hasKey("survivorsKnown"):
-    config.survivorsKnown = node["survivorsKnown"].getBool()
-  if node.hasKey("sampled"):
-    config.sampled = node["sampled"].getBool()
-  if node.hasKey("maxSkips"):
-    config.maxSkips = node["maxSkips"].getInt()
-  if node.hasKey("reactions"):
-    config.reactions = node["reactions"].getBool()
-  if node.hasKey("maxReactions"):
-    config.maxReactions = node["maxReactions"].getInt()
-  if node.hasKey("turnDelayMs"):
-    config.turnDelayMs = node["turnDelayMs"].getInt()
-  if node.hasKey("player_connect_timeout_seconds"):
-    config.playerConnectTimeoutSeconds =
-      node["player_connect_timeout_seconds"].getFloat()
-  if node.hasKey("episodeTimeoutSeconds"):
-    config.episodeTimeoutSeconds = node["episodeTimeoutSeconds"].getFloat()
-  if node.hasKey("model"):
-    config.model = node["model"].getStr()
-  if node.hasKey("maxOutputTokens"):
-    config.maxOutputTokens = node["maxOutputTokens"].getInt()
-  if node.hasKey("llmTimeoutSeconds"):
-    config.llmTimeoutSeconds = node["llmTimeoutSeconds"].getInt()
+  for field, value in fieldPairs(config):
+    const key = if field == "playerConnectTimeoutSeconds":
+        "player_connect_timeout_seconds"
+      else: field
+    if node.hasKey(key):
+      value = to(node[key], typeof(value))

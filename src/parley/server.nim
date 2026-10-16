@@ -28,7 +28,7 @@
 ##   Acceptance and engine actions are never player-owned evidence.
 
 import
-  std/[base64, json, locks, math, monotimes, options, os, oids, sets, strutils, sysrand, tables, times],
+  std/[base64, json, locks, math, monotimes, options, os, sets, strutils, sysrand, tables, times],
   bitworld/decision_trajectory,
   bitworld/runtime,
   bitworld/native_stop,
@@ -1066,7 +1066,12 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
     let episodeId = if metadata.len > 0:
         parseJson(metadata)["episode_request_id"].getStr()
       else:
-        "local-" & $genOid()
+        var identity: array[16, byte]
+        if not urandom(identity):
+          raise newException(ParleyError, "OS entropy unavailable for episode identity")
+        var localId = "local-"
+        for value in identity: localId.add(value.toHex(2))
+        localId
     state.trajectory = some(newDecisionTrajectory(episodeId,
       $config.seed, "parley", ParleyGameVersion, ParleySourceRevision))
   runtimeConfigGlobal = runtimeConfig

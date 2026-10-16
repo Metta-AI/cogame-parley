@@ -44,7 +44,10 @@ The private evidence records the actual model and native request settings.
 
 The engine writes canonical private decision JSONL to
 `COGAME_SAVE_TRAJECTORY_URI` before uploading results. Release images embed immutable source and game-version pins. Hosted episode identity comes from the runtime’s
-`LLM_REQUEST_METADATA.episode_request_id`; local runs generate an explicitly local identity. The artifact contains
+`LLM_REQUEST_METADATA.episode_request_id`; local runs generate an explicitly local identity from 128 bits of OS entropy.
+Local identity must be independent of startup time and game seed: parallel games can start within the same second.
+Retain colliding historical trajectories as evidence, but do not publish them under ambiguous episode joins.
+Verify concurrent five-seat games with `python3 tools/test_local_episode_identity.py /absolute/path/to/parley /fresh/private/output`. The artifact contains
 seat-private observations, every native attempt, exact prompts and requests,
 raw responses, platform response call IDs, parsed and executed actions,
 rejections, explicit scripted policies, and the completed, truncated, or failed terminal outcome.

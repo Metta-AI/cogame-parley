@@ -50,6 +50,7 @@ cp "${dist}/parley_replay.js" "${dist}/parley_replay.wasm" "${output_dir}/"
 cp "${repo_dir}/replay-viewer/index.html" \
   "${repo_dir}/replay-viewer/static_replay.js" \
   "${repo_dir}/client/renderer.js" \
+  "${repo_dir}/client/reasoning.js" \
   "${repo_dir}/client/chrome.css" \
   "${output_dir}/"
 for asset in soldier_red_front.png soldier_blue_front.png \

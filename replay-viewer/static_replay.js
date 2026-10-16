@@ -47,6 +47,7 @@
       scorebug: document.getElementById("scorebug"),
       endscreen: document.getElementById("endscreen"),
       assetBase: "./assets",
+      reasoning: document.getElementById("reasoning-panel"),
       payload: payload
     });
   }

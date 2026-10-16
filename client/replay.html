@@ -42,14 +42,31 @@
       <div id="scorebug"></div>
       <p class="score-key">Survive +3 <span>Friend +1</span> Enemy +1</p>
     </section>
+    <div class="replay-panels" aria-label="Replay detail view">
+      <button class="tbtn" type="button" data-replay-panel="chat-panel" aria-controls="chat-panel" aria-pressed="true">Table chat</button>
+      <button class="tbtn" type="button" data-replay-panel="reasoning-panel" aria-controls="reasoning-panel" aria-pressed="false">Reasoning</button>
+    </div>
+    <section id="chat-panel">
     <div class="chat-header">
       <h1>Table chat</h1>
       <button id="chat-follow" class="tbtn" type="button">Following</button>
     </div>
     <div id="feed" role="region" aria-label="Replay conversation" tabindex="0"></div>
+    </section>
+    <section id="reasoning-panel" hidden aria-label="Model reasoning">
+      <label class="trace-file">Load private trace
+        <input type="file" accept=".jsonl,.ndjson" aria-label="Load private reasoning trace">
+      </label>
+      <p role="status">Load inference.jsonl from an extracted player artifact, or trajectory.jsonl. The file stays in this browser.</p>
+      <label>Jump to decision <select aria-label="Reasoning decision" disabled><option value="">Choose a decision</option></select></label>
+      <h2>Reasoning trace</h2>
+      <p class="trace-match"></p>
+      <div class="reasoning-text" tabindex="0"></div>
+    </section>
   </aside>
 </div>
 <div id="loading">LOADING REPLAY…</div>
+<script src="/client/reasoning.js"></script>
 <script src="/client/renderer.js"></script>
 <script>
   var canvas = document.getElementById("table");
@@ -74,6 +91,7 @@
       scorebug: document.getElementById("scorebug"),
       endscreen: document.getElementById("endscreen"),
       assetBase: "/client/assets",
+      reasoning: document.getElementById("reasoning-panel"),
       payload: payload
     });
     socket.onmessage = null;

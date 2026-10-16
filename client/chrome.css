@@ -600,3 +600,17 @@ button:focus-visible, #feed:focus-visible, #now-playing:focus-visible, .scrub:fo
   .replay-viewer .end-cell { font-size: 12px; }
   .replay-viewer .end-verdict { font-size: 18px; margin: 6px 0 10px; }
 }
+
+/* Both replay views share the sidebar's bounded reading space. */
+.replay-panels { display: flex; gap: 8px; padding: 6px 14px; }
+.replay-panels [aria-pressed="true"] { color: var(--amber); }
+#chat-panel, #reasoning-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+#chat-panel[hidden], #reasoning-panel[hidden] { display: none; }
+#reasoning-panel { padding: 6px 14px 10px; gap: 10px; font: 12px/1.45 var(--finefont); }
+#reasoning-panel label, .trace-file input { display: block; width: 100%; }
+#reasoning-panel select { width: 100%; color: var(--paper); background: #1d211e; padding: 6px; }
+#reasoning-panel [role="status"] { color: var(--paper-dim); }
+#reasoning-panel h2 { font-size: 12px; overflow-wrap: anywhere; }
+.reasoning-text { flex: 1; min-height: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reasoning-text:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+@media (max-width: 680px) { #reasoning-panel { flex: none; height: 420px; } }

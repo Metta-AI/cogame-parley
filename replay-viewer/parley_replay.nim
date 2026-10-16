@@ -45,6 +45,7 @@ proc ctgLoadReplay(data: ptr uint8, length: cint): cint
       "policyNames": replay{"policyNames"},
       "config": replay["config"],
       "events": replay["events"],
+      "decisionRefs": replay{"decisionRefs"}.getElems(),
       "results": replay{"results"},
       "states": states
     }

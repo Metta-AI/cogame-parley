@@ -1029,6 +1029,7 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
     "policyNames": payload{"policyNames"},
     "config": payload["config"],
     "events": payload["events"],
+    "decisionRefs": payload{"decisionRefs"}.getElems(),
     "results": payload{"results"},
     "states": statesFromEvents(config, events)
   }

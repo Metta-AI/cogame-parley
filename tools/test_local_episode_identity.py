@@ -54,9 +54,11 @@ def play(index):
         try:
             deadline = time.monotonic() + 20
             while True:
-                with socket.socket() as probe:
-                    ready = probe.connect_ex(("127.0.0.1", port)) == 0
-                if ready:
+                probe = subprocess.run(
+                    ["curl", "--fail", "--silent", "--max-time", "1", f"http://127.0.0.1:{port}/healthz"],
+                    capture_output=True,
+                )
+                if probe.returncode == 0:
                     break
                 assert process.poll() is None, (folder / "game.log").read_text()
                 assert time.monotonic() < deadline, "Game did not become ready"

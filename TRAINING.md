@@ -17,7 +17,7 @@ operator prompt, model identities, tokenizer, and decoding settings. Move collec
 when qualifying another release. Base and trained players share the same settings and rotate through all five seats;
 freeze the remaining four opponents. Different opponent panels are separate cohorts in this same environment.
 
-The [Metta five-seat guide](https://github.com/Metta-AI/metta/blob/main/packages/metta-training/docs/parley.md)
+The [Metta five-seat guide](https://github.com/Metta-AI/metta/blob/main/packages/metta-posttraining/docs/parley.md)
 owns Qwen3.5-4B training commands, upstream SLIME pins, review, dataset splits, and promotion gates.
 Bound complete-game count and optimizer updates instead of changing game rules. Report invalid responses, rejected
 attempts, fallback origins, terminal scores, latency, tokens, and cost alongside paired game-family uncertainty.

@@ -9,7 +9,6 @@ import
 from std/unicode import validateUtf8
 
 const
-  AnthropicVersion = "2023-06-01"
   ## What the viewer's speech bubble can actually show (~4 wrapped lines).
   ## Anything longer would render cut off mid-sentence at the table.
   MaxSayLen = 160
@@ -461,19 +460,23 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
   var body = %*{
     "max_tokens": client.maxOutputTokens,
     "temperature": client.temperature,
-    "system": system,
-    "messages": [{"role": "user", "content": user}]
+    "top_p": 1,
+    "reasoning": {"effort": "none"},
+    "chat_template_kwargs": {"enable_thinking": false},
+    "response_format": {"type": "json_object"},
+    "messages": [{"role": "system", "content": system},
+      {"role": "user", "content": user}]
   }
   var headers: HttpHeaders
   headers["content-type"] = "application/json"
   body["model"] = %client.model
-  headers["anthropic-version"] = AnthropicVersion
   headers["x-coworld-player-slot"] = $seat
-  let url = client.sidecarEndpoint & "/v1/messages"
+  let url = client.sidecarEndpoint & "/v1/chat/completions"
   evidence.request = copy(body)
   evidence.model = some(client.model)
-  evidence.decoder = %*{"temperature": client.temperature,
-    "max_tokens": client.maxOutputTokens}
+  evidence.decoder = copy(body)
+  evidence.decoder.delete("model")
+  evidence.decoder.delete("messages")
   let response = performNativePost(url, headers, $body, deadline)
   evidence.latencyMs = response.latencyMs
   evidence.responseReaderJoined = response.responseReaderJoined
@@ -549,9 +552,12 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
     raise newException(ParleyError, "native response is not valid UTF-8")
   let payload = parseJson(response.bodyBytes)
   evidence.model = some(payload["model"].getStr())
-  evidence.stopReason = some(payload["stop_reason"].getStr())
-  evidence.inputTokens = some(payload["usage"]["input_tokens"].getInt())
-  evidence.outputTokens = some(payload["usage"]["output_tokens"].getInt())
+  let choice = payload["choices"][0]
+  let stopReason = choice["finish_reason"].getStr()
+  evidence.stopReason = some(stopReason)
+  evidence.inputTokens = some(payload["usage"]["prompt_tokens"].getInt())
+  evidence.outputTokens = some(payload["usage"]["completion_tokens"].getInt())
+  evidence.response = choice["message"]["content"]
   if payload.hasKey("sampling_evidence") and payload["sampling_evidence"].kind != JNull:
     let sampled = payload["sampling_evidence"]
     var promptTokens, completionTokens: seq[int]
@@ -565,14 +571,14 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
     if sampled["behavior_log_probs"].kind != JNull:
       evidence.behaviorLogprobs = some(probabilities)
     evidence.stopReason = some(sampled["stop_reason"].getStr())
-  echo "parley llm: usage model ", payload["model"].getStr(),
-    " input_tokens ", payload["usage"]["input_tokens"].getInt(),
-    " output_tokens ", payload["usage"]["output_tokens"].getInt()
-  if payload{"stop_reason"}.getStr() == "refusal":
-    raise newException(ParleyError, "native inference refusal")
-  for contentBlock in payload["content"]:
-    if contentBlock{"type"}.getStr() == "text":
-      result.add(contentBlock{"text"}.getStr())
+  echo "parley llm: usage model ", evidence.model.get(),
+    " input_tokens ", evidence.inputTokens.get(),
+    " output_tokens ", evidence.outputTokens.get()
+  if stopReason != "stop":
+    raise newException(ParleyError, "native inference stopped without a complete action: " & stopReason)
+  if evidence.response.kind != JString:
+    raise newException(ParleyError, "native inference returned no text action")
+  result = evidence.response.getStr()
 
 proc cleanSay(text: string): string =
   result = text.strip()
@@ -687,7 +693,8 @@ proc decide*(
     result.origin = "model"
     result.response = %*{"raw": raw, "parsed": payload}
   except CatchableError as error:
-    evidence.response = %raw
+    if evidence.response.kind == JNull:
+      evidence.response = %raw
     evidence.rejectionReason = some(error.msg)
     result.nativeAttempts.add(evidence)
     result.failure = some(if client.budgetExhausted[seat]: dfBudgetExhausted else: dfModelFailure)

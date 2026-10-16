@@ -104,6 +104,13 @@ The pinned Coworld CLI does not supply `coworld training qualify` or `coworld tr
 Native SFT export does not qualify learner reinforcement learning. That requires saved-weight, tokenizer, and chat-template
 identities plus actual sampled-token likelihoods. Greedy completions do not supply sampled likelihoods.
 
+Native prompt policies and external training players use Chat Completions with
+the same system/user messages, JSON response format, and disabled thinking.
+Freeze temperature and output limits explicitly when comparing policies; native
+manifest defaults remain temperature 1 and 300 output tokens. A non-`stop`
+completion is failed evidence, even when its partial content parses as JSON.
+Earlier Anthropic Messages receipts remain historical evidence in their original format.
+
 Evaluate with the same native renderer, parser, rules, and decoder. Split by
 complete episode; reserve fresh seeds and frozen opponents. Record validity,
 fallback rate, terminal scores, latency, and token cost. A lower imitation

@@ -1,6 +1,6 @@
 ## Parley prompt and scripted player.
 ##
-## Prompt policies deliver PLAYER_PROMPT to the game's Sonnet adapter.
+## Prompt policies deliver PLAYER_PROMPT to the game's native Chat Completions client.
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <parley-image> --name my-parley \

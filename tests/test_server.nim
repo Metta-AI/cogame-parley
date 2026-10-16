@@ -3,18 +3,17 @@ include ../src/parley/server
 
 suite "player state":
   test "registered external control remains accountable after gameplay begins":
-    var game = GameState(prompts: newSeq[string](5), external: newSeq[bool](5),
-      promptSet: newSeq[bool](5))
+    var game = GameState(policies: newSeq[SeatPolicy](5))
     game.registerExternal(0, "private operator")
     game.started = true
     expect ParleyError:
       game.registerExternal(0, "rewritten operator")
-    check game.external[0] and game.prompts[0] == "private operator"
+    check game.policies[0].kind == pkExternal and game.policies[0].prompt == "private operator"
     game.started = false
     game.stopping = true
     expect ParleyError:
       game.registerExternal(1, "late owner")
-    check not game.external[1]
+    check game.policies[1].kind == pkUnregistered
 
   test "internal model actions reject prose around JSON":
     check parseJsonObject("  {\"say\": \"truce\"}  ")["say"].getStr() == "truce"
@@ -28,15 +27,14 @@ suite "player state":
     for index in 0 ..< 5:
       config.players.add(PlayerConfig(name: "Policy" & $index))
     var game = GameState(config: config, match: initMatch(config),
-      prompts: newSeq[string](5), external: newSeq[bool](5),
-      promptSet: newSeq[bool](5))
+      policies: newSeq[SeatPolicy](5))
     let sim = game.match.decisionSim()
     let seat = sim.itSeat
     let header = matchHeader(game.match)
     game.registerExternal(seat, "Protect my friend")
-    check game.external[seat] and game.promptSet[seat]
+    check game.policies[seat].kind == pkExternal
     for wantShot in [true, false]:
-      let packet = game.externalObservation(sim, seat, game.prompts[seat], wantShot,
+      let packet = game.externalObservation(sim, seat, game.policies[seat].prompt, wantShot,
         header)
       check packet["input"]["system"].getStr() == systemPrompt(sim, seat)
       check packet["input"]["user"].getStr() ==
@@ -201,7 +199,7 @@ suite "external training authority":
     attempt.model = some("fixture-model")
     game.retainExternalAttempt(seat, "1", attempt.attemptEvidenceJson(), completed = false)
     attempt.response = %($response)
-    attempt.rawResponse = %($(%*{"model": "fixture-model", "choices": [{"message": {"content": $response}}]}))
+    attempt.rawResponse = %($(%*{"model": "fixture-model", "choices": [{"message": {"content": $response}, "finish_reason": "stop"}]}))
     attempt.responseComplete = some(true)
     attempt.responseReaderJoined = some(true)
     attempt.httpStatus = some(200)
@@ -276,10 +274,10 @@ suite "external training authority":
     var config = defaultGameConfig()
     config.seed = 17
     for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
-    state = GameState(config: config, match: initMatch(config), external: newSeq[bool](5), awaitingSeat: -1)
+    state = GameState(config: config, match: initMatch(config), policies: newSeq[SeatPolicy](5), awaitingSeat: -1)
     let socket = default(WebSocket)
     let seat = 0
-    state.external[seat] = true
+    state.policies[seat].kind = pkExternal
     state.socketSlots[socket] = seat
     state.playerSockets[seat] = socket
     state.issuedSeats["older"] = seat
@@ -319,12 +317,12 @@ suite "external training authority":
   test "stop cannot omit a known reader and joined evidence stays immutable without latency":
     var config = defaultGameConfig()
     for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
-    state = GameState(config: config, match: initMatch(config), external: newSeq[bool](5),
+    state = GameState(config: config, match: initMatch(config), policies: newSeq[SeatPolicy](5),
       awaitingSeat: -1, stopping: true, stopId: "owned-stop",
       stopAckStart: getMonoTime() - initDuration(seconds = 1),
       stopAckDeadline: getMonoTime() + initDuration(seconds = 10))
     let socket = default(WebSocket)
-    state.external[0] = true
+    state.policies[0].kind = pkExternal
     state.socketSlots[socket] = 0
     state.issuedSeats["known"] = 0
     state.issuedAt["known"] = getMonoTime() - initDuration(seconds = 2)

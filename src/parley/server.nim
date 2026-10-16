@@ -58,16 +58,18 @@ type
     seat: int
     decisionId: string
     reason: DecisionFailure
+  PolicyKind = enum
+    pkUnregistered, pkNative, pkScripted, pkExternal
+  SeatPolicy = object
+    kind: PolicyKind
+    prompt: string
+    baseline: Baseline
   GameState = object
     policyFailure: Option[PolicyFailure]
     config: GameConfig
     inputConfig: JsonNode
     match: Match
-    prompts: seq[string]
-    external: seq[bool]
-    scripted: seq[bool]
-    baselines: seq[Baseline]
-    promptSet: seq[bool]
+    policies: seq[SeatPolicy]
     awaitingSeat: int
     awaitingId: string
     issuedWindows: Table[string, JsonNode]
@@ -79,7 +81,6 @@ type
     staged: seq[StagedDecision]
     stopping: bool
     stopId: string
-    pendingSource: string
     awaitingShot: bool
     pendingDecision: Decision
     pendingRawAction: JsonNode
@@ -216,12 +217,10 @@ proc registerExternal(gs: var GameState, slot: int, prompt: string) =
     raise newException(ParleyError, "player control is frozen after gameplay begins")
   if prompt.len > MaxPromptLen:
     raise newException(ParleyError, "external operator prompt exceeds limit")
-  gs.prompts[slot] = prompt
-  gs.external[slot] = true
-  gs.promptSet[slot] = true
+  gs.policies[slot] = SeatPolicy(kind: pkExternal, prompt: prompt)
 
-proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
-    wantShot: bool, header: string, scripted: bool, baseline: Baseline,
+proc decideSeat(client: LlmClient, sim: Sim, seat: int, policy: SeatPolicy,
+    wantShot: bool, header: string,
     playDeadline: MonoTime): DecisionResult =
   result.input = newJNull()
   result.response = newJNull()
@@ -229,42 +228,42 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, prompt: string,
     result.failure = some(dfEpisodeDeadline)
     return
   let decisionDeadline = min(playDeadline, getMonoTime() + initDuration(seconds = state.config.llmTimeoutSeconds))
-  var external = false
-  var registeredExternal = false
+  case policy.kind
+  of pkUnregistered:
+    result.failure = some(dfMissingPolicy)
+    return
+  of pkScripted:
+    result.decision =
+      if wantShot: client.scriptedShot(sim, seat, policy.baseline)
+      else: client.scriptedReaction(sim, seat)
+    result.origin = "scripted_policy"
+    return
+  of pkNative:
+    return client.decide(sim, seat, policy.prompt, wantShot, decisionDeadline, header)
+  of pkExternal:
+    discard
+
   var observation: JsonNode
   withLock stateLock:
-    registeredExternal = state.external[seat]
-    external = registeredExternal and state.playerSockets.hasKey(seat)
-    if external:
-      state.awaitingSeat = seat
-      state.awaitingId = $(state.decisionRefs.len + 1)
-      state.awaitingShot = wantShot
-      state.awaitingDeadline = decisionDeadline
-      state.hasPendingDecision = false
-      state.pendingRejected = false
-      state.pendingAttempts = @[]
-      observation = state.externalObservation(sim, seat, prompt, wantShot, header)
-      state.issuedWindows[state.awaitingId] = observation
-      state.issuedSeats[state.awaitingId] = seat
-      state.issuedAt[state.awaitingId] = getMonoTime()
-      state.latestDecisions[seat] = state.awaitingId
-      state.playerSockets[seat].send($(%*{"type": "decision", "decision_id": state.awaitingId,
-        "observation": observation, "transport": {
-          "budget_ms": max(1, (decisionDeadline - getMonoTime()).inMilliseconds),
-          "cleanup_budget_ms": 5000}}))
-  if not external:
-    if registeredExternal:
+    if not state.playerSockets.hasKey(seat):
       result.failure = some(dfExternalDisconnect)
       return
-    if scripted:
-      result.decision =
-        if wantShot: client.scriptedShot(sim, seat, baseline)
-        else: client.scriptedReaction(sim, seat)
-      result.origin = "scripted_policy"
-      result.input = newJNull()
-      result.response = newJNull()
-      return
-    return client.decide(sim, seat, prompt, wantShot, decisionDeadline, header)
+    state.awaitingSeat = seat
+    state.awaitingId = $(state.decisionRefs.len + 1)
+    state.awaitingShot = wantShot
+    state.awaitingDeadline = decisionDeadline
+    state.hasPendingDecision = false
+    state.pendingRejected = false
+    state.pendingAttempts = @[]
+    observation = state.externalObservation(sim, seat, policy.prompt, wantShot, header)
+    state.issuedWindows[state.awaitingId] = observation
+    state.issuedSeats[state.awaitingId] = seat
+    state.issuedAt[state.awaitingId] = getMonoTime()
+    state.latestDecisions[seat] = state.awaitingId
+    state.playerSockets[seat].send($(%*{"type": "decision", "decision_id": state.awaitingId,
+      "observation": observation, "transport": {
+        "budget_ms": max(1, (decisionDeadline - getMonoTime()).inMilliseconds),
+        "cleanup_budget_ms": 5000}}))
   while getMonoTime() < decisionDeadline and not interruptionRequested():
     var ready = false
     withLock stateLock:
@@ -369,6 +368,8 @@ proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
     if attempt.model.isNone or served["model"] != %attempt.model.get() or
         served["choices"][0]["message"]["content"] != attempt.response:
       raise newException(ParleyError, "selected completion differs from actual received native body")
+    if served["choices"][0]["finish_reason"].getStr() != "stop":
+      raise newException(ParleyError, "model action requires a complete native generation")
     let generated = parseDecision(gs.match.sim, seat,
       parseJsonObject(attempt.response.getStr()), gs.awaitingShot)
     attempt.parsedAction = decisionAction(gs.match.sim, generated, gs.awaitingShot)
@@ -376,7 +377,6 @@ proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
       raise newException(ParleyError, "model response differs from submitted action")
     gs.pendingAttempts = @[attempt]
   gs.pendingDecision = proposal
-  gs.pendingSource = source
   gs.pendingRawAction = %*{"wire": wire, "action": payload["action"]}
   gs.pendingReceived = receivedAt
   gs.hasPendingDecision = true
@@ -512,8 +512,8 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
     for value in stopToken: state.stopId.add(value.toHex(2))
     state.stopAckStart = getMonoTime()
     state.stopAckDeadline = cleanupDeadline - initDuration(seconds = 1)
-    for slot in 0 ..< state.external.len:
-      if not state.external[slot]: continue
+    for slot, policy in state.policies:
+      if policy.kind != pkExternal: continue
       targets.add(slot)
       if state.playerSockets.hasKey(slot):
         let id = if state.latestDecisions.hasKey(slot): %state.latestDecisions[slot] else: newJNull()
@@ -632,6 +632,39 @@ const PlayBudgetFraction* = 0.6
   ## container start, player connects, and writing the artifacts — the part
   ## that must never be the thing that runs out of time.
 
+proc playDecision(client: LlmClient, seat: int, wantShot: bool,
+    playDeadline: MonoTime): bool =
+  ## One engine-owned lifecycle for native, external, and scripted policies.
+  ## Only the game thread mutates the match; inference runs without its lock.
+  var sim: Sim
+  var policy: SeatPolicy
+  var header: string
+  var observation: JsonNode
+  withLock stateLock:
+    sim = state.match.decisionSim()
+    policy = state.policies[seat]
+    header = state.match.matchHeader()
+    observation = state.liveFrameJson(seat)
+  let outcome = client.decideSeat(sim, seat, policy, wantShot, header, playDeadline)
+  withLock stateLock:
+    if interruptionRequested() or outcome.failure.isSome:
+      state.recordUnexecutedDecision(seat, outcome, observation)
+      return false
+    let beforeEvent = state.match.allEvents().len
+    state.match.sim.recordSay(seat, outcome.decision.say)
+    state.match.sim.applyExtras(seat, outcome.decision.extras)
+    if wantShot:
+      if outcome.decision.skip:
+        state.match.sim.applySkip(seat)
+      else:
+        state.match.sim.applyShot(seat, outcome.decision.target, outcome.decision.aim)
+    state.recordDecision(sim, seat, wantShot, outcome, beforeEvent, observation)
+    state.broadcastLocked()
+  let delay = if wantShot: state.config.turnDelayMs else: state.config.turnDelayMs div 2
+  if delay > 0:
+    waitUntil(min(playDeadline, getMonoTime() + initDuration(milliseconds = delay)))
+  true
+
 proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
   {.gcsafe.}:
     defer:
@@ -647,8 +680,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var allConnected = false
       withLock stateLock:
         allConnected = state.playerSockets.len >= config.tokens.len
-        for registered in state.promptSet:
-          allConnected = allConnected and registered
+        for policy in state.policies:
+          allConnected = allConnected and policy.kind != pkUnregistered
       if allConnected:
         break
       waitUntil(min(deadline, getMonoTime() + initDuration(milliseconds = 200)))
@@ -660,8 +693,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       state.broadcastLocked()
 
     withLock stateLock:
-      for seat, registered in state.promptSet:
-        if not registered:
+      for seat, policy in state.policies:
+        if policy.kind == pkUnregistered:
           state.policyFailure = some(PolicyFailure(seat: seat, reason: dfMissingPolicy))
           return
 
@@ -675,56 +708,18 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     var longestRound = initDuration()
 
     while not interruptionRequested():
-      var simCopy: Sim
-      var itSeat: int
-      var itPrompt: string
-      var itScripted: bool
-      var itBaseline: Baseline
-      var header: string
-      var shotObservation: JsonNode
+      var shooter: int
       withLock stateLock:
-        if state.match.done:
-          break
-        simCopy = state.match.decisionSim()
-        itSeat = state.match.sim.itSeat
-        itPrompt = state.prompts[itSeat]
-        itScripted = state.scripted[itSeat]
-        itBaseline = state.baselines[itSeat]
-        header = state.match.matchHeader()
-        shotObservation = state.liveFrameJson(itSeat)
+        if state.match.done: break
+        shooter = state.match.sim.itSeat
+      if not client.playDecision(shooter, wantShot = true, playDeadline):
+        return
 
-      ## The model call runs outside the lock on a snapshot; only
-      ## this thread mutates the match, so the snapshot cannot go stale.
-      var shot = client.decideSeat(simCopy, itSeat, itPrompt,
-        wantShot = true, header = header, scripted = itScripted, baseline = itBaseline,
-        playDeadline = playDeadline)
-
-      if interruptionRequested() or shot.failure.isSome:
-        withLock stateLock:
-          state.recordUnexecutedDecision(itSeat, shot, shotObservation)
-        if shot.failure.isSome and not interruptionRequested(): return
-        break
-
-      var roundEnded = false
+      var roundEnded: bool
       withLock stateLock:
-        let beforeEvent = state.match.allEvents().len
-        state.match.sim.recordSay(itSeat, shot.decision.say)
-        state.match.sim.applyExtras(itSeat, shot.decision.extras)
-        if shot.decision.skip:
-          state.match.sim.applySkip(itSeat)
-        else:
-          state.match.sim.applyShot(itSeat, shot.decision.target, shot.decision.aim)
-        state.recordDecision(simCopy, itSeat, true, shot, beforeEvent, shotObservation)
         roundEnded = state.match.sim.done
-        state.broadcastLocked()
-
-      if config.turnDelayMs > 0 and
-          getMonoTime() < playDeadline:
-        waitUntil(min(playDeadline, getMonoTime() + initDuration(milliseconds = config.turnDelayMs)))
-
       if roundEnded:
-        ## Let the last shot land before deciding whether to deal another round.
-        ## This includes deadlines reached during spectator pacing.
+        ## Pacing is included when deciding whether the next round fits.
         let roundEndedAt = getMonoTime()
         longestRound = max(longestRound, roundEndedAt - roundStartedAt)
         roundStartedAt = roundEndedAt
@@ -738,44 +733,13 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         continue
 
       if config.reactions and getMonoTime() < playDeadline:
-        ## Table talk between shots: the new "it" acts next turn, so a few
-        ## other cogs speak first, eliminated ones included, in seeded order.
         var speakers: seq[int]
         withLock stateLock:
           speakers = state.match.sim.reactionSpeakers()
         for seat in speakers:
-          if getMonoTime() >= playDeadline or interruptionRequested():
-            break
-          var reactionCopy: Sim
-          var reactionPrompt: string
-          var reactionScripted: bool
-          var reactionBaseline: Baseline
-          var reactionObservation: JsonNode
-          withLock stateLock:
-            reactionCopy = state.match.decisionSim()
-            reactionPrompt = state.prompts[seat]
-            reactionScripted = state.scripted[seat]
-            reactionBaseline = state.baselines[seat]
-            header = state.match.matchHeader()
-            reactionObservation = state.liveFrameJson(seat)
-          let reaction = client.decideSeat(reactionCopy, seat, reactionPrompt,
-            wantShot = false, header = header, scripted = reactionScripted,
-            baseline = reactionBaseline, playDeadline = playDeadline)
-          if interruptionRequested() or reaction.failure.isSome:
-            withLock stateLock:
-              state.recordUnexecutedDecision(seat, reaction, reactionObservation)
-            if reaction.failure.isSome and not interruptionRequested(): return
-            break
-          withLock stateLock:
-            let beforeEvent = state.match.allEvents().len
-            state.match.sim.recordSay(seat, reaction.decision.say)
-            state.match.sim.applyExtras(seat, reaction.decision.extras)
-            if state.match.allEvents().len > beforeEvent:
-              state.broadcastLocked()
-            state.recordDecision(reactionCopy, seat, false, reaction, beforeEvent, reactionObservation)
-          if config.turnDelayMs > 0 and
-              getMonoTime() < playDeadline:
-            waitUntil(min(playDeadline, getMonoTime() + initDuration(milliseconds = config.turnDelayMs div 2)))
+          if getMonoTime() >= playDeadline or interruptionRequested(): break
+          if not client.playDecision(seat, wantShot = false, playDeadline):
+            return
 
     finishEpisode(runtimeConfig,
       (if state.match.roundsPlayed == state.match.config.rounds: esCompleted else: esTruncated))
@@ -919,7 +883,7 @@ proc websocketHandler(
           let id = payload["decision_id"].getStr()
           withLock stateLock:
             if state.finished: return
-            if not state.external[slot] or not state.issuedSeats.hasKey(id) or state.issuedSeats[id] != slot or receivedAt < state.issuedAt[id]:
+            if state.policies[slot].kind != pkExternal or not state.issuedSeats.hasKey(id) or state.issuedSeats[id] != slot or receivedAt < state.issuedAt[id]:
               raise newException(ParleyError, "decision does not belong to authenticated issued seat")
             if payload["type"].getStr() == "attempt_started":
               state.retainExternalAttempt(slot, id, payload["training_attempt"], completed = false)
@@ -933,7 +897,7 @@ proc websocketHandler(
         if payload["type"].getStr() == "stopped":
           withLock stateLock:
             if state.finished: return
-            if not state.external[slot]:
+            if state.policies[slot].kind != pkExternal:
               raise newException(ParleyError, "acknowledgement does not belong to external owner")
             let id = payload["decision_id"]
             if payload["worker_status"].getStr() notin ["joined", "no_active_call"] or payload["attempts"].kind != JArray:
@@ -967,13 +931,11 @@ proc websocketHandler(
           if prompt.len > MaxPromptLen:
             prompt = prompt[0 ..< MaxPromptLen]
           withLock stateLock:
-            if state.started or state.stopping or state.finished or state.external[slot]:
+            if state.started or state.stopping or state.finished or state.policies[slot].kind == pkExternal:
               raise newException(ParleyError, "player control is frozen after registration or gameplay begins")
-            state.prompts[slot] = prompt
-            state.external[slot] = false
-            state.scripted[slot] = scripted
-            state.baselines[slot] = baseline
-            state.promptSet[slot] = true
+            state.policies[slot] = SeatPolicy(
+              kind: (if scripted: pkScripted else: pkNative),
+              prompt: prompt, baseline: baseline)
           echo "parley: slot ", slot, " delivered a prompt (",
             prompt.len, " chars",
             (if scripted: ", scripted " & $baseline else: ""), ")"
@@ -1071,12 +1033,8 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.inputConfig = parseJson(runtimeConfig.config)
   state.inputConfig.delete("tokens")
   state.match = initMatch(config)
-  state.prompts = newSeq[string](config.players.len)
-  state.external = newSeq[bool](config.players.len)
+  state.policies = newSeq[SeatPolicy](config.players.len)
   state.awaitingSeat = -1
-  state.scripted = newSeq[bool](config.players.len)
-  state.baselines = newSeq[Baseline](config.players.len)
-  state.promptSet = newSeq[bool](config.players.len)
   if getEnv(CogameSaveTrajectoryUriEnv).len > 0:
     let metadata = getEnv("LLM_REQUEST_METADATA")
     let episodeId = if metadata.len > 0:

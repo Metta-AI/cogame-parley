@@ -23,7 +23,7 @@ binary, output, revision = sys.argv[1:]
 root = Path(output)
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
 reports = []
-for mode in ["accepted", "invalid-response", "registration", "seat-budget", "random-seed",
+for mode in ["accepted", "invalid-response", "truncated-response", "registration", "seat-budget", "random-seed",
              "interrupted-started-term", "interrupted-partial-term", "interrupted-partial-int", "runtime-failure",
              "artifact-http", "interrupted-partial-http-term", "artifact-upload-failure"]:
     seats = 5 if mode == "registration" else 4
@@ -57,9 +57,15 @@ for mode in ["accepted", "invalid-response", "registration", "seat-budget", "ran
             if self.path.startswith("/artifacts/"):
                 self.receive_artifact()
                 return
-            assert self.path == "/v1/messages"
+            assert self.path == "/v1/chat/completions"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            user = body["messages"][0]["content"]
+            assert set(body) == {"model", "messages", "temperature", "top_p", "max_tokens",
+                                 "reasoning", "chat_template_kwargs", "response_format"}
+            assert body["messages"][0]["role"] == "system"
+            assert body["response_format"] == {"type": "json_object"}
+            assert body["reasoning"] == {"effort": "none"}
+            assert body["chat_template_kwargs"] == {"enable_thinking": False}
+            user = body["messages"][1]["content"]
             slot = int(self.headers["x-coworld-player-slot"])
             seat_calls[slot] += 1
             target = re.search(r'<one of "([^"]+)"', user)
@@ -72,12 +78,10 @@ for mode in ["accepted", "invalid-response", "registration", "seat-budget", "ran
             call_id = str(uuid.uuid4())
             response = {
                 "id": call_id,
-                "type": "message",
-                "role": "assistant",
                 "model": body["model"],
-                "content": [{"type": "text", "text": raw}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 100, "output_tokens": 20},
+                "choices": [{"message": {"role": "assistant", "content": raw},
+                             "finish_reason": "length" if mode == "truncated-response" else "stop"}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
             }
             category = ""
             if mode == "seat-budget":
@@ -155,6 +159,7 @@ for mode in ["accepted", "invalid-response", "registration", "seat-budget", "ran
         COGAME_RESULTS_URI=(folder / "results.json").as_uri(),
         COGAME_SAVE_REPLAY_URI=(folder / "replay.json").as_uri(),
         COGAME_SAVE_TRAJECTORY_URI=(folder / "trajectory.jsonl").as_uri(),
+        COGAME_PLAYER_FAILURE_URI=(folder / "player_failure.json").as_uri(),
         COWORLD_LLM_ENDPOINT=f"http://127.0.0.1:{server.server_port}",
         COWORLD_LLM_MODEL="fixture/native",
         COWORLD_LLM_TEMPERATURE="0",
@@ -209,7 +214,7 @@ for mode in ["accepted", "invalid-response", "registration", "seat-budget", "ran
                     if process.poll() is None:
                         process.send_signal(requested)
                 status = process.wait(timeout=45)
-                assert (status != 0 if mode in {"runtime-failure", "artifact-upload-failure", "invalid-response", "seat-budget"} else status == 0), (folder / "game.log").read_text()
+                assert (status != 0 if mode in {"runtime-failure", "artifact-upload-failure", "invalid-response", "truncated-response", "seat-budget"} else status == 0), (folder / "game.log").read_text()
             finally:
                 for seat in sockets:
                     seat.close()
@@ -227,13 +232,15 @@ for mode in ["accepted", "invalid-response", "registration", "seat-budget", "ran
         for line in (folder / "trajectory.jsonl").read_text().splitlines()
     ]
     decisions = events[:-1]
-    if mode in {"invalid-response", "seat-budget"}:
+    if mode in {"invalid-response", "truncated-response", "seat-budget"}:
         assert events[-1]["status"] == "failed"
         assert events[-1]["participant_outcomes"] is None
         assert events[-1]["outcome"]["termination"] == "policy_failure"
         assert not (folder / "results.json").exists() and not (folder / "replay.json").exists()
         if mode == "seat-budget":
             assert events[-1]["outcome"]["policy_failure"]["reason"] == "budget_exhausted"
+        declared = json.loads((folder / "player_failure.json").read_text())
+        assert declared["failed_policy_index"] == events[-1]["outcome"]["policy_failure"]["seat"]
         failed = decisions[-1]
         assert failed["action_status"] == "rejected"
         assert failed["executed_action"] is None and failed["selected_attempt_id"] is None
@@ -241,6 +248,11 @@ for mode in ["accepted", "invalid-response", "registration", "seat-budget", "ran
         assert len(failed["attempts"]) == 1
         attempt = failed["attempts"][0]
         assert not attempt["accepted"] and attempt["rejection_reason"]
+        if mode == "truncated-response":
+            assert attempt["stop_reason"] == "length"
+            assert "complete action: length" in attempt["rejection_reason"]
+            # Even valid JSON must not be accepted when the provider reports truncation.
+            assert json.loads(attempt["response"])["say"] == "fixture public speech"
         archive = next(r for r in requests if r["platform_call_id"] == attempt["platform_call_id"])
         assert attempt["request"] == archive["caller_request"]
         assert attempt["raw_response"] == archive["provider_response"]
@@ -330,7 +342,8 @@ for mode in ["accepted", "invalid-response", "registration", "seat-budget", "ran
             assert received_headers["request-id"] == attempt["provider_request_id"]
             assert received_headers["x-softmax-llm-call-id"] == attempt["platform_call_id"]
             assert attempt["decoder"] == {
-                key: archive["caller_request"][key] for key in ("temperature", "max_tokens")
+                key: value for key, value in archive["caller_request"].items()
+                if key not in {"model", "messages"}
             }
         if decision["action_status"] == "accepted":
             selected = next(

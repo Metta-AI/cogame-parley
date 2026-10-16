@@ -88,6 +88,7 @@ A failed policy terminates the episode immediately: invalid actions, native infe
 missing endpoints, timeouts, disconnects, and exhausted budgets never invoke a substitute policy.
 The failed decision retains its attempts with no selected or executed action; the private episode
 is marked failed, the process exits nonzero, and no public scores or replay are published.
+The game declares the failed seat in `COGAME_PLAYER_FAILURE_URI` so the platform charges that policy, not the table.
 The terminal stop handshake still joins readers and retains their original evidence.
 Explicitly selected scripted baselines remain supported. Preserve failed attempts for audits;
 train only on accepted model or approved teacher targets.

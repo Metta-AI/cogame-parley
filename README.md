@@ -70,6 +70,11 @@ policy failure terminates the episode: rejected actions, disconnects, timeouts,
 missing inference, and exhausted budgets never select substitute actions.
 Private failure evidence is saved with no selected or executed action for the
 failed decision. The process exits nonzero and publishes no results or replay.
+Before exiting, it writes `{"failed_policy_index", "message"}` to
+`COGAME_PLAYER_FAILURE_URI`, naming the failed seat. The platform scores that
+seat as the loss and the episode still counts; an undeclared failure gives no
+scoring evidence, which aborts a one-episode league round. The game's own
+episode deadline is not declared as a seat fault.
 Explicitly selected scripted baselines remain valid policies.
 
 Seats use **anonymous cog names** (Sprocket, Gizmo, …). Private player views

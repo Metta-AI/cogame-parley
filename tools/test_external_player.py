@@ -163,7 +163,7 @@ async def main():
             COWORLD_LLM_ENDPOINT=f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}",
             COWORLD_LLM_MODEL="checkpoint/diagnostic-fixture",
             PARLEY_OPERATOR_PROMPT="PRIVATE FIVE-SEAT OPERATOR",
-            PARLEY_TEMPERATURE="1" if mode == "large-metadata" else "0",
+            PARLEY_INFERENCE=json.dumps({"temperature": 1 if mode == "large-metadata" else 0}),
         )
 
         async def play(seat):

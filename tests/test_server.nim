@@ -166,32 +166,34 @@ suite "external training authority":
       var config = defaultGameConfig()
       config.seed = 17
       for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
-      var game = GameState(config: config, match: initMatch(config), awaitingShot: true)
+      var game = GameState(config: config, match: initMatch(config), pending: DecisionRecord(wantShot: true))
       let seat = game.match.sim.itSeat
       let target = game.match.sim.validTargets(seat)[0]
       let action = %*{"shoot": game.match.sim.seats[target].name, "say": "public"}
       var attempt = newDecisionAttempt("asserted-teacher", "external", origin)
       attempt.response = %($action)
-      game.issuedSeats["1"] = seat
+      game.pending.seat = seat
+      game.issued["1"] = game.pending
       expect ParleyError:
         game.acceptExternalAction(seat, %*{"decision_id": "1", "source": "llm", "action": action,
           "training_attempt": attempt.attemptEvidenceJson()}, "wire", getMonoTime())
-      check not game.hasPendingDecision
+      check not game.pending.hasAction
 
   test "model response and separately submitted action must agree":
     var config = defaultGameConfig()
     config.seed = 17
     for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
-    var game = GameState(config: config, match: initMatch(config), awaitingShot: true)
+    var game = GameState(config: config, match: initMatch(config), pending: DecisionRecord(wantShot: true))
     let seat = game.match.sim.itSeat
     let targets = game.match.sim.validTargets(seat)
     let response = %*{"shoot": game.match.sim.seats[targets[0]].name, "say": "public"}
     let submitted = %*{"shoot": game.match.sim.seats[targets[1]].name, "say": "public"}
-    game.awaitingId = "1"
-    game.awaitingSeat = seat
-    game.issuedSeats["1"] = seat
-    game.issuedWindows["1"] = game.externalObservation(game.match.sim, seat, "prompt", true, matchHeader(game.match))
-    let input = game.issuedWindows["1"]["input"]
+    game.pending.id = "1"
+    game.pending.seat = seat
+    game.pending.awaiting = true
+    game.issued["1"] = game.pending
+    game.issued["1"].observation = game.externalObservation(game.match.sim, seat, "prompt", true, matchHeader(game.match))
+    let input = game.issued["1"].observation["input"]
     var attempt = newDecisionAttempt("1-model", "model", aoModel)
     attempt.prompt = %*[{"role": "system", "content": input["system"]},
       {"role": "user", "content": input["user"]}]
@@ -207,13 +209,13 @@ suite "external training authority":
     expect ParleyError:
       game.acceptExternalAction(seat, %*{"decision_id": "1", "source": "llm", "action": submitted,
         "training_attempt": attempt.attemptEvidenceJson()}, "wire", getMonoTime())
-    check not game.hasPendingDecision
-    check not game.pendingAttempts[0].accepted
-    check game.pendingAttempts[0].parsedAction.kind == JNull
+    check not game.pending.hasAction
+    check not game.pending.attempts[0].accepted
+    check game.pending.attempts[0].parsedAction.kind == JNull
     game.acceptExternalAction(seat, %*{"decision_id": "1", "source": "llm", "action": response,
       "training_attempt": attempt.attemptEvidenceJson()}, "matching-wire", getMonoTime())
-    check game.hasPendingDecision
-    check game.pendingAttempts[0].parsedAction == decisionAction(game.match.sim,
+    check game.pending.hasAction
+    check game.pending.attempts[0].parsedAction == decisionAction(game.match.sim,
       parseDecision(game.match.sim, seat, response, true), true)
 
   test "external transport progress preserves issued owner prompt and received facts":
@@ -222,9 +224,9 @@ suite "external training authority":
     for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
     var game = GameState(config: config, match: initMatch(config))
     let seat = game.match.sim.itSeat
-    game.issuedSeats["issued"] = seat
-    game.issuedWindows["issued"] = game.externalObservation(game.match.sim, seat, "operator", true, matchHeader(game.match))
-    let input = game.issuedWindows["issued"]["input"]
+    game.issued["issued"] = DecisionRecord(id: "issued", seat: seat)
+    game.issued["issued"].observation = game.externalObservation(game.match.sim, seat, "operator", true, matchHeader(game.match))
+    let input = game.issued["issued"].observation["input"]
     var attempt = newDecisionAttempt("issued-model", "native", aoModel)
     attempt.model = some("fixture-model")
     attempt.prompt = %*[{"role": "system", "content": input["system"]},
@@ -239,7 +241,7 @@ suite "external training authority":
       forged[key] = value
       expect ParleyError:
         game.retainExternalAttempt(seat, "issued", forged, completed = false)
-      check not game.startedAttempts.hasKey("issued")
+      check game.issued["issued"].evidence.isNone
     game.retainExternalAttempt(seat, "issued", start, completed = false)
     attempt.httpStatus = some(200)
     attempt.responseBodyB64 = some(encode("actual-prefix"))
@@ -256,7 +258,7 @@ suite "external training authority":
       altered[key] = changed
       expect ParleyError:
         game.retainExternalAttempt(seat, "issued", altered, completed = false)
-    check game.startedAttempts["issued"] == evidence
+    check game.issued["issued"].evidence.get() == evidence
     attempt.responseBodyB64 = some(encode("actual-prefix-more"))
     attempt.responseHeadersB64 = some(encode("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"))
     attempt.responseComplete = some(true)
@@ -268,27 +270,28 @@ suite "external training authority":
     rewrite["latency_ms"] = %21.0
     expect ParleyError:
       game.retainExternalAttempt(seat, "issued", rewrite, completed = true)
-    check game.completedAttempts["issued"] == completed
+    check game.issued["issued"].completed and game.issued["issued"].evidence.get() == completed
 
   test "queued disconnected older stop keeps native facts without current acknowledgement":
     var config = defaultGameConfig()
     config.seed = 17
     for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
-    state = GameState(config: config, match: initMatch(config), policies: newSeq[SeatPolicy](5), awaitingSeat: -1)
+    state = GameState(config: config, match: initMatch(config), policies: newSeq[SeatPolicy](5), pending: DecisionRecord())
     let socket = default(WebSocket)
     let seat = 0
     state.policies[seat].kind = pkExternal
     state.socketSlots[socket] = seat
     state.playerSockets[seat] = socket
-    state.issuedSeats["older"] = seat
-    state.issuedAt["older"] = getMonoTime() - initDuration(seconds = 1)
-    state.issuedWindows["older"] = state.externalObservation(state.match.sim, seat, "operator", true, matchHeader(state.match))
-    state.latestDecisions[seat] = "newer"
-    state.awaitingId = "newer"
-    state.awaitingSeat = seat
-    state.pendingAttempts = @[newDecisionAttempt("newer-model", "native", aoModel)]
-    let active = state.pendingAttempts
-    let input = state.issuedWindows["older"]["input"]
+    state.issued["older"] = DecisionRecord(id: "older", seat: seat)
+    state.issued["older"].issuedAt = getMonoTime() - initDuration(seconds = 1)
+    state.issued["older"].observation = state.externalObservation(state.match.sim, seat, "operator", true, matchHeader(state.match))
+    state.policies[seat].latestDecision = "newer"
+    state.pending.id = "newer"
+    state.pending.seat = seat
+    state.pending.awaiting = true
+    state.pending.attempts = @[newDecisionAttempt("newer-model", "native", aoModel)]
+    let active = state.pending.attempts
+    let input = state.issued["older"].observation["input"]
     var attempt = newDecisionAttempt("older-model", "native", aoModel)
     attempt.prompt = %*[{"role": "system", "content": input["system"]},
       {"role": "user", "content": input["user"]}]
@@ -304,31 +307,31 @@ suite "external training authority":
     let stop = %*{"type": "stopped", "decision_id": "older", "stop_id": "unissued-stop",
       "worker_status": "joined", "attempts": [evidence]}
     websocketHandler(socket, MessageEvent, Message(kind: TextMessage, data: $stop))
-    check state.completedAttempts["older"] == evidence
-    check state.pendingAttempts == active and not state.pendingRejected
+    check state.issued["older"].completed and state.issued["older"].evidence.get() == evidence
+    check state.pending.attempts == active and not state.pending.rejected
     check seat notin state.stoppedSlots
     state.finished = true
     attempt.responseBodyB64 = some(encode("rewritten"))
     let late = %*{"type": "stopped", "decision_id": "older", "stop_id": "unissued-stop",
       "worker_status": "joined", "attempts": [attempt.attemptEvidenceJson()]}
     websocketHandler(socket, MessageEvent, Message(kind: TextMessage, data: $late))
-    check state.completedAttempts["older"] == evidence
+    check state.issued["older"].completed and state.issued["older"].evidence.get() == evidence
 
   test "stop cannot omit a known reader and joined evidence stays immutable without latency":
     var config = defaultGameConfig()
     for index in 0 ..< 5: config.players.add(PlayerConfig(name: "Policy" & $index))
     state = GameState(config: config, match: initMatch(config), policies: newSeq[SeatPolicy](5),
-      awaitingSeat: -1, stopping: true, stopId: "owned-stop",
+      pending: DecisionRecord(), stopping: true, stopId: "owned-stop",
       stopAckStart: getMonoTime() - initDuration(seconds = 1),
       stopAckDeadline: getMonoTime() + initDuration(seconds = 10))
     let socket = default(WebSocket)
     state.policies[0].kind = pkExternal
     state.socketSlots[socket] = 0
-    state.issuedSeats["known"] = 0
-    state.issuedAt["known"] = getMonoTime() - initDuration(seconds = 2)
-    state.latestDecisions[0] = "known"
-    state.issuedWindows["known"] = state.externalObservation(state.match.sim, 0, "operator", true, matchHeader(state.match))
-    let input = state.issuedWindows["known"]["input"]
+    state.issued["known"] = DecisionRecord(id: "known", seat: 0)
+    state.issued["known"].issuedAt = getMonoTime() - initDuration(seconds = 2)
+    state.policies[0].latestDecision = "known"
+    state.issued["known"].observation = state.externalObservation(state.match.sim, 0, "operator", true, matchHeader(state.match))
+    let input = state.issued["known"].observation["input"]
     var attempt = newDecisionAttempt("known-model", "native", aoModel)
     attempt.prompt = %*[{"role": "system", "content": input["system"]},
       {"role": "user", "content": input["user"]}]
@@ -346,7 +349,7 @@ suite "external training authority":
     rewrite["response_reader_joined"] = %false
     expect ParleyError:
       state.retainExternalAttempt(0, "known", rewrite, completed = false)
-    check state.startedAttempts["known"] == joined
+    check state.issued["known"].evidence.get() == joined
     websocketHandler(socket, MessageEvent, Message(kind: TextMessage, data: $ack))
     check 0 in state.stoppedSlots
 
@@ -361,7 +364,7 @@ suite "external training authority":
     game.trajectory = some(newDecisionTrajectory("engine-scripted", "parley-17", "parley",
       "source-test", repeat('a', 40)))
     let issued = game.externalObservation(before, seat, "private operator prompt", true, matchHeader(game.match))
-    game.issuedWindows["1"] = issued
+    game.issued["1"] = DecisionRecord(id: "1", seat: seat, observation: issued)
     let start = game.match.allEvents().len
     game.match.sim.recordSay(seat, "actually spoken")
     game.match.sim.applyShot(seat, targets[1], aimHip)

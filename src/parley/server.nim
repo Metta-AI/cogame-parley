@@ -47,8 +47,15 @@ const
   ParleyGameVersion {.strdefine.} = ""
 
 type
-  StagedDecision = object
-    id, seat: string
+  DecisionRecord = ref object
+    id: string
+    seat: int
+    issuedAt, deadline, receivedAt: MonoTime
+    wantShot, awaiting, hasAction, rejected, completed: bool
+    decision: Decision
+    rawAction: JsonNode
+    evidence: Option[JsonNode]
+    receivedAttempt: DecisionAttempt
     observation, action: JsonNode
     attempts: seq[DecisionAttempt]
     selected: Option[string]
@@ -64,30 +71,20 @@ type
     kind: PolicyKind
     prompt: string
     baseline: Baseline
+    latestDecision: string
   GameState = object
     policyFailure: Option[PolicyFailure]
     config: GameConfig
     inputConfig: JsonNode
     match: Match
     policies: seq[SeatPolicy]
-    awaitingSeat: int
-    awaitingId: string
-    issuedWindows: Table[string, JsonNode]
-    issuedSeats: Table[string, int]
-    issuedAt: Table[string, MonoTime]
-    latestDecisions: Table[int, string]
-    startedAttempts, completedAttempts: Table[string, JsonNode]
+    issued: Table[string, DecisionRecord]
+    pending: DecisionRecord
     stoppedSlots: HashSet[int]
-    staged: seq[StagedDecision]
+    staged: seq[DecisionRecord]
     stopping: bool
     stopId: string
-    awaitingShot: bool
-    pendingDecision: Decision
-    pendingRawAction: JsonNode
-    pendingRejected: bool
-    pendingAttempts: seq[DecisionAttempt]
-    hasPendingDecision: bool
-    awaitingDeadline, pendingReceived, stopAckStart, stopAckDeadline: MonoTime
+    stopAckStart, stopAckDeadline: MonoTime
     episodeStart, episodeDeadline: MonoTime
     episodeTimeoutSeconds: float
     decisionRefs: seq[JsonNode]
@@ -248,51 +245,46 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, policy: SeatPolicy,
     if not state.playerSockets.hasKey(seat):
       result.failure = some(dfExternalDisconnect)
       return
-    state.awaitingSeat = seat
-    state.awaitingId = $(state.decisionRefs.len + 1)
-    state.awaitingShot = wantShot
-    state.awaitingDeadline = decisionDeadline
-    state.hasPendingDecision = false
-    state.pendingRejected = false
-    state.pendingAttempts = @[]
     observation = state.externalObservation(sim, seat, policy.prompt, wantShot, header)
-    state.issuedWindows[state.awaitingId] = observation
-    state.issuedSeats[state.awaitingId] = seat
-    state.issuedAt[state.awaitingId] = getMonoTime()
-    state.latestDecisions[seat] = state.awaitingId
-    state.playerSockets[seat].send($(%*{"type": "decision", "decision_id": state.awaitingId,
+    state.pending = DecisionRecord(id: $(state.decisionRefs.len + 1), seat: seat,
+      observation: observation, issuedAt: getMonoTime(), deadline: decisionDeadline,
+      wantShot: wantShot, awaiting: true)
+    state.issued[state.pending.id] = state.pending
+    state.policies[seat].latestDecision = state.pending.id
+    state.playerSockets[seat].send($(%*{"type": "decision", "decision_id": state.pending.id,
       "observation": observation, "transport": {
         "budget_ms": max(1, (decisionDeadline - getMonoTime()).inMilliseconds),
         "cleanup_budget_ms": 5000}}))
   while getMonoTime() < decisionDeadline and not interruptionRequested():
     var ready = false
     withLock stateLock:
-      ready = state.hasPendingDecision or state.pendingRejected or
+      ready = state.pending.hasAction or state.pending.rejected or
         not state.playerSockets.hasKey(seat)
     if ready:
       break
     sleep(20)
   withLock stateLock:
-    state.awaitingSeat = -1
-    if state.hasPendingDecision and state.pendingReceived < decisionDeadline and not interruptionRequested():
-      return DecisionResult(decision: state.pendingDecision,
+    state.pending.awaiting = false
+    if state.pending.hasAction and state.pending.receivedAt < decisionDeadline and not interruptionRequested():
+      return DecisionResult(decision: state.pending.decision,
         origin: "external", input: %*{
           "packet": observation, "wire": $observation},
-        response: state.pendingRawAction,
-        nativeAttempts: state.pendingAttempts)
+        response: state.pending.rawAction,
+        nativeAttempts: state.pending.attempts)
     result.failure = some(
-      if state.pendingRejected: dfRejectedAction
+      if state.pending.rejected: dfRejectedAction
       elif not state.playerSockets.hasKey(seat): dfExternalDisconnect
       else: dfExternalTimeout)
-    result.nativeAttempts = state.pendingAttempts
+    result.nativeAttempts = state.pending.attempts
   result.input = %*{"packet": observation, "wire": $observation}
   result.response = newJNull()
 
 proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
     evidence: JsonNode, completed: bool) =
-  if not gs.issuedSeats.hasKey(id) or gs.issuedSeats[id] != seat:
+  if not gs.issued.hasKey(id) or gs.issued[id].seat != seat:
     raise newException(ParleyError, "attempt does not belong to authenticated issued seat")
-  if not completed and not gs.startedAttempts.hasKey(id):
+  let issued = gs.issued[id]
+  if not completed and issued.evidence.isNone:
     for key in ["response", "raw_response", "platform_call_id", "provider_request_id",
         "response_headers", "response_headers_b64", "response_body_b64", "response_complete",
         "response_reader_joined", "http_status", "latency_ms", "input_tokens", "output_tokens",
@@ -303,22 +295,22 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
   let attempt = readAttemptEvidence(evidence)
   if attempt.attemptId != id & "-model" or attempt.origin != aoModel:
     raise newException(ParleyError, "external attempt must identify its issued model call")
-  let input = gs.issuedWindows[id]["input"]
+  let input = issued.observation["input"]
   let prompt = %*[{"role": "system", "content": input["system"]},
     {"role": "user", "content": input["user"]}]
   if attempt.prompt != prompt or attempt.request.kind != JObject or
       attempt.request["messages"] != prompt:
     raise newException(ParleyError, "model call rewrites the exact private prompt")
-  if completed and not gs.startedAttempts.hasKey(id):
+  if completed and issued.evidence.isNone:
     raise newException(ParleyError, "completed model evidence lacks pre-request start")
-  if gs.startedAttempts.hasKey(id):
-    if (gs.startedAttempts[id]["latency_ms"].kind != JNull or
-        gs.startedAttempts[id]["response_reader_joined"] == %true) and evidence != gs.startedAttempts[id]:
+  if issued.evidence.isSome:
+    if (issued.evidence.get()["latency_ms"].kind != JNull or
+        issued.evidence.get()["response_reader_joined"] == %true) and evidence != issued.evidence.get():
       raise newException(ParleyError, "finished native attempt evidence is immutable")
     for key in ["prompt", "request", "decoder", "policy", "model"]:
-      if evidence[key] != gs.startedAttempts[id][key]:
+      if evidence[key] != issued.evidence.get()[key]:
         raise newException(ParleyError, "started model request evidence is immutable")
-    let before = gs.startedAttempts[id]
+    let before = issued.evidence.get()
     for key in ["response_body_b64", "response_headers_b64"]:
       if before[key].kind != JNull:
         if evidence[key].kind != JString or
@@ -332,13 +324,13 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
         "model_identity", "tokenizer_identity", "chat_template_sha256"]:
       if before[key].kind != JNull and evidence[key] != before[key]:
         raise newException(ParleyError, "received native identity cannot be rewritten")
-  if gs.completedAttempts.hasKey(id) and evidence != gs.completedAttempts[id]:
+  if issued.completed and evidence != issued.evidence.get():
     raise newException(ParleyError, "completed native evidence is immutable")
-  gs.startedAttempts[id] = copy(evidence)
-  if completed: gs.completedAttempts[id] = copy(evidence)
-  if gs.awaitingSeat == seat and gs.awaitingId == id and
-      not gs.hasPendingDecision and not gs.pendingRejected:
-    gs.pendingAttempts = @[attempt]
+  issued.evidence = some(copy(evidence))
+  issued.receivedAttempt = attempt
+  issued.completed = issued.completed or completed
+  if issued.awaiting and not issued.hasAction and not issued.rejected:
+    issued.attempts = @[attempt]
 
 proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
     wire: string, receivedAt: MonoTime) =
@@ -355,10 +347,10 @@ proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
     raise newException(ParleyError, "model action requires native attempt evidence")
   if source == "fallback":
     raise newException(ParleyError, "external policy supplied a fallback instead of an action")
-  let proposal = parseDecision(gs.match.sim, seat, payload["action"], gs.awaitingShot)
-  let canonical = decisionAction(gs.match.sim, proposal, gs.awaitingShot)
+  let proposal = parseDecision(gs.match.sim, seat, payload["action"], gs.pending.wantShot)
+  let canonical = decisionAction(gs.match.sim, proposal, gs.pending.wantShot)
   if source == "llm":
-    var attempt = readAttemptEvidence(evidence)
+    var attempt = gs.issued[id].receivedAttempt
     if attempt.response.kind != JString or attempt.rawResponse.kind != JString or
         attempt.responseComplete != some(true) or attempt.responseReaderJoined != some(true) or
         attempt.httpStatus != some(200) or
@@ -371,15 +363,15 @@ proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
     if served["choices"][0]["finish_reason"].getStr() != "stop":
       raise newException(ParleyError, "model action requires a complete native generation")
     let generated = parseDecision(gs.match.sim, seat,
-      parseJsonObject(attempt.response.getStr()), gs.awaitingShot)
-    attempt.parsedAction = decisionAction(gs.match.sim, generated, gs.awaitingShot)
+      parseJsonObject(attempt.response.getStr()), gs.pending.wantShot)
+    attempt.parsedAction = decisionAction(gs.match.sim, generated, gs.pending.wantShot)
     if attempt.parsedAction != canonical:
       raise newException(ParleyError, "model response differs from submitted action")
-    gs.pendingAttempts = @[attempt]
-  gs.pendingDecision = proposal
-  gs.pendingRawAction = %*{"wire": wire, "action": payload["action"]}
-  gs.pendingReceived = receivedAt
-  gs.hasPendingDecision = true
+    gs.pending.attempts = @[attempt]
+  gs.pending.decision = proposal
+  gs.pending.rawAction = %*{"wire": wire, "action": payload["action"]}
+  gs.pending.receivedAt = receivedAt
+  gs.pending.hasAction = true
 
 proc recordDecision(gs: var GameState, sim: Sim, seat: int,
     wantShot: bool, outcome: DecisionResult, beforeEvent: int,
@@ -412,11 +404,14 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
     if proposalAccepted:
       selected = some(attempts[^1].attemptId)
     let id = $reference["id"].getInt()
-    let visible = if gs.issuedWindows.hasKey(id): gs.issuedWindows[id] else: observation
-    gs.staged.add(StagedDecision(id: id, seat: $seat,
-      observation: visible, attempts: attempts, selected: selected, action: action,
-      status: (if proposalAccepted: asAccepted else: asFallback),
-      fallback: (if proposalAccepted: none(string) else: some(outcome.origin))))
+    let record = if gs.issued.hasKey(id): gs.issued[id]
+      else: DecisionRecord(id: id, seat: seat, observation: observation)
+    record.attempts = attempts
+    record.selected = selected
+    record.action = action
+    record.status = if proposalAccepted: asAccepted else: asFallback
+    record.fallback = if proposalAccepted: none(string) else: some(outcome.origin)
+    gs.staged.add(record)
 
 
 proc recordUnexecutedDecision(gs: var GameState, seat: int,
@@ -432,10 +427,12 @@ proc recordUnexecutedDecision(gs: var GameState, seat: int,
       if attempt.rejectionReason.isNone:
         attempt.rejectionReason = some(if outcome.failure.isSome: $outcome.failure.get()
           else: "interrupted before engine acceptance")
-    let visible = if gs.issuedWindows.hasKey(id): gs.issuedWindows[id] else: observation
-    gs.staged.add(StagedDecision(id: id, seat: $seat,
-      observation: visible, attempts: attempts, selected: none(string),
-      action: newJNull(), status: (if gs.policyFailure.isSome: asRejected else: asMissing)))
+    let record = if gs.issued.hasKey(id): gs.issued[id]
+      else: DecisionRecord(id: id, seat: seat, observation: observation)
+    record.attempts = attempts
+    record.action = newJNull()
+    record.status = if gs.policyFailure.isSome: asRejected else: asMissing
+    gs.staged.add(record)
 
 proc writeArtifact(uri, data, contentType, methodEnv: string, cleanupDeadline: MonoTime) =
   if uri.len == 0:
@@ -506,7 +503,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
       if policy.kind != pkExternal: continue
       targets.add(slot)
       if state.playerSockets.hasKey(slot):
-        let id = if state.latestDecisions.hasKey(slot): %state.latestDecisions[slot] else: newJNull()
+        let id = if state.policies[slot].latestDecision.len > 0: %state.policies[slot].latestDecision else: newJNull()
         state.playerSockets[slot].send($(%*{"type": "stop", "stop_id": state.stopId, "decision_id": id,
           "reason": (if interruptionRequested(): "interrupted"
             elif status == esCompleted or state.policyFailure.isSome: "terminal" else: "episode_deadline"),
@@ -569,22 +566,18 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
     withLock stateLock:
       for staged in state.staged:
         var attempts = staged.attempts
-        if staged.selected.isNone:
-          var late = newJNull()
-          if state.completedAttempts.hasKey(staged.id): late = state.completedAttempts[staged.id]
-          elif state.startedAttempts.hasKey(staged.id): late = state.startedAttempts[staged.id]
-          if late.kind == JObject:
-            var received = readAttemptEvidence(late)
-            if attempts.len > 0:
-              received.accepted = attempts[0].accepted
-              received.parsedAction = attempts[0].parsedAction
-              received.rejectionReason = attempts[0].rejectionReason
-            else:
-              received.rejectionReason = some("native evidence arrived after engine decision")
-            attempts = @[received]
+        if staged.selected.isNone and staged.evidence.isSome:
+          var received = staged.receivedAttempt
+          if attempts.len > 0:
+            received.accepted = attempts[0].accepted
+            received.parsedAction = attempts[0].parsedAction
+            received.rejectionReason = attempts[0].rejectionReason
+          else:
+            received.rejectionReason = some("native evidence arrived after engine decision")
+          attempts = @[received]
         for attempt in attempts.mitems:
-          attempt.policy = state.config.players[parseInt(staged.seat)].name
-        trajectory.recordDecision(staged.id, staged.seat, staged.observation,
+          attempt.policy = state.config.players[staged.seat].name
+        trajectory.recordDecision(staged.id, $staged.seat, staged.observation,
           attempts, staged.selected, staged.action, staged.status, fallbackOrigin = staged.fallback)
     if interruptionRequested() or status == esFailed or unresolved:
       trajectory.finish((if interruptionRequested(): esTruncated elif status == esFailed: esFailed else: esTruncated),
@@ -859,13 +852,13 @@ proc websocketHandler(
           let id = payload["decision_id"].getStr()
           withLock stateLock:
             if state.finished: return
-            if state.policies[slot].kind != pkExternal or not state.issuedSeats.hasKey(id) or state.issuedSeats[id] != slot or receivedAt < state.issuedAt[id]:
+            if state.policies[slot].kind != pkExternal or not state.issued.hasKey(id) or state.issued[id].seat != slot or receivedAt < state.issued[id].issuedAt:
               raise newException(ParleyError, "decision does not belong to authenticated issued seat")
             if payload["type"].getStr() == "attempt_started":
               state.retainExternalAttempt(slot, id, payload["training_attempt"], completed = false)
-            elif state.awaitingSeat == slot and state.awaitingId == id and
-                not state.hasPendingDecision and not state.pendingRejected and
-                not interruptionRequested() and receivedAt < state.awaitingDeadline:
+            elif state.issued[id].awaiting and
+                not state.pending.hasAction and not state.pending.rejected and
+                not interruptionRequested() and receivedAt < state.pending.deadline:
               state.acceptExternalAction(slot, payload, message.data, receivedAt)
             elif payload["training_attempt"].kind != JNull:
               state.retainExternalAttempt(slot, id, payload["training_attempt"], completed = true)
@@ -879,8 +872,8 @@ proc websocketHandler(
             if payload["worker_status"].getStr() notin ["joined", "no_active_call"] or payload["attempts"].kind != JArray:
               raise newException(ParleyError, "stop must carry owned worker status and attempt array")
             if id.kind == JString:
-              if not state.issuedSeats.hasKey(id.getStr()) or state.issuedSeats[id.getStr()] != slot or
-                  receivedAt < state.issuedAt[id.getStr()]:
+              if not state.issued.hasKey(id.getStr()) or state.issued[id.getStr()].seat != slot or
+                  receivedAt < state.issued[id.getStr()].issuedAt:
                 raise newException(ParleyError, "stop evidence does not belong to authenticated issued seat")
               for evidence in payload["attempts"]:
                 state.retainExternalAttempt(slot, id.getStr(), evidence, completed = true)
@@ -889,13 +882,13 @@ proc websocketHandler(
             if state.playerSockets.hasKey(slot) and state.playerSockets[slot] == websocket:
               websocket.send($(%*{"type": "evidence_received", "decision_id": id,
                 "stop_id": payload["stop_id"]}))
-            let expected = if state.latestDecisions.hasKey(slot): %state.latestDecisions[slot] else: newJNull()
+            let expected = if state.policies[slot].latestDecision.len > 0: %state.policies[slot].latestDecision else: newJNull()
             if id != expected or not state.stopping or receivedAt < state.stopAckStart or
                 receivedAt >= state.stopAckDeadline or payload["stop_id"] != %state.stopId:
               raise newException(ParleyError, "acknowledgement is outside its engine-issued stop window")
-            for issuedId, evidence in state.startedAttempts:
-              if state.issuedSeats[issuedId] == slot and
-                  readAttemptEvidence(evidence).responseReaderJoined != some(true):
+            for issued in state.issued.values:
+              if issued.seat == slot and issued.evidence.isSome and
+                  issued.receivedAttempt.responseReaderJoined != some(true):
                 raise newException(ParleyError, "stop retains an unjoined native response reader")
             state.stoppedSlots.incl(slot)
           return
@@ -917,23 +910,23 @@ proc websocketHandler(
             (if scripted: ", scripted " & $baseline else: ""), ")"
       except CatchableError as error:
         withLock stateLock:
-          if state.awaitingSeat == slot and not state.hasPendingDecision and not state.pendingRejected and
+          if state.pending.awaiting and state.pending.seat == slot and not state.pending.hasAction and not state.pending.rejected and
               payload.kind == JObject and payload{"type"}.getStr() == "action" and
-              payload{"decision_id"}.getStr() == state.awaitingId and
-              receivedAt >= state.issuedAt[state.awaitingId] and receivedAt < state.awaitingDeadline:
-            state.pendingRejected = true
-            if state.pendingAttempts.len == 0 or state.pendingAttempts[^1].rejectionReason.isSome:
+              payload{"decision_id"}.getStr() == state.pending.id and
+              receivedAt >= state.pending.issuedAt and receivedAt < state.pending.deadline:
+            state.pending.rejected = true
+            if state.pending.attempts.len == 0 or state.pending.attempts[^1].rejectionReason.isSome:
               var rejected = newDecisionAttempt("external-rejected-1",
                 "external", aoUnknown)
-              let issued = state.issuedWindows[state.awaitingId]["input"]
+              let issued = state.pending.observation["input"]
               rejected.prompt = %*[{"role": "system", "content": issued["system"]},
                 {"role": "user", "content": issued["user"]}]
               rejected.response = %message.data
               rejected.rejectionReason = some(error.msg)
-              state.pendingAttempts.add(rejected)
+              state.pending.attempts.add(rejected)
             else:
-              state.pendingAttempts[^1].accepted = false
-              state.pendingAttempts[^1].rejectionReason = some(error.msg)
+              state.pending.attempts[^1].accepted = false
+              state.pending.attempts[^1].rejectionReason = some(error.msg)
         echo "parley: rejected player frame for seat ", slot
     of ErrorEvent:
       discard
@@ -985,7 +978,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.inputConfig.delete("tokens")
   state.match = initMatch(config)
   state.policies = newSeq[SeatPolicy](config.players.len)
-  state.awaitingSeat = -1
+  state.pending = DecisionRecord()
   if getEnv(CogameSaveTrajectoryUriEnv).len > 0:
     let metadata = getEnv("LLM_REQUEST_METADATA")
     let episodeId = if metadata.len > 0:

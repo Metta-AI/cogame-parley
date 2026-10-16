@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Parley — Replay</title>
-<link rel="stylesheet" href="/client/chrome.css">
+<link rel="stylesheet" href="./chrome.css">
 </head>
 <body class="replay-viewer">
 <div id="layout">
@@ -66,39 +66,8 @@
   </aside>
 </div>
 <div id="loading">LOADING REPLAY…</div>
-<script src="/client/reasoning.js"></script>
-<script src="/client/renderer.js"></script>
-<script>
-  var canvas = document.getElementById("table");
-  ParleyRenderer.bindFeedToggle(document.getElementById("feedtoggle"));
-  var scheme = location.protocol === "https:" ? "wss://" : "ws://";
-  var socket = new WebSocket(scheme + location.host + "/replay");
-  socket.onmessage = function (frame) {
-    var payload = JSON.parse(frame.data);
-    if (payload.type !== "replay") return;
-    document.getElementById("loading").style.display = "none";
-    ParleyRenderer.attachReplay({
-      canvas: canvas,
-      feed: document.getElementById("feed"),
-      followButton: document.getElementById("chat-follow"),
-      scrub: document.getElementById("scrub"),
-      playButton: document.getElementById("play"),
-      previousButton: document.getElementById("previous"),
-      nextButton: document.getElementById("next"),
-      nowPlaying: document.getElementById("now-playing"),
-      label: document.getElementById("pos"),
-      clock: document.getElementById("clock"),
-      scorebug: document.getElementById("scorebug"),
-      endscreen: document.getElementById("endscreen"),
-      assetBase: "/client/assets",
-      reasoning: document.getElementById("reasoning-panel"),
-      payload: payload
-    });
-    socket.onmessage = null;
-  };
-  socket.onerror = function () {
-    document.getElementById("loading").textContent = "REPLAY FAILED TO LOAD";
-  };
-</script>
+<script src="./reasoning.js"></script>
+<script src="./renderer.js"></script>
+<script src="./replay.js"></script>
 </body>
 </html>

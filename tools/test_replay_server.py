@@ -1,6 +1,7 @@
 """Exercise the shipped replay server against a completed native game artifact.
 
-Arguments: game binary, retained replay JSON, fresh private output directory.
+Arguments: game binary, retained replay JSON, fresh private output directory,
+optional compiled JavaScript replay reader.
 """
 
 import json
@@ -14,7 +15,8 @@ from urllib.request import urlopen
 
 from websockets.sync.client import connect
 
-binary, replay_path, output = sys.argv[1:]
+binary, replay_path, output = sys.argv[1:4]
+compiled_reader = sys.argv[4] if len(sys.argv) > 4 else None
 root = Path(output)
 root.mkdir(mode=0o700)
 replay = json.loads(Path(replay_path).read_text())
@@ -49,6 +51,7 @@ for version in ("current", "v1"):
                 "replay": "text/html",
                 "renderer.js": "application/javascript",
                 "reasoning.js": "application/javascript",
+                "replay.js": "application/javascript",
                 "chrome.css": "text/css",
             }.items():
                 with urlopen(f"http://127.0.0.1:{port}/client/{route}") as response:
@@ -63,8 +66,18 @@ for version in ("current", "v1"):
             assert payload["decisionRefs"] == (retained["decisionRefs"] if version == "current" else [])
             assert len(payload["states"]) == len(retained["events"]) + 1
             assert [seat["score"] for seat in payload["states"][-1]] == retained["results"]["rawScores"]
+            if compiled_reader is not None:
+                javascript = subprocess.run([
+                    "node", "-e",
+                    "const fs=require('node:fs'),vm=require('node:vm');"
+                    "const context=vm.createContext({console});"
+                    "vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),context);"
+                    "process.stdout.write(context.parleyLoadReplay(fs.readFileSync(process.argv[2],'utf8')));",
+                    compiled_reader, str(source),
+                ], check=True, capture_output=True, text=True)
+                assert json.loads(javascript.stdout) == payload
             reports.append({"version": version, "events": len(retained["events"]),
-                            "states": len(payload["states"]), "http_assets": 4})
+                            "states": len(payload["states"]), "http_assets": 5, "javascript_matches_native": compiled_reader is not None})
         finally:
             process.terminate()
             process.wait(timeout=5)

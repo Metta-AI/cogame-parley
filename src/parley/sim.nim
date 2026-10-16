@@ -1,5 +1,5 @@
 ## Pure game rules for Parley. No IO, no networking, no LLM: the server, the
-## tests, and the wasm replay viewer all drive this same module.
+## tests, and the JavaScript replay viewer all drive this same module.
 ##
 ## Rules: N cogs sit around a table. One cog is "it" and holds the paintgun.
 ## Each turn "it" says something to the table and shoots another living cog.
@@ -190,7 +190,7 @@ proc tableNames*(players: seq[PlayerConfig], seed: int): seq[string] =
 proc sampleEpisode*(config: GameConfig): GameConfig =
   ## Draws this episode's table rules from the seed. Every seat plays the same
   ## table, and a replay carries the drawn values in its config, so the server,
-  ## the tests and the wasm re-derivation all agree without re-rolling.
+  ## the tests and the browser re-derivation all agree without re-rolling.
   ##
   ## Idempotent: a config that already carries a draw (a replay being re-read,
   ## or an operator pinning values by hand) is returned untouched.

@@ -18,37 +18,33 @@ fi
 
 export PATH="$HOME/.nimby/nim/bin:$PATH"
 
-pinned_emscripten="$(sed -n 's/^FROM emscripten\/emsdk:\([^ ]*\).*/\1/p' "$repo_dir/Dockerfile.replay-viewer")"
-pinned_nim="$(sed -n 's/.*nimby use \([0-9.]*\).*/\1/p' "$repo_dir/Dockerfile.replay-viewer")"
-if command -v emcc >/dev/null && command -v nim >/dev/null &&
-   [[ "$(emcc --version | sed -n '1s/.*) \([0-9.]*\).*/\1/p')" == "$pinned_emscripten" ]] &&
+pinned_nim="$(sed -n 's/^FROM nimlang\/nim:\([^ ]*\).*/\1/p' "$repo_dir/Dockerfile.replay-viewer")"
+if command -v nim >/dev/null &&
    [[ "$(nim --version | sed -n '1s/^Nim Compiler Version \([^ ]*\).*/\1/p')" == "$pinned_nim" ]]; then
-  # Local toolchain: build the wasm module directly.
-  (cd "${repo_dir}" && nim c --parallelBuild:1 --hints:off -d:emscripten \
-    replay-viewer/parley_replay.nim)
+  nim js -d:release --hints:off --skipParentCfg:on --skipProjCfg:on \
+    --path:"${repo_dir}/src" --out:"${repo_dir}/replay-viewer/dist/parley_replay.js" \
+    "${repo_dir}/replay-viewer/parley_replay.nim"
 else
-  # Fall back to the pinned emsdk container.
   image_tag="parley-replay-viewer-build:$$"
   docker build --load --platform linux/amd64 \
     --file "${repo_dir}/Dockerfile.replay-viewer" \
     --tag "${image_tag}" "${repo_dir}"
   container_id="$(docker create "${image_tag}")"
-  rm -rf "${repo_dir}/replay-viewer/dist"
-  docker cp "${container_id}:/workspace/parley/replay-viewer/dist" \
-    "${repo_dir}/replay-viewer/dist"
+  mkdir -p "${repo_dir}/replay-viewer/dist"
+  docker cp "${container_id}:/workspace/parley/replay-viewer/dist/parley_replay.js" \
+    "${repo_dir}/replay-viewer/dist/parley_replay.js"
   docker rm "${container_id}" >/dev/null
   docker image rm "${image_tag}" >/dev/null
 fi
 
 dist="${repo_dir}/replay-viewer/dist"
-test -s "${dist}/parley_replay.wasm"
 test -s "${dist}/parley_replay.js"
 
 rm -rf "${output_dir}"
 mkdir -p "${output_dir}/assets"
-cp "${dist}/parley_replay.js" "${dist}/parley_replay.wasm" "${output_dir}/"
-cp "${repo_dir}/replay-viewer/index.html" \
-  "${repo_dir}/replay-viewer/static_replay.js" \
+cp "${dist}/parley_replay.js" "${output_dir}/"
+cp "${repo_dir}/client/replay.html" "${output_dir}/index.html"
+cp "${repo_dir}/client/replay.js" \
   "${repo_dir}/client/renderer.js" \
   "${repo_dir}/client/reasoning.js" \
   "${repo_dir}/client/chrome.css" \
@@ -62,5 +58,5 @@ for asset in soldier_red_front.png soldier_blue_front.png \
 done
 
 test -f "${output_dir}/index.html"
-grep -q 'data-replay' "${output_dir}/static_replay.js"
+grep -q 'data-replay' "${output_dir}/replay.js"
 echo "parley replay viewer bundle: ${output_dir}"

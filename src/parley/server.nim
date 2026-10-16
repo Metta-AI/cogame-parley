@@ -950,7 +950,7 @@ proc buildRouter(replayMode: bool): Router =
   result.get("/healthz", healthzHandler)
   for name in ["global", "player", "replay"]:
     result.get("/client/" & name, clientFileHandler(name & ".html", "text/html; charset=utf-8"))
-  for name in ["renderer", "reasoning"]:
+  for name in ["renderer", "reasoning", "replay"]:
     result.get("/client/" & name & ".js", clientFileHandler(name & ".js", "application/javascript; charset=utf-8"))
   result.get("/client/chrome.css", clientFileHandler("chrome.css", "text/css; charset=utf-8"))
   result.get("/client/assets/@name", assetHandler)

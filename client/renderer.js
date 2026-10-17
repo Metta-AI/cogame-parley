@@ -2,8 +2,8 @@
 //
 // One canvas scene (round table, cogs, hearts, speech bubbles, paint) fed by
 // three drivers: live /global websocket, live /player websocket, and replay
-// (from the game's /replay websocket or the static wasm bundle). All state
-// derivation happens server-side / wasm-side; this file only draws.
+// (from the game's /replay websocket or the static JavaScript bundle). All state
+// derivation happens in the shared Nim replay reader; this file only draws.
 (function () {
   "use strict";
 

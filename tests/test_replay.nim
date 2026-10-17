@@ -9,12 +9,12 @@ suite "static replay payload":
       "config": {"hitPoints": 3, "rounds": 1, "survivors": 1},
       "policyNames": ["Sprocket", "Gizmo"], "results": {}, "events": [], "decisionRefs": references}
     var encoded = $replay
-    check ctgLoadReplay(cast[ptr uint8](encoded[0].addr), cint(encoded.len)) == 1
+    let payload = loadReplay(encoded)
     check parseJson(payload)["decisionRefs"] == references
     check parseJson(payload)["events"] == replay["events"]
 
   test "older replays still load without decision references":
     var encoded = $(%*{"protocol": "parley.replay.v1", "names": ["Sprocket", "Gizmo"],
       "config": {"hitPoints": 3, "rounds": 1, "survivors": 1}, "policyNames": ["Sprocket", "Gizmo"], "results": {}, "events": []})
-    check ctgLoadReplay(cast[ptr uint8](encoded[0].addr), cint(encoded.len)) == 1
+    let payload = loadReplay(encoded)
     check parseJson(payload)["decisionRefs"].len == 0

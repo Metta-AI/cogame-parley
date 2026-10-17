@@ -53,7 +53,7 @@ async def main():
                 "choices": [
                     {
                         "message": {"content": json.dumps(action)},
-                        "finish_reason": "stop",
+                        "finish_reason": "length" if mode == "truncated" else "stop",
                     }
                 ],
             }
@@ -163,7 +163,7 @@ async def main():
             COWORLD_LLM_ENDPOINT=f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}",
             COWORLD_LLM_MODEL="checkpoint/diagnostic-fixture",
             PARLEY_OPERATOR_PROMPT="PRIVATE FIVE-SEAT OPERATOR",
-            PARLEY_TEMPERATURE="1" if mode == "large-metadata" else "0",
+            PARLEY_INFERENCE=json.dumps({"temperature": 1 if mode == "large-metadata" else 0}),
         )
 
         async def play(seat):
@@ -192,11 +192,13 @@ async def main():
                 *(play(seat) for seat in range(5)), return_exceptions=True
             )
             await asyncio.gather(*controls)
-            assert not any(isinstance(result, BaseException) for result in results), (
-                results
-            )
+            failures = [result for result in results if isinstance(result, BaseException)]
+            if mode == "truncated":
+                assert len(failures) == 1, results
+            else:
+                assert not failures, results
             status = await process.wait()
-            assert (status != 0) if mode == "rejected" else (status == 0)
+            assert (status != 0) if mode in {"rejected", "truncated"} else (status == 0)
         if handlers:
             await asyncio.wait_for(asyncio.gather(*handlers), 2)
         records = [
@@ -205,7 +207,7 @@ async def main():
         ]
         episode = records[-1]
         decisions = records[:-1]
-        if mode == "rejected":
+        if mode in {"rejected", "truncated"}:
             assert (
                 episode["status"] == "failed"
                 and episode["participant_outcomes"] is None
@@ -225,9 +227,13 @@ async def main():
             assert attempt["raw_response"] == calls[0]["raw_response"]
             assert attempt["request"] == calls[0]["request"]
             assert attempt["response_complete"] and attempt["response_reader_joined"]
-            assert set(episode["outcome"]["player_cleanup"].values()) == {
-                "acknowledged"
-            }
+            cleanup = list(episode["outcome"]["player_cleanup"].values())
+            if mode == "truncated":
+                assert cleanup.count("unresolved") == 1 and cleanup.count("acknowledged") == 4
+                assert episode["outcome"]["policy_failure"]["reason"] == "external_disconnect"
+                assert json.loads(attempt["raw_response"])["choices"][0]["finish_reason"] == "length"
+            else:
+                assert set(cleanup) == {"acknowledged"}
             assert (
                 not (root / "results.json").exists()
                 and not (root / "replay.json").exists()

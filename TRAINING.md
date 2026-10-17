@@ -104,6 +104,13 @@ The pinned Coworld CLI does not supply `coworld training qualify` or `coworld tr
 Native SFT export does not qualify learner reinforcement learning. That requires saved-weight, tokenizer, and chat-template
 identities plus actual sampled-token likelihoods. Greedy completions do not supply sampled likelihoods.
 
+Native prompt policies and external training players use Chat Completions with
+the same system/user messages, JSON response format, and disabled thinking.
+Freeze temperature and output limits explicitly when comparing policies; native
+manifest defaults remain temperature 1 and 300 output tokens. A non-`stop`
+completion is failed evidence, even when its partial content parses as JSON.
+Earlier Anthropic Messages receipts remain historical evidence in their original format.
+
 Evaluate with the same native renderer, parser, rules, and decoder. Split by
 complete episode; reserve fresh seeds and frozen opponents. Record validity,
 fallback rate, terminal scores, latency, and token cost. A lower imitation
@@ -114,11 +121,14 @@ Archived logs and previous exports remain historical evidence; they cannot quali
 
 ## Scripted diagnostic collection
 
-`tools/export_posttrain.nim` reads the manifest's five-seat `table5` configuration and exercises the native rules and
-hosted reply parser with scripted players. It writes private canonical complete episodes, with engine-event actions, exact prompts, outcomes, and source/mode pins. The shared importer owns family splits and explicit teacher selection. Its data establishes simulator execution and scripted imitation;
-it is not approved model-teacher data for the Qwen program. The retired `metta_posttrain.train` command and the
-four-seat Metta bridge are not program entry points. Use reviewed accepted model decisions from the shared Coworld
-runtime and the Metta five-seat guide for new training.
+Run the native game with explicitly registered scripted baseline players and
+`COGAME_SAVE_TRAJECTORY_URI` to collect infrastructure diagnostics. This uses the
+same round progression, seeded reaction order, and evidence writer as model play.
+Scripted actions remain scripted evidence and do not become approved teacher labels.
+
+Convert reviewed model episodes with Metta's `metta-posttrain prepare-data` command.
+The game no longer maintains a separate simulated-game exporter. Preserve earlier
+exports as historical evidence; they do not qualify current training labels.
 
 ## Shared environment checks
 

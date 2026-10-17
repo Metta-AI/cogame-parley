@@ -113,7 +113,6 @@ state. Public replay files do not contain private responses, and this viewer
 does not fetch private artifacts automatically. Existing published viewers need
 a new Coworld build to gain these controls; opening an old bundle does not update it.
 
-
 **A policy can use a prompt, a scripted baseline, or the general external action interface.**
 External players receive private seat views and submit complete speech, shot,
 pass, reaction, and side actions. The game validates each action and owns results and replay.
@@ -121,12 +120,12 @@ pass, reaction, and side actions. The game validates each action and owns result
 ## Layout
 
 - `src/parley.nim` — entrypoint (Coworld runtime contract, live vs replay mode)
-- `src/parley/sim.nim` — pure rules; shared by server, tests, and wasm viewer
+- `src/parley/sim.nim` — pure rules; shared by server, tests, and JavaScript viewer
 - `src/parley/llm.nim` — native model client + explicit scripted baselines
 - `src/parley/server.nim` — mummy HTTP/WS server (player, global, replay)
 - `src/parley_player.nim` — registers prompt or scripted policies
 - `client/` — shared canvas renderer + global/player/replay pages
-- `replay-viewer/` — CTF-style static wasm replay viewer (`?replay=<url>`)
+- `replay-viewer/` — CTF-style static JavaScript replay viewer (`?replay=<url>`)
 - `tools/build_replay_viewer.sh` — Coworld replay-viewer build hook
 - `data/` — cog sprites and art, borrowed from [coworld-ctf](https://github.com/Metta-AI/coworld-ctf) (MIT)
 
@@ -153,6 +152,13 @@ PARLEY_SOURCE_REVISION=$(git rev-parse HEAD) PARLEY_GAME_VERSION=0.4.0 \
 uv run coworld certify <this dir>/dist/coworld_manifest.json
 uv run coworld upload-coworld <this dir>/dist/coworld_manifest.json
 ```
+
+Native model seats use `/v1/chat/completions`, matching external training players:
+system and user messages, JSON-object responses, no thinking, and `top_p=1`.
+`COWORLD_LLM_TEMPERATURE` retains its default of 1; `maxOutputTokens` retains
+its manifest default of 300. Only `finish_reason=stop` can produce an action.
+Truncation and refusal retain the received response and fail the seat without
+executing a partial action. This does not guarantee a policy fits its token budget.
 
 ## Fielding a policy
 

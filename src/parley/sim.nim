@@ -1,5 +1,5 @@
 ## Pure game rules for Parley. No IO, no networking, no LLM: the server, the
-## tests, and the wasm replay viewer all drive this same module.
+## tests, and the JavaScript replay viewer all drive this same module.
 ##
 ## Rules: N cogs sit around a table. One cog is "it" and holds the paintgun.
 ## Each turn "it" says something to the table and shoots another living cog.
@@ -190,7 +190,7 @@ proc tableNames*(players: seq[PlayerConfig], seed: int): seq[string] =
 proc sampleEpisode*(config: GameConfig): GameConfig =
   ## Draws this episode's table rules from the seed. Every seat plays the same
   ## table, and a replay carries the drawn values in its config, so the server,
-  ## the tests and the wasm re-derivation all agree without re-rolling.
+  ## the tests and the browser re-derivation all agree without re-rolling.
   ##
   ## Idempotent: a config that already carries a draw (a replay being re-read,
   ## or an operator pinning values by hand) is returned untouched.
@@ -782,3 +782,32 @@ proc eventFromJson*(node: JsonNode): GameEvent =
     enemy: node{"enemy"}.getInt(-1),
     points: node{"points"}.getInt(0)
   )
+
+proc enrichReplay*(replay: JsonNode): JsonNode =
+  ## Both hosted and static viewers consume the same historical replay reader.
+  var config = defaultGameConfig()
+  config.hitPoints = replay["config"]{"hitPoints"}.getInt(3)
+  config.rounds = replay["config"]{"rounds"}.getInt(1)
+  config.survivors = replay["config"]{"survivors"}.getInt(1)
+  config.roundsKnown = replay["config"]{"roundsKnown"}.getBool(true)
+  config.survivorsKnown = replay["config"]{"survivorsKnown"}.getBool(true)
+  config.sampled = true
+  for name in replay["names"]:
+    config.players.add(PlayerConfig(name: name.getStr()))
+  var events: seq[GameEvent]
+  for node in replay["events"]:
+    events.add(eventFromJson(node))
+  var states = newJArray()
+  for frame in replayMatch(config, events):
+    states.add(frame.sim.seatStates(frame.totals, frame.roundWins))
+  %*{
+    "type": "replay",
+    "protocol": replay{"protocol"}.getStr("parley.replay.v1"),
+    "names": replay["names"],
+    "policyNames": replay{"policyNames"},
+    "config": replay["config"],
+    "events": replay["events"],
+    "decisionRefs": replay{"decisionRefs"}.getElems(),
+    "results": replay{"results"},
+    "states": states
+  }

@@ -29,8 +29,8 @@ def play(index):
         port = listener.getsockname()[1]
     config = {
         "seed": 946001 + index,
-        "turnDelayMs": 0,
-        "episodeTimeoutSeconds": 120,
+        "turnDelayMs": 100 if index == 0 else 0,
+        "episodeTimeoutSeconds": 8 if index == 0 else 120,
         "player_connect_timeout_seconds": 20,
         "tokens": [f"fixture-{seat}" for seat in range(5)],
         "players": [{"name": f"Player{seat}"} for seat in range(5)],
@@ -81,6 +81,10 @@ def play(index):
     assert {event["episode_id"] for event in events} == {terminal["episode_id"]}
     assert terminal["episode_id"].startswith("local-")
     assert (folder / "results.json").is_file() and (folder / "replay.json").is_file()
+    replay = json.loads((folder / "replay.json").read_text())
+    assert terminal["outcome"]["results"] == json.loads((folder / "results.json").read_text())
+    if index == 0:
+        assert 0 < replay["config"]["rounds"] < replay["config"]["plannedRounds"]
     return {"seed": config["seed"], "episode_id": terminal["episode_id"], "decisions": len(events) - 1}
 
 

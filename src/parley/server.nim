@@ -517,6 +517,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
     if acknowledged: break
     sleep(10)
   var unresolved = false
+  var completed = false
   var cleanup = newJObject()
   var results: JsonNode
   var replayData: string
@@ -539,7 +540,8 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
     var aliasNames = newJArray()
     for seat in state.match.sim.seats:
       aliasNames.add(%seat.name)
-    if status != esFailed and not interruptionRequested() and not unresolved:
+    completed = status == esCompleted and not interruptionRequested() and not unresolved
+    if completed:
       var final = %*{
         "type": "final",
         "done": true,
@@ -579,8 +581,8 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
           attempt.policy = state.config.players[staged.seat].name
         trajectory.recordDecision(staged.id, $staged.seat, staged.observation,
           attempts, staged.selected, staged.action, staged.status, fallbackOrigin = staged.fallback)
-    if interruptionRequested() or status == esFailed or unresolved:
-      trajectory.finish((if interruptionRequested(): esTruncated elif status == esFailed: esFailed else: esTruncated),
+    if not completed:
+      trajectory.finish(esFailed,
         %*{"protocol": "parley.native-outcome.v1", "player_cleanup": cleanup,
           "termination": (if interruptionRequested(): "interrupted" elif state.policyFailure.isSome: "policy_failure"
             elif unresolved: "unresolved-player-cleanup" else: "runtime-failure"),
@@ -597,7 +599,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
       parseEnum[ArtifactHttpMethod](getEnv("COGAME_SAVE_TRAJECTORY_METHOD", "PUT").toUpperAscii()))
   if state.policyFailure.isSome and not interruptionRequested():
     state.writePlayerFailure(state.policyFailure.get(), cleanupDeadline)
-  if status != esFailed and not interruptionRequested() and not unresolved:
+  if completed:
     writeArtifact(
       runtimeConfig.resultsUri, $results, "application/json",
       "COGAME_RESULTS_METHOD", cleanupDeadline
@@ -724,8 +726,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           if not client.playDecision(seat, wantShot = false, playDeadline):
             return
 
-    finishEpisode(runtimeConfig,
-      (if state.match.roundsPlayed == state.match.config.rounds: esCompleted else: esTruncated))
+    finishEpisode(runtimeConfig, esCompleted)
 
 var
   gameThread: Thread[RuntimeConfig]

@@ -277,7 +277,7 @@ for mode in ["accepted", "invalid-response", "truncated-response", "registration
     if mode == "interrupted-partial-http-term":
         assert len(uploads) == 1 and uploads[0]["name"] == "trajectory.jsonl" and uploads[0]["method"] == "POST"
     if mode.startswith("interrupted-") or mode == "runtime-failure":
-        assert events[-1]["status"] == ("failed" if mode == "runtime-failure" else "truncated")
+        assert events[-1]["status"] == "failed"
         assert not (folder / "results.json").exists()
         assert not (folder / "replay.json").exists()
         assert events[-1]["participant_outcomes"] is None
@@ -373,3 +373,9 @@ for mode in ["accepted", "invalid-response", "truncated-response", "registration
     )
 (root / "report.json").write_text(json.dumps(reports, indent=2) + "\n")
 print(json.dumps(reports))
+
+subprocess.run(
+    [sys.executable, str(Path(__file__).with_name("test_local_episode_identity.py")), binary, str(root / "completion")],
+    check=True,
+    timeout=180,
+)

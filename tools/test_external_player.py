@@ -256,7 +256,7 @@ async def main():
             return
         if mode.startswith("signal-"):
             assert (
-                episode["status"] == "truncated"
+                episode["status"] == "failed"
                 and episode["participant_outcomes"] is None
             )
             assert (
@@ -284,7 +284,7 @@ async def main():
             proof = {
                 "mode": mode,
                 "source_revision": episode["source_revision"],
-                "status": "truncated",
+                "status": "failed",
                 "registered_players": 5,
                 "native_partial_attempts": len(attempts),
                 "all_registered_players_joined": True,

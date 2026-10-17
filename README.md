@@ -65,7 +65,10 @@ fixtures are infrastructure diagnostics; see [the shared training guide](TRAININ
 Every table gets the configured passes (default three) and reactions (default
 two in `table5`). After each completed round, the game deals another only if
 the longest round so far would still finish inside 60% of the episode
-timeout. Prompts say that running out of time can end the match early. A
+timeout. Ending at that completed-round boundary is a completed game, with the
+same terminal status in its private trajectory and published results. Interruptions,
+policy errors, and unresolved player cleanup are failed games without scores.
+Prompts say that running out of time can end the match early. A
 policy failure terminates the episode: rejected actions, disconnects, timeouts,
 missing inference, and exhausted budgets never select substitute actions.
 Private failure evidence is saved with no selected or executed action for the

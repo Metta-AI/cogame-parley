@@ -38,6 +38,9 @@ jobs:
           set -euo pipefail
           nim c -d:release --threads:on -d:ParleyGameVersion=source-fixture -d:ParleySourceRevision="$GITHUB_SHA" --path:src -o:/tmp/parley-game src/parley.nim
           uv run --no-project --with 'websockets==15.0.1' python tools/test_native_trajectory.py /tmp/parley-game "$RUNNER_TEMP/private-trajectory-proof" "$GITHUB_SHA"
+      - name: Verify completed-round budget stops and concurrent game identities
+        run: |
+          uv run --no-project --with 'websockets==15.0.1' python tools/test_local_episode_identity.py /tmp/parley-game "$RUNNER_TEMP/completion-proof"
       - name: Verify policy failures never execute fallback actions
         run: |
           set -euo pipefail

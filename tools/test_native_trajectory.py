@@ -277,7 +277,7 @@ for mode in ["accepted", "invalid-response", "truncated-response", "registration
     if mode == "interrupted-partial-http-term":
         assert len(uploads) == 1 and uploads[0]["name"] == "trajectory.jsonl" and uploads[0]["method"] == "POST"
     if mode.startswith("interrupted-") or mode == "runtime-failure":
-        assert events[-1]["status"] == ("failed" if mode == "runtime-failure" else "truncated")
+        assert events[-1]["status"] == "failed"
         assert not (folder / "results.json").exists()
         assert not (folder / "replay.json").exists()
         assert events[-1]["participant_outcomes"] is None

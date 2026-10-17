@@ -50,7 +50,10 @@ Retain colliding historical trajectories as evidence, but do not publish them un
 Verify concurrent five-seat games with `python3 tools/test_local_episode_identity.py /absolute/path/to/parley /fresh/private/output`. The artifact contains
 seat-private observations, every native attempt, exact prompts and requests,
 raw responses, platform response call IDs, parsed and executed actions,
-rejections, explicit scripted policies, and the completed, truncated, or failed terminal outcome.
+rejections, explicit scripted policies, and the completed or failed terminal outcome.
+A legal budget stop between rounds is completed, even when fewer rounds were played than planned.
+Interrupted or failed games publish no scores. Historical releases retain their original `truncated` records;
+do not rewrite hash-bound research evidence. Qualify a new release and start a fresh training campaign.
 The private outcome uses `parley.native-outcome.v1`: `results` contains the unchanged game results,
 `input_config` preserves the original game input with seat authentication tokens removed, and
 `selected_seed` records the actual seed selected before rule sampling. An unpinned input keeps its seed absent;

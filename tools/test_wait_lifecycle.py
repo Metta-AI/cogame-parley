@@ -92,7 +92,7 @@ for mode in sys.argv[3:] or ("missing-seats", "pacing-term", "pacing-int"):
                 assert not (folder / "results.json").exists()
             else:
                 assert elapsed < 1
-                assert events[-1]["status"] == "truncated"
+                assert events[-1]["status"] == "failed"
                 assert (
                     not (folder / "results.json").exists()
                     and not (folder / "replay.json").exists()

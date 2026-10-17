@@ -8,10 +8,22 @@ type
   PlayerConfig* = object
     name*: string
 
+  PromptVariant* = enum
+    pvCanonical = "canonical"
+    pvPlain = "plain"
+    pvNumbered = "numbered"
+    pvQuestions = "questions"
+    pvReordered = "reordered"
+    pvHeldoutBriefing = "heldout-briefing"
+    pvHeldoutReference = "heldout-reference"
+    pvMixed = "mixed"
+
   GameConfig* = object
     tokens*: seq[string]
     players*: seq[PlayerConfig]
     seed*: int
+    promptVariant*: PromptVariant
+    promptSeed*: int     ## Independent of game randomness; required for mixed wording.
     rounds*: int
     survivors*: int       ## cogs left standing that ends a round
     hitPoints*: int
@@ -137,3 +149,13 @@ proc update*(config: var GameConfig, configJson: string) =
       else: field
     if node.hasKey(key):
       value = to(node[key], typeof(value))
+
+  if config.promptSeed < 0:
+    raise newException(ParleyError, "promptSeed must be nonnegative")
+  if config.promptVariant == pvMixed and not node.hasKey("promptSeed"):
+    raise newException(ParleyError, "mixed prompts require an explicit promptSeed")
+
+proc selectedPromptVariant*(config: GameConfig): PromptVariant =
+  ## Balanced scheduling over consecutive prompt seeds, without consuming game RNG.
+  if config.promptVariant == pvMixed: PromptVariant(config.promptSeed mod 5)
+  else: config.promptVariant

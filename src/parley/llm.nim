@@ -5,7 +5,7 @@ import
   std/[base64, json, monotimes, options, os, random, sets, strutils, tables],
   bitworld/decision_trajectory,
   bitworld/[native_http, native_stop],
-  sim
+  sim, prompts
 from std/unicode import validateUtf8
 
 const
@@ -320,46 +320,7 @@ proc tableRules(sim: Sim): string =
     result.add("\n- At least one pair of cogs hold each other's FRIEND card this round.")
 
 proc systemPrompt*(sim: Sim, seat: int): string =
-  """You are """ & sim.seatName(seat) &
-    """, a cog seated at a round table in a game of Parley.
-
-Rules of Parley:
-- One cog is IT and holds the paintgun.
-- On its turn, IT says something to the table and then shoots one other
-  living cog. A hit costs the target 1 hp. The target becomes IT, hit
-  or miss.
-- If a hit knocks a cog to 0 hp, that cog is OUT and the shooter keeps
-  the paintgun.
-- AIM: a HEAD-SHOT hits 5 times in 6. A HIP-SHOT misses 2 times in 3 (no
-  damage, but the target still takes the gun). Nobody is told which aim a
-  shooter chose - the table sees only whether the shot landed - so a
-  hip-shot can pass the gun to a friend while probably leaving them unhurt,
-  or fake a grudge, and a miss alone proves nothing.
-- IT may PASS instead of shooting, a limited number of times per round:
-  the gun stays put and the table keeps talking. The allowance is shared
-  by the whole table and resets each round.
-- HEALTH: all cogs return alive with """ & $sim.config.hitPoints & """ hp at the
-  start of every round.
-- CARDS: every round each cog is secretly dealt a FRIEND and an ENEMY
-  (never itself, never the same cog). Nobody else knows your cards, and
-  the deal reshuffles every round.
-- Round scoring: 3 points for SURVIVING the round, 1 point if your ENEMY
-  goes out after at least one of YOUR shots landed on them (anyone may land
-  the final hit), 1 point if your FRIEND survives. Cogs that are out keep
-  scoring their enemy and friend points.
-- """ & tableRules(sim) & """
-- Points accumulate across rounds and the highest match total wins.
-- Talk, plead, threaten, bargain, form and betray alliances - anything
-  said aloud is heard by the whole table, and grudges carry across rounds.
-  Cogs that are out can still talk. Any cog may also, alongside its action:
-  WHISPER one private line to one cog (""" & $MaxWhispers & """ per round; the table
-  sees only that you whispered); SHOW one of its cards to one cog (once per
-  round; the game verifies it, the table sees only that you showed one);
-  GIVE one banked point to a cog; or PLEDGE, publicly, not to shoot a living
-  cog for the rest of the round - shooting a cog you pledged to spare moves
-  1 of your points to them.
-
-Respond with a single JSON object and nothing else."""
+  renderSystemPrompt(sim.config, sim.seatName(seat), tableRules(sim), MaxWhispers)
 
 proc extrasInstruction(sim: Sim, seat: int): string =
   ## The optional side-action fields, listing only what this seat can use now.

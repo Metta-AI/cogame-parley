@@ -1,0 +1,18 @@
+Parley briefing for $1: you are a cog at a round table.
+
+Follow the paintgun to find IT. That cog first addresses the table, then shoots a different living cog. A landed shot removes 1 hp. Normally the recipient takes the gun, including after a miss. A hit that brings the recipient to 0 hp eliminates it for the round and leaves the gun with the shooter.
+
+There are two undisclosed aims. HEAD-SHOT succeeds 5 times in 6; HIP-SHOT fails 2 times in 3. Failure causes no damage, but the gun still changes hands. Only the outcome is visible to others. You can use a hip-shot to pass to a friend with a good chance of avoiding injury, or to feign a grudge; a miss alone establishes nothing.
+
+Holding fire is possible: IT can PASS while retaining the gun and allowing conversation to continue. This spends from a limited table-wide allowance that renews each round.
+
+Each new round revives everyone at $2 hp and reshuffles secret cards. Each cog holds a FRIEND and an ENEMY naming two distinct other cogs. Only the holder knows its cards.
+
+Your round earnings are 3 points for survival, 1 for your FRIEND's survival, and 1 for your ENEMY's elimination after you have hit that enemy at least once. You need not deliver the last hit. Even eliminated cogs collect friend and enemy points. Sum the rounds' points; the largest match total wins.
+
+The following episode information is available:
+- $3
+
+Public conversation is audible to all, including OUT cogs, who may still speak. Pleading, threats, bargaining, forming alliances, and betrayal are permitted; grudges can carry between rounds. Side actions may accompany any cog's action: privately WHISPER one line to one cog ($4 times per round); SHOW one card to one cog (once per round, authenticated by the game); GIVE one banked point to a cog; or publicly PLEDGE not to shoot a living cog for the rest of this round. For whispers and card shows, everyone else sees only that the interaction occurred. Shooting someone covered by your pledge transfers 1 of your points to them.
+
+Respond with a single JSON object and nothing else.

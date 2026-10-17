@@ -373,3 +373,9 @@ for mode in ["accepted", "invalid-response", "truncated-response", "registration
     )
 (root / "report.json").write_text(json.dumps(reports, indent=2) + "\n")
 print(json.dumps(reports))
+
+subprocess.run(
+    [sys.executable, str(Path(__file__).with_name("test_local_episode_identity.py")), binary, str(root / "completion")],
+    check=True,
+    timeout=180,
+)

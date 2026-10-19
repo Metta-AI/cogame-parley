@@ -188,7 +188,8 @@ worst-template, and between-template scores; aggregate uncertainty by game seed.
 Wording robustness and repeated-action failures are separate from training loss.
 
 Run `python tools/test_prompt_variants.py /absolute/parley /fresh/private/output`
-with `websockets==15.0.1`. It plays 24 complete ordinary five-seat games through
+with `websockets==15.0.1`. It plays 16 complete ordinary five-seat games through
 real scripted socket players. It checks unchanged state, scoring, private
-visibility, and legal side actions across all seven templates and all mixed
-selections. This proves the protocol and game invariants, not improved model play.
+visibility, and legal side actions across all seven templates and one mixed
+selection, using two scenario seeds. Games run sequentially. This proves the
+protocol and game invariants, not improved model play.

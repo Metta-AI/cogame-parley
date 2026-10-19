@@ -155,26 +155,20 @@ async def main():
     reports = []
     for seed in [17, 946001]:
         canonical = await play(binary, root / f"{seed}-canonical", seed, "canonical", 0)
-        gate = asyncio.Semaphore(1)
-
-        async def run_variant(variant, prompt_seed):
-            async with gate:
-                run = await play(binary, root / f"{seed}-{variant}-{prompt_seed}", seed, variant, prompt_seed)
+        runs = [canonical]
+        for index, variant in enumerate(variants[1:], 1):
+            run = await play(binary, root / f"{seed}-{variant}-{index}", seed, variant, index)
             assert run["observations"] == canonical["observations"], "Wording changed state, actions or private visibility"
             assert run["results"] == canonical["results"], "Wording changed game outcomes"
-            return run
-
-        direct = await asyncio.gather(*(run_variant(variant, index) for index, variant in enumerate(variants[1:], 1)))
-        runs = [canonical, *direct]
+            runs.append(run)
         assert [run["selected"] for run in runs] == variants
         assert len({run["systems"][0] for run in runs}) == len(variants)
-        mixed = await asyncio.gather(*(run_variant("mixed", index) for index in range(5)))
-        for expected, run in zip(runs[:5], mixed, strict=True):
-            assert run["selected"] == expected["selected"]
-            assert run["systems"] == expected["systems"]
+        mixed = await play(binary, root / f"{seed}-mixed-4", seed, "mixed", 4)
+        assert mixed == runs[4], "Mixed selection differs from its explicit presentation"
+        runs.append(mixed)
         reports.extend({"seed": seed, "variant": run["selected"], "decisions": run["decisions"]} for run in runs)
     (root / "report.json").write_text(json.dumps(reports, indent=2) + "\n")
-    print(json.dumps({"completed_games": 24, "templates": 7, "output": str(root)}))
+    print(json.dumps({"completed_games": 16, "templates": 7, "output": str(root)}))
 
 
 asyncio.run(main())

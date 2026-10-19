@@ -71,6 +71,18 @@
           "description": "Pins who wakes up holding the paintgun (and scripted-policy draws). Omit for a fresh random seed per episode.",
           "type": "integer"
         },
+        "promptVariant": {
+          "description": "Rules wording only. Mixed selects among five training templates; heldout templates are for evaluation.",
+          "type": "string",
+          "enum": ["canonical", "plain", "numbered", "questions", "reordered", "heldout-briefing", "heldout-reference", "mixed"],
+          "default": "canonical"
+        },
+        "promptSeed": {
+          "description": "Independent nonnegative wording-selection seed. Consecutive values balance mixed templates without changing game randomness.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
         "hitPoints": {
           "description": "Starting hp for every cog each round when sampled is true; otherwise sampled from 2–3.",
           "type": "integer",

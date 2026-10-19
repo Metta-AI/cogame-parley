@@ -374,6 +374,12 @@ for mode in ["accepted", "invalid-response", "truncated-response", "registration
 (root / "report.json").write_text(json.dumps(reports, indent=2) + "\n")
 print(json.dumps(reports))
 
+# Exercise wording selection through complete five-seat games in the same CI entrypoint.
+subprocess.run(
+    [sys.executable, str(Path(__file__).with_name("test_prompt_variants.py")), binary, str(root / "prompt-variants")],
+    check=True,
+)
+
 subprocess.run(
     [sys.executable, str(Path(__file__).with_name("test_local_episode_identity.py")), binary, str(root / "completion")],
     check=True,

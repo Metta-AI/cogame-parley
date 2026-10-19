@@ -147,3 +147,48 @@ Do not train fallback actions. Report fallback-influenced histories even when th
 
 Every experiment ends with a few paragraphs stating the question and pinned setup, measured findings or failures,
 and the next decision. Keep raw private prompts, logs, receipts, and checkpoint weights outside Git.
+
+## Rules wording augmentation
+
+The game owns seven reviewed rule templates under `src/parley/prompts/`:
+`canonical`, `plain`, `numbered`, `questions`, `reordered`,
+`heldout-briefing`, and `heldout-reference`. The canonical template preserves
+existing message bytes. The other templates paraphrase the same mechanics,
+including aim probabilities, eliminated-seat scoring, side actions, and
+existing strategic hints. Sampled table rules are inserted by the same
+renderer; hidden round and survivor counts remain hidden. Player guidance,
+private cards, history, legal actions, and reply grammar are unchanged.
+
+The default is `"promptVariant": "canonical"`. For balanced augmentation,
+add `"promptVariant": "mixed", "promptSeed": N` to the game configuration.
+Nonnegative consecutive prompt seeds cycle through the five training templates.
+This seed is independent of the game seed and never advances game randomness.
+Every seat uses the same selected template throughout the episode. Randomize
+the schedule before collection when balancing across scenarios, seats, and
+opponents; do not associate one wording exclusively with a particular role.
+Mixed mode requires an explicit prompt seed and never selects held-out wording.
+Pin an individual template by setting `promptVariant` to its name. Both held-out
+templates are evaluation-only by convention; selecting them explicitly allows
+confirmation evaluation, not admission to training data.
+
+Private decision observations include `prompt_template` with bank version
+`parley-rules-v1`, selected variant, requested selection, independent seed, and
+SHA-256 hashes of the exact system and user messages. External decisions carry
+this inside the extensible private `observation` object, retaining the player
+protocol shape. Native trajectory evidence retains it alongside exact prompts.
+The public spectator view and public replay do not gain prompt metadata.
+
+Collect new responses under the actual selected wording. Never rewrite the
+prompt attached to an old response. Group all prompt versions of a scenario
+into the same training/validation family. Freeze game/source/model identities,
+opponents, inference settings, seeds, and seats for matched comparisons.
+Compare base, canonical-only training, and mixed-template training on canonical,
+seen-paraphrase, and held-out-paraphrase panels. Report failures alongside mean,
+worst-template, and between-template scores; aggregate uncertainty by game seed.
+Wording robustness and repeated-action failures are separate from training loss.
+
+Run `python tools/test_prompt_variants.py /absolute/parley /fresh/private/output`
+with `websockets==15.0.1`. It plays 24 complete ordinary five-seat games through
+real scripted socket players. It checks unchanged state, scoring, private
+visibility, and legal side actions across all seven templates and all mixed
+selections. This proves the protocol and game invariants, not improved model play.

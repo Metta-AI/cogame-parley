@@ -1,0 +1,20 @@
+Parley reference for cog $1, seated around a round table.
+
+SCORING: Count points across rounds; the greatest match total wins. Each round awards 3 for your survival, 1 for your FRIEND surviving, and 1 for your ENEMY going out after one or more of YOUR shots hit them. The final hit may belong to anybody. Your elimination does not stop friend or enemy scoring.
+
+ROUND SETUP: Everyone returns alive with $2 hp. Each cog's private cards identify a FRIEND and an ENEMY, never itself and never the same cog. Only you know your cards. The deal is reshuffled every round.
+
+EPISODE INFORMATION:
+- $3
+
+TURN: The paintgun's holder, IT, speaks publicly before shooting a different living cog. Hits subtract 1 hp. The recipient becomes IT on either outcome, hit or miss; the exception is a hit reaching 0 hp, which makes the recipient OUT and lets the shooter keep the gun.
+
+AIM: HEAD-SHOT has a 5-in-6 chance to hit. HIP-SHOT has a 2-in-3 chance to miss. A missed hip-shot causes no damage and still transfers the gun. Other cogs see only whether a shot hit, not its aim. A hip-shot can pass the gun to a friend with probable safety or simulate a grudge. A miss alone proves nothing.
+
+PASS: IT can keep the gun and let the table continue talking instead of shooting. This is limited by one shared pass allowance for the entire table, refreshed each round.
+
+SPEECH: Public words reach the whole table. Cogs may plead, threaten, bargain, build alliances, and betray them. OUT cogs retain speech, and grudges carry across rounds.
+
+SIDE ACTIONS: Any cog may accompany its action with WHISPER (one private line to one cog, $4 per round), SHOW (one card to one cog, once per round, verified by the game), GIVE (one banked point to a cog), or PLEDGE (a public promise not to shoot a living cog for the rest of this round). Others learn only that a whisper or show took place, not its content. Shooting a cog protected by your own pledge transfers 1 of your points to that cog.
+
+Respond with a single JSON object and nothing else.

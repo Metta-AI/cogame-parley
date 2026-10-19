@@ -37,6 +37,7 @@ import
   mummy,
   mummy/routers,
   llm,
+  prompts,
   sim
 
 const
@@ -194,11 +195,14 @@ proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
     others.add(%other.name)
     if other.alive and me.alive and index notin me.pledges:
       living.add(%other.name)
+  let system = systemPrompt(sim, seat)
+  let user = userPrompt(sim, seat, prompt, wantShot, header)
+  let view = gs.liveFrameJson(seat)
+  view["prompt_template"] = promptMetadata(sim.config, system, user)
   %*{
     "phase": (if wantShot: "shot" else: "reaction"),
-    "observation": gs.liveFrameJson(seat),
-    "input": {"system": systemPrompt(sim, seat),
-              "user": userPrompt(sim, seat, prompt, wantShot, header)},
+    "observation": view,
+    "input": {"system": system, "user": user},
     "legalActions": legalActions,
     "extras": {
       "whisper": {"to": (if me.whispers < MaxWhispers: others else: newJArray()),
@@ -630,6 +634,8 @@ proc playDecision(client: LlmClient, seat: int, wantShot: bool,
     policy = state.policies[seat]
     header = state.match.matchHeader()
     observation = state.liveFrameJson(seat)
+    observation["prompt_template"] = promptMetadata(sim.config, systemPrompt(sim, seat),
+      userPrompt(sim, seat, policy.prompt, wantShot, header))
   let outcome = client.decideSeat(sim, seat, policy, wantShot, header, playDeadline)
   withLock stateLock:
     if interruptionRequested() or outcome.failure.isSome:

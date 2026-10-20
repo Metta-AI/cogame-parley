@@ -416,7 +416,39 @@ proc parseJsonObject*(text: string): JsonNode =
   if result.kind != JObject:
     raise newException(ParleyError, "response must be a JSON object")
 
-proc completeText(client: LlmClient, seat: int, system, user: string,
+proc actionSchema(sim: Sim, seat: int, wantShot: bool): JsonNode =
+  ## Constrain native generation to the same currently legal actions as the parser.
+  let me = sim.seats[seat]
+  var others, targets, pledgeable: seq[string]
+  for index, other in sim.seats:
+    if index != seat:
+      others.add(other.name)
+      if other.alive:
+        targets.add(other.name)
+        if index notin me.pledges: pledgeable.add(other.name)
+  if sim.skipsLeft() > 0: targets.add("pass")
+  var properties = %*{"say": {"type": "string"}}
+  if wantShot:
+    properties["shoot"] = %*{"type": "string", "enum": targets}
+    properties["aim"] = %*{"type": "string", "enum": ["head", "hip"]}
+  if me.whispers < MaxWhispers:
+    properties["whisper"] = %*{"anyOf": [{"type": "null"},
+      {"type": "object", "additionalProperties": false, "required": ["to", "text"],
+       "properties": {"to": {"type": "string", "enum": others}, "text": {"type": "string"}}}]}
+  if me.friend >= 0 and not me.revealed:
+    properties["reveal"] = %*{"anyOf": [{"type": "null"},
+      {"type": "object", "additionalProperties": false, "required": ["to", "card"],
+       "properties": {"to": {"type": "string", "enum": others},
+                      "card": {"type": "string", "enum": ["friend", "enemy"]}}}]}
+  if sim.banked[seat] + sim.transfers[seat] >= 1:
+    properties["give"] = %*{"anyOf": [{"type": "null"}, {"type": "string", "enum": others}]}
+  if me.alive and pledgeable.len > 0:
+    properties["pledge"] = %*{"anyOf": [{"type": "null"}, {"type": "string", "enum": pledgeable}]}
+  var required = newJArray()
+  for key, value in properties: required.add(%key)
+  %*{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
+
+proc completeText(client: LlmClient, seat: int, system, user: string, schema: JsonNode,
     evidence: var DecisionAttempt, deadline: MonoTime): string =
   var body = %*{
     "max_tokens": client.maxOutputTokens,
@@ -424,7 +456,8 @@ proc completeText(client: LlmClient, seat: int, system, user: string,
     "top_p": 1,
     "reasoning": {"effort": "none"},
     "chat_template_kwargs": {"enable_thinking": false},
-    "response_format": {"type": "json_object"},
+    "response_format": {"type": "json_schema",
+      "json_schema": {"name": "parley_action", "strict": true, "schema": schema}},
     "messages": [{"role": "system", "content": system},
       {"role": "user", "content": user}]
   }
@@ -642,7 +675,7 @@ proc decide*(
     {"role": "user", "content": user}]
   result.input = %*{"system": system, "user": user}
   try:
-    raw = client.completeText(seat, system, user, evidence, deadline)
+    raw = client.completeText(seat, system, user, sim.actionSchema(seat, wantShot), evidence, deadline)
     let payload = parseJsonObject(raw)
     result.decision = parseDecision(sim, seat, payload, wantShot)
     evidence.response = %raw

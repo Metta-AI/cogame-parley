@@ -131,7 +131,7 @@
           "type": "integer",
           "minimum": 64,
           "maximum": 2000,
-          "default": 300
+          "default": 1024
         },
         "llmTimeoutSeconds": {
           "type": "integer",

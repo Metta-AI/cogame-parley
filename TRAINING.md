@@ -135,6 +135,28 @@ exports as historical evidence; they do not qualify current training labels.
 
 ## Shared environment checks
 
+### Comparing supervised and reward-based learning
+
+The [game-learning study](https://github.com/Metta-AI/posttraining-research/tree/relh/game-learning-roadmap/users/relh/game-learning-roadmap)
+compares a frozen supervised parent, continued imitation, and native-reward learning.
+Freeze one published release for each comparison. Source changes to completion, prompts, or private outcome records require a newly qualified cohort.
+Do not combine newly rebuilt main with historical 0.4.5 training or evaluation records.
+
+The game's score is within-table placement: the fraction of other seats beaten, with half credit for ties.
+Keep raw points and completed/planned rounds alongside that score.
+A learner's rejected sampled action remains a failed native episode without a game score.
+A trainer may define an explicit failure utility, but it must not write that utility back as a native result.
+Opponent, transport, and infrastructure failures are separate from learner-action failures.
+Retain all attempted episodes when comparing reliability and report any unavailable paired score panel.
+
+All five learner seats, frozen opponents, and ordinary sampled rules remain part of evaluation.
+Group every seat and wording of the same physical rule family into one split.
+Preserve historical exposure when auditing new splits; a new seed or family hash does not establish an untouched scenario.
+Record action acceptance separately from strategic reward: learning to produce legal actions does not alone demonstrate stronger play.
+The research runner owns optimization and checkpoint selection; the game remains the sole owner of legal actions and native scores.
+
+### Release and observation parity
+
 Before collecting a corpus, compare the published manifest with the pinned source and verify five player/token slots,
 ordinary sampling, and the same resolved configuration in collection and evaluation. Match private external observation
 messages to the game-rendered prompt; retain full generated actions and their accepted effects.

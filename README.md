@@ -184,3 +184,7 @@ The offline-certified bundle declares the explicit `parley-scripted` baseline.
 Prompt policies require a native inference endpoint and must be registered as
 custom players using `/bin/parley-player` and `PLAYER_PROMPT`; they are not
 advertised as an offline-certified bundled player.
+
+Native prompt seats request strict structured output for the currently legal action schema, with a default
+1024-token output budget. This prevents explanatory prose and the former 300-token cutoff from corrupting action JSON.
+External action players still own generation and must submit a legal action; model failures remain explicit failures.

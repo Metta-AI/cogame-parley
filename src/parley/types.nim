@@ -132,7 +132,7 @@ proc defaultGameConfig*(): GameConfig =
     playerConnectTimeoutSeconds: 180,
     episodeTimeoutSeconds: 20 * 60,
     model: "anthropic/claude-sonnet-4.6",
-    maxOutputTokens: 300,
+    maxOutputTokens: 1024,
     llmTimeoutSeconds: 45
   )
 

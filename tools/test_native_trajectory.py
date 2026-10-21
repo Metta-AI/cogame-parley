@@ -23,10 +23,10 @@ binary, output, revision = sys.argv[1:]
 root = Path(output)
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
 reports = []
-for mode in ["accepted", "invalid-response", "truncated-response", "registration", "seat-budget", "random-seed",
+for mode in ["accepted", "invalid-response", "truncated-response", "inference-unavailable", "inference-throttled", "registration", "seat-budget", "random-seed",
              "interrupted-started-term", "interrupted-partial-term", "interrupted-partial-int", "runtime-failure",
              "artifact-http", "interrupted-partial-http-term", "artifact-upload-failure"]:
-    seats = 5 if mode == "registration" else 4
+    seats = 5 if mode in {"registration", "inference-unavailable", "inference-throttled"} else 4
     folder = root / mode
     folder.mkdir(mode=0o700)
     requests = []
@@ -108,7 +108,7 @@ for mode in ["accepted", "invalid-response", "truncated-response", "registration
                 entered.set()
                 release.wait(10)
                 return
-            self.send_response(429 if category else 200)
+            self.send_response(503 if mode == "inference-unavailable" else 429 if category or mode == "inference-throttled" else 200)
             if category:
                 self.send_header("X-Softmax-Llm-Error-Category", category)
                 self.send_header(
@@ -215,7 +215,7 @@ for mode in ["accepted", "invalid-response", "truncated-response", "registration
                     if process.poll() is None:
                         process.send_signal(requested)
                 status = process.wait(timeout=45)
-                assert (status != 0 if mode in {"runtime-failure", "artifact-upload-failure", "invalid-response", "truncated-response", "seat-budget"} else status == 0), (folder / "game.log").read_text()
+                assert (status != 0 if mode in {"runtime-failure", "artifact-upload-failure", "invalid-response", "truncated-response", "seat-budget", "inference-unavailable", "inference-throttled"} else status == 0), (folder / "game.log").read_text()
             finally:
                 for seat in sockets:
                     seat.close()
@@ -233,7 +233,7 @@ for mode in ["accepted", "invalid-response", "truncated-response", "registration
         for line in (folder / "trajectory.jsonl").read_text().splitlines()
     ]
     decisions = events[:-1]
-    if mode in {"invalid-response", "truncated-response", "seat-budget"}:
+    if mode in {"invalid-response", "truncated-response", "seat-budget", "inference-unavailable", "inference-throttled"}:
         assert events[-1]["status"] == "failed"
         assert events[-1]["participant_outcomes"] is None
         assert events[-1]["outcome"]["termination"] == "policy_failure"
@@ -241,6 +241,11 @@ for mode in ["accepted", "invalid-response", "truncated-response", "registration
         if mode == "seat-budget":
             assert events[-1]["outcome"]["policy_failure"]["reason"] == "budget_exhausted"
         declared = json.loads((folder / "player_failure.json").read_text())
+        if mode in {"inference-unavailable", "inference-throttled"}:
+            assert declared["kind"] == "episode_inconclusive"
+            assert events[-1]["outcome"]["policy_failure"]["reason"] == "inference_unavailable"
+        else:
+            assert "kind" not in declared
         assert declared["failed_policy_index"] == events[-1]["outcome"]["policy_failure"]["seat"]
         failed = decisions[-1]
         assert failed["action_status"] == "rejected"

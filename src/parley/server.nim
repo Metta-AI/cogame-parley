@@ -445,16 +445,18 @@ proc writeArtifact(uri, data, contentType, methodEnv: string, cleanupDeadline: M
   writeCogameArtifact(uri, data, contentType, methodEnv, cleanupDeadline, httpMethod)
 
 proc writePlayerFailure(gs: GameState, failure: PolicyFailure, cleanupDeadline: MonoTime) =
-  ## Declare the failed seat so the platform scores it as that policy's loss.
-  ## Without this file a failed episode is unattributed and gives the league no
-  ## scoring evidence. The game's own play deadline is not a seat fault.
+  ## Keep unavailable inference distinct from a completed but invalid action.
+  ## The game's own play deadline is not a seat fault.
   if failure.reason == dfEpisodeDeadline:
     return
   let message = "Parley seat " & $failure.seat & " (" & gs.config.players[failure.seat].name &
     ") failed: " & $failure.reason
+  var declaration = %*{"failed_policy_index": failure.seat, "message": message}
+  if failure.reason == dfInferenceUnavailable:
+    declaration["kind"] = %"episode_inconclusive"
   writeArtifact(
     getEnv("COGAME_PLAYER_FAILURE_URI"),
-    $(%*{"failed_policy_index": failure.seat, "message": message}),
+    $declaration,
     "application/json", "COGAME_PLAYER_FAILURE_METHOD", cleanupDeadline
   )
 

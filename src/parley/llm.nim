@@ -27,6 +27,7 @@ type
     dfExternalDisconnect = "external_disconnect"
     dfMissingEndpoint = "missing_native_endpoint"
     dfModelFailure = "model_failure"
+    dfInferenceUnavailable = "inference_unavailable"
     dfBudgetExhausted = "budget_exhausted"
     dfEpisodeDeadline = "episode_deadline"
     dfMissingPolicy = "missing_policy"
@@ -449,7 +450,7 @@ proc actionSchema(sim: Sim, seat: int, wantShot: bool): JsonNode =
   %*{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
 
 proc completeText(client: LlmClient, seat: int, system, user: string, schema: JsonNode,
-    evidence: var DecisionAttempt, deadline: MonoTime): string =
+    evidence: var DecisionAttempt, failure: var DecisionFailure, deadline: MonoTime): string =
   var body = %*{
     "max_tokens": client.maxOutputTokens,
     "temperature": client.temperature,
@@ -528,6 +529,7 @@ proc completeText(client: LlmClient, seat: int, system, user: string, schema: Js
       of "tokenizer": evidence.tokenizerIdentity = some(responseHeaders[header])
       else: evidence.chatTemplateSha256 = some(responseHeaders[header])
   if response.kind != nhComplete:
+    failure = dfInferenceUnavailable
     raise newException(ParleyError, "native transport " & $response.kind)
   let status = response.httpStatus.get()
   if status == 401 or status == 403:
@@ -538,7 +540,10 @@ proc completeText(client: LlmClient, seat: int, system, user: string, schema: Js
     client.budgetExhausted[seat] = true
     raise newException(ParleyError, "seat LLM spend limit exhausted")
   if status == 429:
+    failure = dfInferenceUnavailable
     raise newException(ParleyError, "llm throttled (429)")
+  if status >= 500:
+    failure = dfInferenceUnavailable
   if status < 200 or status >= 300:
     raise newException(ParleyError,
       "native inference error " & $status)
@@ -670,12 +675,13 @@ proc decide*(
   let system = systemPrompt(sim, seat)
   let user = userPrompt(sim, seat, prompt, wantShot, header)
   var raw = ""
+  var failure = dfModelFailure
   var evidence = newDecisionAttempt("attempt-0", client.model, aoModel)
   evidence.prompt = %*[{"role": "system", "content": system},
     {"role": "user", "content": user}]
   result.input = %*{"system": system, "user": user}
   try:
-    raw = client.completeText(seat, system, user, sim.actionSchema(seat, wantShot), evidence, deadline)
+    raw = client.completeText(seat, system, user, sim.actionSchema(seat, wantShot), evidence, failure, deadline)
     let payload = parseJsonObject(raw)
     result.decision = parseDecision(sim, seat, payload, wantShot)
     evidence.response = %raw
@@ -691,5 +697,5 @@ proc decide*(
       evidence.response = %raw
     evidence.rejectionReason = some(error.msg)
     result.nativeAttempts.add(evidence)
-    result.failure = some(if client.budgetExhausted[seat]: dfBudgetExhausted else: dfModelFailure)
+    result.failure = some(if client.budgetExhausted[seat]: dfBudgetExhausted else: failure)
     echo "parley llm: seat ", seat, " policy failed"

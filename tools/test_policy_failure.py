@@ -108,7 +108,7 @@ async def main():
                                     if mode == "reaction"
                                     else {"shoot": "not-a-cog", "aim": "head"}
                                 )
-                                if mode == "missing-side-target":
+                                if mode in {"rejected", "missing-side-target"}:
                                     action = next(a for a in actions if a["shoot"] != "pass") | {
                                         "whisper": {"text": "missing recipient"}
                                     }
@@ -200,7 +200,7 @@ async def main():
                     )
                     assert len(failed["attempts"]) == 1
                     assert failed["attempts"][0]["rejection_reason"]
-                    if mode == "missing-side-target":
+                    if mode in {"rejected", "missing-side-target"}:
                         assert "whisper names no cog" in failed["attempts"][0]["rejection_reason"]
                 expected = {
                     "missing-endpoint": "missing_native_endpoint",

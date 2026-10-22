@@ -597,9 +597,10 @@ proc cleanSay(text: string): string =
 proc parseExtras(sim: Sim, seat: int, payload: JsonNode): Extras =
   ## Absent or null fields are unused; present ones must name a cog.
   proc cog(node: JsonNode, field: string): Option[int] =
-    let seat = sim.seatByName(node.getStr().strip())
+    let name = node.getStr().strip()
+    let seat = sim.seatByName(name)
     if seat < 0:
-      raise newException(ParleyError, field & " names no cog: " & $node)
+      raise newException(ParleyError, field & " names no cog: " & name)
     some(seat)
   let whisper = payload{"whisper"}
   if whisper != nil and whisper.kind != JNull:

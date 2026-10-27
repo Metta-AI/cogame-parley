@@ -34,7 +34,7 @@ suite "player state":
     game.registerExternal(seat, "Protect my friend")
     check game.policies[seat].kind == pkExternal
     for wantShot in [true, false]:
-      let packet = game.externalObservation(sim, seat, game.policies[seat].prompt, wantShot,
+      let packet = game.decisionObservation(sim, seat, game.policies[seat].prompt, wantShot,
         header)
       check packet["input"]["system"].getStr() == systemPrompt(sim, seat)
       check packet["input"]["user"].getStr() ==
@@ -135,8 +135,6 @@ suite "player state":
     let outcome = DecisionResult(
       decision: Decision(say: "Truce?", target: target, aim: aimHip),
       origin: "model",
-      input: %*{"system": "private rules", "user": "secret operator prompt"},
-      response: %*{"raw": "model response"},
       nativeAttempts: @[DecisionAttempt(attemptId: "a0", policy: "model", origin: aoModel,
         prompt: %*[{"role": "user", "content": "secret operator prompt"}],
         request: %*{"messages": [{"role": "user", "content": "secret operator prompt"}]},
@@ -192,7 +190,7 @@ suite "external training authority":
     game.pending.seat = seat
     game.pending.awaiting = true
     game.issued["1"] = game.pending
-    game.issued["1"].observation = game.externalObservation(game.match.sim, seat, "prompt", true, matchHeader(game.match))
+    game.issued["1"].observation = game.decisionObservation(game.match.sim, seat, "prompt", true, matchHeader(game.match))
     let input = game.issued["1"].observation["input"]
     var attempt = newDecisionAttempt("1-model", "model", aoModel)
     attempt.prompt = %*[{"role": "system", "content": input["system"]},
@@ -225,7 +223,7 @@ suite "external training authority":
     var game = GameState(config: config, match: initMatch(config))
     let seat = game.match.sim.itSeat
     game.issued["issued"] = DecisionRecord(id: "issued", seat: seat)
-    game.issued["issued"].observation = game.externalObservation(game.match.sim, seat, "operator", true, matchHeader(game.match))
+    game.issued["issued"].observation = game.decisionObservation(game.match.sim, seat, "operator", true, matchHeader(game.match))
     let input = game.issued["issued"].observation["input"]
     var attempt = newDecisionAttempt("issued-model", "native", aoModel)
     attempt.model = some("fixture-model")
@@ -284,7 +282,7 @@ suite "external training authority":
     state.playerSockets[seat] = socket
     state.issued["older"] = DecisionRecord(id: "older", seat: seat)
     state.issued["older"].issuedAt = getMonoTime() - initDuration(seconds = 1)
-    state.issued["older"].observation = state.externalObservation(state.match.sim, seat, "operator", true, matchHeader(state.match))
+    state.issued["older"].observation = state.decisionObservation(state.match.sim, seat, "operator", true, matchHeader(state.match))
     state.policies[seat].latestDecision = "newer"
     state.pending.id = "newer"
     state.pending.seat = seat
@@ -330,7 +328,7 @@ suite "external training authority":
     state.issued["known"] = DecisionRecord(id: "known", seat: 0)
     state.issued["known"].issuedAt = getMonoTime() - initDuration(seconds = 2)
     state.policies[0].latestDecision = "known"
-    state.issued["known"].observation = state.externalObservation(state.match.sim, 0, "operator", true, matchHeader(state.match))
+    state.issued["known"].observation = state.decisionObservation(state.match.sim, 0, "operator", true, matchHeader(state.match))
     let input = state.issued["known"].observation["input"]
     var attempt = newDecisionAttempt("known-model", "native", aoModel)
     attempt.prompt = %*[{"role": "system", "content": input["system"]},
@@ -363,7 +361,7 @@ suite "external training authority":
     let targets = before.validTargets(seat)
     game.trajectory = some(newDecisionTrajectory("engine-scripted", "parley-17", "parley",
       "source-test", repeat('a', 40)))
-    let issued = game.externalObservation(before, seat, "private operator prompt", true, matchHeader(game.match))
+    let issued = game.decisionObservation(before, seat, "private operator prompt", true, matchHeader(game.match))
     game.issued["1"] = DecisionRecord(id: "1", seat: seat, observation: issued)
     let start = game.match.allEvents().len
     game.match.sim.recordSay(seat, "actually spoken")

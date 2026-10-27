@@ -86,10 +86,10 @@
       if (!capture && !sameAction(action, ref.action))
         throw new Error("Trace action does not match this replay.");
       if (typeof parts.reasoning !== "string") throw new Error("Reasoning must be text.");
-      if (!parts.reasoning.trim()) return;
       if (traces.has(ref.id))
         throw new Error("Multiple traces for one decision. Load one episode at a time.");
-      traces.set(ref.id, { text: parts.reasoning, actionMatches: sameAction(action, ref.action) });
+      traces.set(ref.id, { text: parts.reasoning, request: attempt.request,
+        response: parts.action, actionMatches: sameAction(action, ref.action) });
     });
     return traces;
   }
@@ -111,6 +111,9 @@
     var status = root.querySelector("[role=status]");
     var heading = root.querySelector("h2");
     var body = root.querySelector(".reasoning-text");
+    var input = root.querySelector(".model-input");
+    var response = root.querySelector(".model-response");
+    var executed = root.querySelector(".executed-action");
     var match = root.querySelector(".trace-match");
     var tabs = root.parentNode.querySelectorAll("[data-replay-panel]");
     tabs.forEach(function (button) {
@@ -133,12 +136,19 @@
           : "";
       heading.textContent = ref
         ? names.seat(ref.seat) + " · " + ref.phase + " · Decision " + ref.id
-        : "Reasoning trace";
+        : "Model input";
       select.value = ref && traces.has(ref.id) ? String(ref.id) : "";
-      body.textContent =
-        ref && traces.has(ref.id)
-          ? traces.get(ref.id).text
-          : "No reasoning trace is available for this event.";
+      input.replaceChildren();
+      if (trace && trace.request) trace.request.messages.forEach(function (message) {
+        var role = document.createElement("h3");
+        role.textContent = message.role;
+        var content = document.createElement("pre");
+        content.textContent = message.content;
+        input.append(role, content);
+      });
+      response.textContent = trace ? trace.response : "No saved inference is available for this event.";
+      executed.textContent = trace ? JSON.stringify(ref.action, null, 2) : "";
+      body.textContent = trace && trace.text ? trace.text : "No saved reasoning.";
       body.scrollTop = 0;
     }
     function choose(ref) {
@@ -168,8 +178,8 @@
         select.disabled = traces.size === 0;
         status.textContent = traces.size
           ? traces.size +
-            " reasoning traces loaded locally. Matched by decision ID and seat; confirm the source episode."
-          : "The file contains no saved reasoning text.";
+            " decisions loaded locally. Matched by decision ID and seat; confirm the source episode."
+          : "The file contains no saved inference.";
         update(index);
         if (traces.size)
           choose(

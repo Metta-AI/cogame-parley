@@ -611,6 +611,7 @@ button:focus-visible, #feed:focus-visible, #now-playing:focus-visible, .scrub:fo
 #reasoning-panel select { width: 100%; color: var(--paper); background: #1d211e; padding: 6px; }
 #reasoning-panel [role="status"] { color: var(--paper-dim); }
 #reasoning-panel h2 { font-size: 12px; overflow-wrap: anywhere; }
-.reasoning-text { flex: 1; min-height: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-.reasoning-text:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.trace-content { flex: 1; min-height: 0; overflow: auto; }
+.trace-content pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.trace-content:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 @media (max-width: 680px) { #reasoning-panel { flex: none; height: 420px; } }

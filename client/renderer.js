@@ -690,43 +690,15 @@
       var policy = policyNames && policyNames[i];
       return (policy && !isBaselineFiller(policy)) ? policy : name;
     });
-    // One combined pattern, one pass: replacing alias-by-alias would rescan
-    // text it just inserted, which garbles the table whenever a policy NAME
-    // collides with another seat's alias (certification seats a policy
-    // literally named "Gizmo").
-    var byAlias = {};
-    table.forEach(function (name, i) {
-      if (name && display[i] && display[i] !== name) byAlias[name] = display[i];
-    });
-    var aliases = Object.keys(byAlias);
-    var pattern = aliases.length ? new RegExp(
-      "\\b(?:" + aliases.map(function (name) {
-        return name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      }).join("|") + ")\\b", "g") : null;
-    return {
-      seat: function (i) { return display[i] || ("Seat " + i); },
-      text: function (text) {
-        if (!pattern) return text;
-        return text.replace(pattern, function (match) {
-          return byAlias[match];
-        });
-      }
-    };
+    return { seat: function (i) { return display[i] || ("Seat " + i); } };
   }
 
-  // Render-time application of the name map: copies, never mutates, because
-  // the seat states and bubble list are the drivers' bookkeeping.
+  // Display policy names without changing recorded state or model-visible speech.
   function applyNames(seats, nameMap) {
     return (seats || []).map(function (seat, i) {
       var copy = Object.assign({}, seat);
       copy.name = nameMap.seat(i);
       return copy;
-    });
-  }
-
-  function renameBubbles(bubbles, nameMap) {
-    return (bubbles || []).map(function (bubble) {
-      return { seat: bubble.seat, text: nameMap.text(bubble.text), at: bubble.at };
     });
   }
 
@@ -740,7 +712,7 @@
         return "New deal — every cog back to full hp.";
       case "it": return name(event.seat) + " is IT.";
       case "say":
-        return name(event.seat) + ": “" + nameMap.text(event.text) + "”";
+        return name(event.seat) + ": “" + event.text + "”";
       case "skip":
         return name(event.seat) + " holds fire — the table keeps talking.";
       case "shot":
@@ -756,7 +728,7 @@
       case "whisper":
         // Players and the live feed only see that a whisper happened.
         return name(event.seat) + " whispers to " + name(event.target) +
-          (event.text ? ": “" + nameMap.text(event.text) + "”" : ".");
+          (event.text ? ": “" + event.text + "”" : ".");
       case "reveal":
         var card = event.friend !== undefined ? "FRIEND card: " + name(event.friend) :
           event.enemy !== undefined ? "ENEMY card: " + name(event.enemy) : "a card";
@@ -826,8 +798,7 @@
           " → " + nameMap.seat(event.target) + " · whisper" : "";
         html += '<div class="' + cls + ' chat-message ' + seatColor(event.seat) + '">' +
           '<div class="chat-speaker">' + escapeHtml(nameMap.seat(event.seat) + recipient) + "</div>" +
-          '<div class="chat-text">' + escapeHtml(event.text ? nameMap.text(event.text) :
-            "Private message") + "</div></div>";
+          '<div class="chat-text">' + escapeHtml(event.text || "Private message") + "</div></div>";
       } else {
         html += '<div class="' + cls + '">' +
           escapeHtml(describeEvent(event, nameMap)) + "</div>";
@@ -1109,7 +1080,6 @@
         if (latest) {
           var view = effects.view();
           view.seats = applyNames(effects.seats(latest.seats, Date.now()), nameMap);
-          view.bubbles = renameBubbles(view.bubbles, nameMap);
           view.hitPoints = latest.hitPoints;
           view.done = latest.done;
           view.now = Date.now();
@@ -1313,7 +1283,7 @@
           if (speech) {
             captionLabel = nameMap.seat(event.seat) +
               (event.kind === "whisper" ? " · whisper" : " · speaking");
-            caption = nameMap.text(event.text || "Private message");
+            caption = event.text || "Private message";
           } else if (event) {
             caption = event.kind === "deal" ?
               "Friend and enemy cards are dealt for this round." : describeEvent(event, nameMap);
@@ -1349,7 +1319,6 @@
         var currentEvent = events[index - 1];
         view.speaker = currentEvent && currentEvent.kind === "say" ? currentEvent.seat : -1;
         view.seats = applyNames(effects.seats(state, Date.now()), nameMap);
-        view.bubbles = renameBubbles(view.bubbles, nameMap);
         view.hitPoints = (payload.config || {}).hitPoints || 3;
         view.done = index >= events.length && events.length > 0;
         view.winners = (payload.results || {}).win;

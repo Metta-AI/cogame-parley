@@ -67,9 +67,9 @@ test("supports saved reasoning_content and native thinking blocks", () => {
   }
 });
 
-test("missing reasoning never treats public speech as private reasoning", () => {
-  assert.equal(parseTrace(JSON.stringify(capture(null)), payload).size, 0);
-  assert.equal(parseTrace(JSON.stringify(capture("  ")), payload).size, 0);
+test("decisions without reasoning remain available for input inspection", () => {
+  assert.equal(parseTrace(JSON.stringify(capture(null)), payload).get(10).text, "");
+  assert.equal(parseTrace(JSON.stringify(capture("  ")), payload).get(10).text, "  ");
 });
 
 test("wrong replay, wrong seat, duplicate decisions, and malformed files fail explicitly", () => {
@@ -96,7 +96,7 @@ test("wrong replay, wrong seat, duplicate decisions, and malformed files fail ex
 
 test("panel loads locally, seeks, clears on unmatched events, and renders HTML as text", async () => {
   const elements = Object.fromEntries(
-    ["input", "select", "[role=status]", "h2", ".reasoning-text", ".trace-match"].map((key) => [
+    ["input", "select", "[role=status]", "h2", ".reasoning-text", ".trace-match", ".model-input", ".model-response", ".executed-action"].map((key) => [
       key,
       {
         value: "",
@@ -132,9 +132,9 @@ test("panel loads locally, seeks, clears on unmatched events, and renders HTML a
   assert.deepEqual(seeks, [23]);
   assert.match(elements["h2"].textContent, /Flywheel.*shot.*10/);
   assert.equal(elements[".reasoning-text"].textContent, '<img src=x onerror="attack()">');
-  assert.match(elements["[role=status]"].textContent, /1 reasoning traces/);
+  assert.match(elements["[role=status]"].textContent, /1 decisions/);
   panel.update(22);
-  assert.match(elements[".reasoning-text"].textContent, /No reasoning trace/);
+  assert.match(elements[".reasoning-text"].textContent, /No saved reasoning/);
   elements.select.value = "10";
   elements.select.onchange();
   assert.deepEqual(seeks, [23, 23]);
@@ -146,7 +146,7 @@ test("panel loads locally, seeks, clears on unmatched events, and renders HTML a
   assert.match(elements["h2"].textContent, /Decision 10/);
   assert.equal(elements[".reasoning-text"].textContent, '<img src=x onerror="attack()">');
   panel.update(23);
-  assert.match(elements[".reasoning-text"].textContent, /No reasoning trace/);
+  assert.match(elements[".reasoning-text"].textContent, /No saved reasoning/);
   elements.input.files = [{ size: 100, text: async () => "{}" }];
   await elements.input.onchange();
   assert.match(elements["[role=status]"].textContent, /Could not load trace/);

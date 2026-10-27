@@ -20,24 +20,12 @@
     var response = typeof raw === "string" ? JSON.parse(raw) : raw;
     var message = response.choices ? response.choices[0].message : response;
     if (Array.isArray(message.content)) {
-      return {
-        reasoning: message.content
-          .filter(function (block) {
-            return block.type === "thinking";
-          })
-          .map(function (block) {
-            return block.thinking;
-          })
-          .join("\n\n"),
-        action: message.content
-          .filter(function (block) {
-            return block.type === "text";
-          })
-          .map(function (block) {
-            return block.text;
-          })
-          .join("\n"),
-      };
+      var reasoning = [], action = [];
+      message.content.forEach(function (block) {
+        if (block.type === "thinking") reasoning.push(block.thinking);
+        if (block.type === "text") action.push(block.text);
+      });
+      return { reasoning: reasoning.join("\n\n"), action: action.join("\n") };
     }
     return {
       reasoning: message.reasoning || message.reasoning_content || "",

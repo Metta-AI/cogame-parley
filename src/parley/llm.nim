@@ -2,7 +2,7 @@
 ## Model failures retain their evidence and never substitute a scripted action.
 
 import
-  std/[base64, json, monotimes, options, os, random, sets, strutils, tables],
+  std/[base64, json, monotimes, options, os, random, strutils, tables],
   bitworld/decision_trajectory,
   bitworld/[native_http, native_stop],
   sim
@@ -38,8 +38,6 @@ type
     model: string
     maxOutputTokens: int
     temperature: float
-    disabled: bool    ## true without a native endpoint or after auth rejection
-    budgetExhausted: seq[bool] ## platform spend limits belong to individual seats
     rand: seq[Rand]         ## independent scripted stream per seat
 
 proc newLlmClient*(config: GameConfig): LlmClient =
@@ -47,8 +45,7 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     model: config.model,
     maxOutputTokens: config.maxOutputTokens,
     temperature: parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "1")),
-    rand: newSeq[Rand](config.players.len),
-    budgetExhausted: newSeq[bool](config.players.len)
+    rand: newSeq[Rand](config.players.len)
   )
   if not (result.temperature >= 0 and result.temperature <= 1):
     raise newException(ValueError, "COWORLD_LLM_TEMPERATURE must be finite and between 0 and 1")
@@ -61,7 +58,6 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     result.model = getEnv("COWORLD_LLM_MODEL", config.model)
     echo "parley llm: hosted sidecar transport, model ", result.model
     return
-  result.disabled = true
   echo "parley llm: no native endpoint; model policies cannot run"
 
 const CannedTaunts = [
@@ -177,137 +173,6 @@ proc actionSchema*(sim: Sim, seat: int, wantShot: bool): JsonNode =
   for key, value in properties: required.add(%key)
   %*{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
 
-proc completeText(client: LlmClient, seat: int, observation: JsonNode,
-    evidence: var DecisionAttempt, failure: var DecisionFailure, deadline: MonoTime): string =
-  var body = %*{
-    "max_tokens": client.maxOutputTokens,
-    "temperature": client.temperature,
-    "top_p": 1,
-    "reasoning": {"effort": "none"},
-    "chat_template_kwargs": {"enable_thinking": false},
-    "response_format": {"type": "json_schema",
-      "json_schema": {"name": "parley_action", "strict": true, "schema": observation["actionSchema"]}},
-    "messages": [{"role": "system", "content": observation["input"]["system"]},
-      {"role": "user", "content": observation["input"]["user"]}]
-  }
-  var headers: HttpHeaders
-  headers["content-type"] = "application/json"
-  body["model"] = %client.model
-  headers["x-coworld-player-slot"] = $seat
-  let url = client.sidecarEndpoint & "/v1/chat/completions"
-  evidence.request = body
-  evidence.prompt = body["messages"]
-  evidence.model = some(client.model)
-  evidence.decoder = copy(body)
-  evidence.decoder.delete("model")
-  evidence.decoder.delete("messages")
-  let response = performNativePost(url, headers, $body, deadline)
-  evidence.latencyMs = response.latencyMs
-  evidence.responseReaderJoined = response.responseReaderJoined
-  let observedResponse = response.httpStatus.isSome or response.headerBytes.len > 0 or response.bodyBytes.len > 0
-  if observedResponse:
-    evidence.responseBodyB64 = some(encode(response.bodyBytes))
-    evidence.responseHeadersB64 = some(encode(response.headerBytes))
-    evidence.responseComplete = some(response.transferComplete)
-    evidence.httpStatus = response.httpStatus
-    if validateUtf8(response.bodyBytes) == -1:
-      evidence.rawResponse = %response.bodyBytes
-  if validateUtf8(response.headerBytes) != -1:
-    raise newException(ParleyError, "received HTTP headers are not valid UTF-8")
-  var responseHeaders: HttpHeaders
-  var receivedHeaders = initTable[string, string]()
-  var identityHeaders = initHashSet[string]()
-  for line in response.headerBytes.splitLines():
-    if line.startsWith("HTTP/"):
-      responseHeaders.setLen(0)
-      receivedHeaders.clear()
-      identityHeaders.clear()
-    elif line.len > 0:
-      let colon = line.find(':')
-      if colon <= 0:
-        raise newException(ParleyError, "invalid received HTTP header")
-      let name = line[0 ..< colon]
-      let value = line[colon + 1 .. ^1].strip()
-      let normalized = name.toLowerAscii()
-      if normalized in ["request-id", "x-request-id", "x-softmax-llm-call-id",
-          "x-coworld-checkpoint-sha256", "x-coworld-tokenizer-sha256",
-          "x-coworld-chat-template-sha256"]:
-        if normalized in identityHeaders:
-          raise newException(ParleyError, "duplicate received identity header")
-        identityHeaders.incl(normalized)
-      responseHeaders.add((name, value))
-      receivedHeaders[name] = value
-  if observedResponse:
-    evidence.responseHeaders = some(receivedHeaders)
-  if responseHeaders.contains("request-id") and responseHeaders.contains("x-request-id") and
-      responseHeaders["request-id"] != responseHeaders["x-request-id"]:
-    raise newException(ParleyError, "conflicting received request identity headers")
-  for key in ["request-id", "x-request-id"]:
-    if responseHeaders.contains(key):
-      evidence.providerRequestId = some(responseHeaders[key])
-      break
-  for (header, field) in [
-      ("x-softmax-llm-call-id", "call"),
-      ("x-coworld-checkpoint-sha256", "model"),
-      ("x-coworld-tokenizer-sha256", "tokenizer"),
-      ("x-coworld-chat-template-sha256", "template")]:
-    if responseHeaders[header].len > 0:
-      case field
-      of "call": evidence.platformCallId = some(responseHeaders[header])
-      of "model": evidence.modelIdentity = some(responseHeaders[header])
-      of "tokenizer": evidence.tokenizerIdentity = some(responseHeaders[header])
-      else: evidence.chatTemplateSha256 = some(responseHeaders[header])
-  if response.kind != nhComplete:
-    failure = dfInferenceUnavailable
-    raise newException(ParleyError, "native transport " & $response.kind)
-  let status = response.httpStatus.get()
-  if status == 401 or status == 403:
-    client.disabled = true
-    raise newException(ParleyError,
-      "native inference auth failed (" & $status & ")")
-  if responseHeaders["x-softmax-llm-error-category"] == "spend_limit":
-    client.budgetExhausted[seat] = true
-    raise newException(ParleyError, "seat LLM spend limit exhausted")
-  if status == 429:
-    failure = dfInferenceUnavailable
-    raise newException(ParleyError, "llm throttled (429)")
-  if status >= 500:
-    failure = dfInferenceUnavailable
-  if status < 200 or status >= 300:
-    raise newException(ParleyError,
-      "native inference error " & $status)
-  if validateUtf8(response.bodyBytes) != -1:
-    raise newException(ParleyError, "native response is not valid UTF-8")
-  let payload = parseJson(response.bodyBytes)
-  evidence.model = some(payload["model"].getStr())
-  let choice = payload["choices"][0]
-  let stopReason = choice["finish_reason"].getStr()
-  evidence.stopReason = some(stopReason)
-  evidence.inputTokens = some(payload["usage"]["prompt_tokens"].getInt())
-  evidence.outputTokens = some(payload["usage"]["completion_tokens"].getInt())
-  evidence.response = choice["message"]["content"]
-  if payload.hasKey("sampling_evidence") and payload["sampling_evidence"].kind != JNull:
-    let sampled = payload["sampling_evidence"]
-    var promptTokens, completionTokens: seq[int]
-    var probabilities: seq[float]
-    for token in sampled["prompt_token_ids"]: promptTokens.add(token.getInt())
-    for token in sampled["completion_token_ids"]: completionTokens.add(token.getInt())
-    if sampled["behavior_log_probs"].kind != JNull:
-      for probability in sampled["behavior_log_probs"]: probabilities.add(probability.getFloat())
-    evidence.promptTokenIds = some(promptTokens)
-    evidence.sampledTokenIds = some(completionTokens)
-    if sampled["behavior_log_probs"].kind != JNull:
-      evidence.behaviorLogprobs = some(probabilities)
-    evidence.stopReason = some(sampled["stop_reason"].getStr())
-  echo "parley llm: usage model ", evidence.model.get(),
-    " input_tokens ", evidence.inputTokens.get(),
-    " output_tokens ", evidence.outputTokens.get()
-  if stopReason != "stop":
-    raise newException(ParleyError, "native inference stopped without a complete action: " & stopReason)
-  if evidence.response.kind != JString:
-    raise newException(ParleyError, "native inference returned no text action")
-  result = evidence.response.getStr()
-
 proc cleanSay(text: string): string =
   result = text.strip()
   if result.len <= MaxSayLen:
@@ -391,32 +256,147 @@ proc decide*(
   deadline: MonoTime
 ): DecisionResult =
   ## Keep a failed policy's original evidence; no retries or substitute actions.
-  if client.disabled or client.budgetExhausted[seat]:
-    result.failure = some(if client.budgetExhausted[seat]: dfBudgetExhausted else: dfMissingEndpoint)
+  if client.sidecarEndpoint.len == 0:
+    result.failure = some(dfMissingEndpoint)
     return
   if interruptionRequested() or getMonoTime() >= deadline:
     result.failure = some(dfEpisodeDeadline)
     return
 
   let wantShot = observation["phase"].getStr() == "shot"
-  var raw = ""
   var failure = dfModelFailure
   var evidence = newDecisionAttempt("attempt-0", client.model, aoModel)
   try:
-    raw = client.completeText(seat, observation, evidence, failure, deadline)
-    let payload = parseJsonObject(raw)
-    result.decision = parseDecision(sim, seat, payload, wantShot)
-    evidence.response = %raw
+    var body = %*{
+      "max_tokens": client.maxOutputTokens,
+      "temperature": client.temperature,
+      "top_p": 1,
+      "reasoning": {"effort": "none"},
+      "chat_template_kwargs": {"enable_thinking": false},
+      "response_format": {"type": "json_schema",
+        "json_schema": {"name": "parley_action", "strict": true, "schema": observation["actionSchema"]}},
+      "messages": [{"role": "system", "content": observation["input"]["system"]},
+        {"role": "user", "content": observation["input"]["user"]}]
+    }
+    var headers: HttpHeaders
+    headers["content-type"] = "application/json"
+    body["model"] = %client.model
+    headers["x-coworld-player-slot"] = $seat
+    let url = client.sidecarEndpoint & "/v1/chat/completions"
+    evidence.request = body
+    evidence.prompt = body["messages"]
+    evidence.model = some(client.model)
+    evidence.decoder = copy(body)
+    evidence.decoder.delete("model")
+    evidence.decoder.delete("messages")
+    let response = performNativePost(url, headers, $body, deadline)
+    evidence.latencyMs = response.latencyMs
+    evidence.responseReaderJoined = response.responseReaderJoined
+    let observedResponse = response.httpStatus.isSome or response.headerBytes.len > 0 or response.bodyBytes.len > 0
+    if observedResponse:
+      evidence.responseBodyB64 = some(encode(response.bodyBytes))
+      evidence.responseHeadersB64 = some(encode(response.headerBytes))
+      evidence.responseComplete = some(response.transferComplete)
+      evidence.httpStatus = response.httpStatus
+      if validateUtf8(response.bodyBytes) == -1:
+        evidence.rawResponse = %response.bodyBytes
+    if validateUtf8(response.headerBytes) != -1:
+      raise newException(ParleyError, "received HTTP headers are not valid UTF-8")
+    var responseHeaders: HttpHeaders
+    for line in response.headerBytes.splitLines():
+      if line.startsWith("HTTP/"):
+        responseHeaders.setLen(0)
+      elif line.len > 0:
+        let colon = line.find(':')
+        if colon <= 0:
+          raise newException(ParleyError, "invalid received HTTP header")
+        let name = line[0 ..< colon]
+        let value = line[colon + 1 .. ^1].strip()
+        let normalized = name.toLowerAscii()
+        if normalized in ["request-id", "x-request-id", "x-softmax-llm-call-id",
+            "x-coworld-checkpoint-sha256", "x-coworld-tokenizer-sha256",
+            "x-coworld-chat-template-sha256"] and responseHeaders.contains(name):
+          raise newException(ParleyError, "duplicate received identity header")
+        responseHeaders.add((name, value))
+    if observedResponse:
+      evidence.responseHeaders = some(toTable(responseHeaders.toBase()))
+    if responseHeaders.contains("request-id") and responseHeaders.contains("x-request-id") and
+        responseHeaders["request-id"] != responseHeaders["x-request-id"]:
+      raise newException(ParleyError, "conflicting received request identity headers")
+    for key in ["request-id", "x-request-id"]:
+      if responseHeaders.contains(key):
+        evidence.providerRequestId = some(responseHeaders[key])
+        break
+    for (header, field) in [
+        ("x-softmax-llm-call-id", "call"),
+        ("x-coworld-checkpoint-sha256", "model"),
+        ("x-coworld-tokenizer-sha256", "tokenizer"),
+        ("x-coworld-chat-template-sha256", "template")]:
+      if responseHeaders[header].len > 0:
+        case field
+        of "call": evidence.platformCallId = some(responseHeaders[header])
+        of "model": evidence.modelIdentity = some(responseHeaders[header])
+        of "tokenizer": evidence.tokenizerIdentity = some(responseHeaders[header])
+        else: evidence.chatTemplateSha256 = some(responseHeaders[header])
+    if response.kind != nhComplete:
+      failure = dfInferenceUnavailable
+      raise newException(ParleyError, "native transport " & $response.kind)
+    let status = response.httpStatus.get()
+    if status == 401 or status == 403:
+      raise newException(ParleyError,
+        "native inference auth failed (" & $status & ")")
+    if responseHeaders["x-softmax-llm-error-category"] == "spend_limit":
+      failure = dfBudgetExhausted
+      raise newException(ParleyError, "seat LLM spend limit exhausted")
+    if status == 429:
+      failure = dfInferenceUnavailable
+      raise newException(ParleyError, "llm throttled (429)")
+    if status >= 500:
+      failure = dfInferenceUnavailable
+    if status < 200 or status >= 300:
+      raise newException(ParleyError,
+        "native inference error " & $status)
+    if validateUtf8(response.bodyBytes) != -1:
+      raise newException(ParleyError, "native response is not valid UTF-8")
+    let payload = parseJson(response.bodyBytes)
+    evidence.model = some(payload["model"].getStr())
+    let choice = payload["choices"][0]
+    let stopReason = choice["finish_reason"].getStr()
+    evidence.stopReason = some(stopReason)
+    evidence.inputTokens = some(payload["usage"]["prompt_tokens"].getInt())
+    evidence.outputTokens = some(payload["usage"]["completion_tokens"].getInt())
+    evidence.response = choice["message"]["content"]
+    if payload.hasKey("sampling_evidence") and payload["sampling_evidence"].kind != JNull:
+      let sampled = payload["sampling_evidence"]
+      var promptTokens, completionTokens: seq[int]
+      var probabilities: seq[float]
+      for token in sampled["prompt_token_ids"]: promptTokens.add(token.getInt())
+      for token in sampled["completion_token_ids"]: completionTokens.add(token.getInt())
+      if sampled["behavior_log_probs"].kind != JNull:
+        for probability in sampled["behavior_log_probs"]: probabilities.add(probability.getFloat())
+      evidence.promptTokenIds = some(promptTokens)
+      evidence.sampledTokenIds = some(completionTokens)
+      if sampled["behavior_log_probs"].kind != JNull:
+        evidence.behaviorLogprobs = some(probabilities)
+      evidence.stopReason = some(sampled["stop_reason"].getStr())
+    echo "parley llm: usage model ", evidence.model.get(),
+      " input_tokens ", evidence.inputTokens.get(),
+      " output_tokens ", evidence.outputTokens.get()
+    if stopReason != "stop":
+      raise newException(ParleyError, "native inference stopped without a complete action: " & stopReason)
+    if evidence.response.kind != JString:
+      raise newException(ParleyError, "native inference returned no text action")
+    let action = parseJsonObject(evidence.response.getStr())
+    result.decision = parseDecision(sim, seat, action, wantShot)
     evidence.parsedAction = decisionAction(sim, result.decision, wantShot)
     if interruptionRequested() or getMonoTime() >= deadline:
       raise newException(ParleyError, "native response arrived after decision deadline")
     evidence.accepted = true
-    result.nativeAttempts.add(evidence)
     result.origin = "model"
   except CatchableError as error:
     if evidence.response.kind == JNull:
-      evidence.response = %raw
+      evidence.response = %""
     evidence.rejectionReason = some(error.msg)
-    result.nativeAttempts.add(evidence)
-    result.failure = some(if client.budgetExhausted[seat]: dfBudgetExhausted else: failure)
+    result.failure = some(failure)
     echo "parley llm: seat ", seat, " policy failed"
+  result.nativeAttempts = @[evidence]

@@ -298,6 +298,36 @@ proc recordSay*(sim: var Sim, seat: int, text: string) =
 proc skipsLeft*(sim: Sim): int =
   max(sim.config.maxSkips - sim.skips, 0)
 
+proc actionOptions*(sim: Sim, seat: int, wantShot: bool): JsonNode =
+  var legalActions = newJArray()
+  if wantShot:
+    if sim.skipsLeft() > 0:
+      legalActions.add(%*{"shoot": "pass"})
+    for target in sim.validTargets(seat):
+      for aim in ["head", "hip"]:
+        legalActions.add(%*{"shoot": sim.seats[target].name, "aim": aim})
+  ## Side actions combine freely with any legal action, so they are offered
+  ## as allowances rather than multiplied into `legalActions`.
+  let me = sim.seats[seat]
+  var others = newJArray()
+  var living = newJArray()
+  for index, other in sim.seats:
+    if index == seat: continue
+    others.add(%other.name)
+    if other.alive and me.alive and index notin me.pledges:
+      living.add(%other.name)
+  %*{
+    "phase": (if wantShot: "shot" else: "reaction"),
+    "legalActions": legalActions,
+    "extras": {
+      "whisper": {"to": (if me.whispers < MaxWhispers: others else: newJArray()),
+                  "left": MaxWhispers - me.whispers},
+      "reveal": {"to": (if me.friend >= 0 and not me.revealed: others else: newJArray()),
+                 "cards": ["friend", "enemy"]},
+      "give": {"to": (if sim.banked[seat] + sim.transfers[seat] >= 1: others else: newJArray()),
+               "banked": sim.banked[seat] + sim.transfers[seat]},
+      "pledge": {"to": living}}}
+
 proc applySkip*(sim: var Sim, shooter: int) =
   ## "It" holds its fire to buy the table another exchange of words. The gun
   ## stays put and no turn elapses, so the allowance is bounded per round

@@ -38,7 +38,7 @@ suite "player state":
         header)
       check packet["input"]["system"].getStr() == systemPrompt(sim, seat)
       check packet["input"]["user"].getStr() ==
-        userPrompt(sim, seat, "Protect my friend", wantShot, header)
+        userPrompt(sim, seat, "Protect my friend", packet, header)
       check packet["observation"]["seats"][seat]["friend"].getInt() >= 0
       check not packet.hasKey("id") and not packet.hasKey("transport")
       ## Side actions are offered as allowances: every other cog is reachable.

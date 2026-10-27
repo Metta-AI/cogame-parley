@@ -34,18 +34,14 @@
   }
 
   function parseTrace(text, payload) {
-    var refs = payload.decisionRefs || [];
-    if (!refs.length)
+    var refs = new Map((payload.decisionRefs || []).map(function (ref) {
+      return [String(ref.id), ref];
+    }));
+    if (!refs.size)
       throw new Error("This replay has no decision references for matching traces.");
-    var records = text
-      .trim()
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map(function (line) {
-        return JSON.parse(line);
-      });
     var traces = new Map();
-    records.forEach(function (record) {
+    text.trim().split(/\r?\n/).filter(Boolean).forEach(function (line) {
+      var record = JSON.parse(line);
       if (record.event_type === "episode" && record.game === "parley") return;
       var capture = record.protocol === "parley.inference-capture.v1";
       if (
@@ -58,9 +54,7 @@
       ) {
         throw new Error("Use Parley inference.jsonl or trajectory.jsonl.");
       }
-      var ref = refs.find(function (candidate) {
-        return String(candidate.id) === record.decision_id;
-      });
+      var ref = refs.get(record.decision_id);
       if (!ref || ref.seat !== Number(record.seat))
         throw new Error("Trace decision or seat does not match this replay.");
       var attempt = capture

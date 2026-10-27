@@ -28,7 +28,7 @@ suite "scripted seat randomness":
     for seat in 0 ..< 4:
       config.players.add(PlayerConfig(name: "P" & $seat))
     let match = initMatch(config)
-    let prompt = userPrompt(match.sim, match.sim.itSeat, "", true, match.matchHeader())
+    let prompt = userPrompt(match.sim, match.sim.itSeat, "", match.sim.actionOptions(match.sim.itSeat, true), match.matchHeader())
     check "17" notin prompt
     check "17" notin systemPrompt(match.sim, match.sim.itSeat)
     config.roundsKnown = true
@@ -48,8 +48,8 @@ suite "scripted seat randomness":
       match.sim.applyShot(match.sim.itSeat, match.sim.validTargets(match.sim.itSeat)[0])
     match.finishRound()
     let context = match.decisionSim()
-    let own = userPrompt(context, shooter, "", true, match.matchHeader())
-    let other = userPrompt(context, (shooter + 1) mod 4, "", false, match.matchHeader())
+    let own = userPrompt(context, shooter, "", context.actionOptions(shooter, true), match.matchHeader())
+    let other = userPrompt(context, (shooter + 1) mod 4, "", context.actionOptions((shooter + 1) mod 4, false), match.matchHeader())
     check "Our alliance lasts until the next round." in own
     check "Our alliance lasts until the next round." in other
     ## Earlier rounds fold their shots into a tally that never names an aim.
@@ -88,11 +88,11 @@ suite "scripted seat randomness":
         "whisper": {"to": "Nobody", "text": "hi"}}, true)
     ## A third cog sees that a whisper and a reveal happened, never their content.
     let third = (seat + 2) mod 4
-    let view = userPrompt(match.decisionSim(), third, "", false, "")
+    let view = userPrompt(match.decisionSim(), third, "", match.sim.actionOptions(third, false), "")
     check "spare me" notin view
     check "whispers something to " & name in view
     check "shows " & name & " one of their cards" in view
-    check "spare me" in userPrompt(match.decisionSim(), other, "", false, "")
+    check "spare me" in userPrompt(match.decisionSim(), other, "", match.sim.actionOptions(other, false), "")
 
   test "scripted baselines aim where they say":
     var config = defaultGameConfig()

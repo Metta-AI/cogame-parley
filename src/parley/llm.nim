@@ -141,34 +141,26 @@ proc parseJsonObject*(text: string): JsonNode =
   if result.kind != JObject:
     raise newException(ParleyError, "response must be a JSON object")
 
-proc actionSchema*(sim: Sim, seat: int, wantShot: bool): JsonNode =
-  ## Constrain native generation to the same currently legal actions as the parser.
-  let me = sim.seats[seat]
-  var others, targets, pledgeable: seq[string]
-  for index, other in sim.seats:
-    if index != seat:
-      others.add(other.name)
-      if other.alive:
-        targets.add(other.name)
-        if index notin me.pledges: pledgeable.add(other.name)
-  if sim.skipsLeft() > 0: targets.add("pass")
+proc actionSchema*(options: JsonNode): JsonNode =
   var properties = %*{"say": {"type": "string"}}
-  if wantShot:
+  if options["phase"].getStr() == "shot":
+    var targets = newJArray()
+    for action in options["legalActions"]:
+      if action{"aim"}.getStr() == "head": targets.add(action["shoot"])
+    if options["legalActions"][0]["shoot"].getStr() == "pass": targets.add(%"pass")
     properties["shoot"] = %*{"type": "string", "enum": targets}
     properties["aim"] = %*{"type": "string", "enum": ["head", "hip"]}
-  if me.whispers < MaxWhispers:
-    properties["whisper"] = %*{"anyOf": [{"type": "null"},
-      {"type": "object", "additionalProperties": false, "required": ["to", "text"],
-       "properties": {"to": {"type": "string", "enum": others}, "text": {"type": "string"}}}]}
-  if me.friend >= 0 and not me.revealed:
-    properties["reveal"] = %*{"anyOf": [{"type": "null"},
-      {"type": "object", "additionalProperties": false, "required": ["to", "card"],
-       "properties": {"to": {"type": "string", "enum": others},
-                      "card": {"type": "string", "enum": ["friend", "enemy"]}}}]}
-  if sim.banked[seat] + sim.transfers[seat] >= 1:
-    properties["give"] = %*{"anyOf": [{"type": "null"}, {"type": "string", "enum": others}]}
-  if me.alive and pledgeable.len > 0:
-    properties["pledge"] = %*{"anyOf": [{"type": "null"}, {"type": "string", "enum": pledgeable}]}
+  for name, allowance in options["extras"]:
+    let targets = allowance["to"]
+    if targets.len == 0: continue
+    var field = %*{"type": "string", "enum": targets}
+    if name in ["whisper", "reveal"]:
+      let detail = if name == "whisper": "text" else: "card"
+      field = %*{"type": "object", "additionalProperties": false, "required": ["to", detail],
+        "properties": {"to": {"type": "string", "enum": targets}}}
+      field["properties"][detail] = if name == "whisper": %*{"type": "string"}
+        else: %*{"type": "string", "enum": allowance["cards"]}
+    properties[name] = %*{"anyOf": [{"type": "null"}, field]}
   var required = newJArray()
   for key, value in properties: required.add(%key)
   %*{"type": "object", "properties": properties, "required": required, "additionalProperties": false}

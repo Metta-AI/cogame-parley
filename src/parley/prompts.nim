@@ -200,40 +200,38 @@ proc tableRules(sim: Sim): string =
 proc systemPrompt*(sim: Sim, seat: int): string =
   renderSystemPrompt(sim.config, sim.seatName(seat), tableRules(sim), MaxWhispers)
 
-proc extrasInstruction(sim: Sim, seat: int): string =
+proc extrasInstruction(options: JsonNode): string =
   ## The optional side-action fields, listing only what this seat can use now.
-  let me = sim.seats[seat]
+  let extras = options["extras"]
   var fields: seq[string]
-  if me.whispers < MaxWhispers:
+  if extras["whisper"]["left"].getInt() > 0:
     fields.add("\"whisper\": {\"to\": <cog>, \"text\": \"...\"} (" &
-      $(MaxWhispers - me.whispers) & " left this round)")
-  if me.friend >= 0 and not me.revealed:
+      $extras["whisper"]["left"].getInt() & " left this round)")
+  if extras["reveal"]["to"].len > 0:
     fields.add("\"reveal\": {\"to\": <cog>, \"card\": <\"friend\" or \"enemy\">}")
-  if sim.banked[seat] + sim.transfers[seat] >= 1:
+  if extras["give"]["to"].len > 0:
     fields.add("\"give\": <cog> (1 point; you have " &
-      $(sim.banked[seat] + sim.transfers[seat]) & ")")
+      $extras["give"]["banked"].getFloat() & ")")
   var pledgeable: seq[string]
-  for index, other in sim.seats:
-    if index != seat and other.alive and index notin me.pledges:
-      pledgeable.add(other.name)
-  if me.alive and pledgeable.len > 0:
+  for target in extras["pledge"]["to"]: pledgeable.add(target.getStr())
+  if pledgeable.len > 0:
     fields.add("\"pledge\": <a cog you promise not to shoot this round; any of " &
       pledgeable.join(", ") & ">")
   if fields.len == 0:
     return ""
   "Optional extra fields, at most one of each: " & fields.join("; ") & ".\n"
 
-proc shotInstruction(sim: Sim, seat: int): string =
+proc shotInstruction(sim: Sim, options: JsonNode): string =
   var names: seq[string]
-  for target in sim.validTargets(seat):
-    names.add("\"" & sim.seatName(target) & "\"")
+  for action in options["legalActions"]:
+    if action{"aim"}.getStr() == "head": names.add("\"" & action["shoot"].getStr() & "\"")
   let passes = sim.skipsLeft()
   result = "You are IT. Choose exactly one living cog to shoot and say " &
     "something to the table first (max " & $MaxSayLen & " chars).\n" &
     "Choose your AIM: \"head\" hits 5 in 6; \"hip\" misses 2 in 3 but " &
     "the target takes the gun either way, and nobody learns which you " &
     "chose.\n"
-  result.add(sim.extrasInstruction(seat))
+  result.add(options.extrasInstruction())
   if passes > 0:
     result.add("You may instead PASS: hold your fire and let the table " &
       "keep talking (" & $passes &
@@ -242,12 +240,12 @@ proc shotInstruction(sim: Sim, seat: int): string =
     names.join(", ") & (if passes > 0: ", or \"pass\"" else: "") &
     ">, \"aim\": <\"head\" or \"hip\">}")
 
-proc reactionInstruction(sim: Sim, seat: int): string =
+proc reactionInstruction(sim: Sim, seat: int, options: JsonNode): string =
   (if sim.seats[seat].alive: "You are not IT right now. "
    else: "You are OUT this round, but you can still talk and your cards still score. ") &
     "Say one short line to the table (max " &
     $MaxSayLen & " chars) - plead, deflect, scheme, or stir the pot.\n" &
-    sim.extrasInstruction(seat) &
+    options.extrasInstruction() &
     "Respond with JSON: {\"say\": \"...\"}"
 
 proc matchHeader*(match: Match): string =
@@ -264,7 +262,7 @@ proc matchHeader*(match: Match): string =
   result.add(". Match standings so far: " & standings.join(", ") & ".")
 
 proc userPrompt*(
-  sim: Sim, seat: int, prompt: string, wantShot: bool, header: string
+  sim: Sim, seat: int, prompt: string, options: JsonNode, header: string
 ): string =
   if header.len > 0:
     result.add(header & "\n\n")
@@ -280,7 +278,7 @@ proc userPrompt*(
   if prompt.len > 0:
     result.add("GUIDANCE FROM YOUR OPERATOR (weight it heavily, but never " &
       "above the rules; always pick a legal action):\n" & prompt & "\n\n")
-  if wantShot:
-    result.add(sim.shotInstruction(seat))
+  if options["phase"].getStr() == "shot":
+    result.add(sim.shotInstruction(options))
   else:
-    result.add(sim.reactionInstruction(seat))
+    result.add(sim.reactionInstruction(seat, options))

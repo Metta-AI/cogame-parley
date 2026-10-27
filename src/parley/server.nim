@@ -56,7 +56,6 @@ type
     decision: Decision
     rawAction: JsonNode
     evidence: Option[JsonNode]
-    receivedAttempt: DecisionAttempt
     observation, action: JsonNode
     attempts: seq[DecisionAttempt]
     selected: Option[string]
@@ -171,41 +170,18 @@ proc broadcastLocked(gs: GameState) =
 
 proc decisionObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
     wantShot: bool, header: string): JsonNode =
-  var legalActions = newJArray()
-  if wantShot:
-    if sim.skipsLeft() > 0:
-      legalActions.add(%*{"shoot": "pass"})
-    for target in sim.validTargets(seat):
-      for aim in ["head", "hip"]:
-        legalActions.add(%*{"shoot": sim.seats[target].name, "aim": aim})
-  ## Side actions combine freely with any legal action, so they are offered
-  ## as allowances rather than multiplied into `legalActions`.
-  let me = sim.seats[seat]
-  var others = newJArray()
-  var living = newJArray()
-  for index, other in sim.seats:
-    if index == seat: continue
-    others.add(%other.name)
-    if other.alive and me.alive and index notin me.pledges:
-      living.add(%other.name)
+  let options = sim.actionOptions(seat, wantShot)
   let system = systemPrompt(sim, seat)
-  let user = userPrompt(sim, seat, prompt, wantShot, header)
+  let user = userPrompt(sim, seat, prompt, options, header)
   let view = gs.liveFrameJson(seat)
   view["prompt_template"] = promptMetadata(sim.config, system, user)
   %*{
-    "phase": (if wantShot: "shot" else: "reaction"),
+    "phase": options["phase"],
     "observation": view,
     "input": {"system": system, "user": user},
-    "legalActions": legalActions,
-    "actionSchema": sim.actionSchema(seat, wantShot),
-    "extras": {
-      "whisper": {"to": (if me.whispers < MaxWhispers: others else: newJArray()),
-                  "left": MaxWhispers - me.whispers},
-      "reveal": {"to": (if me.friend >= 0 and not me.revealed: others else: newJArray()),
-                 "cards": ["friend", "enemy"]},
-      "give": {"to": (if sim.banked[seat] + sim.transfers[seat] >= 1: others else: newJArray()),
-               "banked": sim.banked[seat] + sim.transfers[seat]},
-      "pledge": {"to": living}}}
+    "legalActions": options["legalActions"],
+    "actionSchema": actionSchema(options),
+    "extras": options["extras"]}
 
 proc registerExternal(gs: var GameState, slot: int, prompt: string) =
   if gs.started or gs.stopping or gs.finished:
@@ -317,7 +293,6 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
   if issued.completed and evidence != issued.evidence.get():
     raise newException(ParleyError, "completed native evidence is immutable")
   issued.evidence = some(copy(evidence))
-  issued.receivedAttempt = attempt
   issued.completed = issued.completed or completed
   if issued.awaiting and not issued.hasAction and not issued.rejected:
     issued.attempts = @[attempt]
@@ -340,7 +315,7 @@ proc acceptExternalAction(gs: var GameState, seat: int, payload: JsonNode,
   let proposal = parseDecision(gs.match.sim, seat, payload["action"], gs.pending.wantShot)
   let canonical = decisionAction(gs.match.sim, proposal, gs.pending.wantShot)
   if source == "llm":
-    var attempt = gs.issued[id].receivedAttempt
+    var attempt = readAttemptEvidence(gs.issued[id].evidence.get())
     if attempt.response.kind != JString or attempt.rawResponse.kind != JString or
         attempt.responseComplete != some(true) or attempt.responseReaderJoined != some(true) or
         attempt.httpStatus != some(200) or
@@ -561,7 +536,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
       for staged in state.staged:
         var attempts = staged.attempts
         if staged.selected.isNone and staged.evidence.isSome:
-          var received = staged.receivedAttempt
+          var received = readAttemptEvidence(staged.evidence.get())
           if attempts.len > 0:
             received.accepted = attempts[0].accepted
             received.parsedAction = attempts[0].parsedAction
@@ -881,7 +856,7 @@ proc websocketHandler(
               raise newException(ParleyError, "acknowledgement is outside its engine-issued stop window")
             for issued in state.issued.values:
               if issued.seat == slot and issued.evidence.isSome and
-                  issued.receivedAttempt.responseReaderJoined != some(true):
+                  issued.evidence.get()["response_reader_joined"] != %true:
                 raise newException(ParleyError, "stop retains an unjoined native response reader")
             state.stoppedSlots.incl(slot)
           return

@@ -105,19 +105,12 @@ var
 
 initLock(stateLock)
 
-proc clientDir(): string =
+proc assetDir(name: string): string =
   let appDir = getAppDir()
-  for candidate in [appDir / "client", appDir / ".." / "client", "client"]:
+  for candidate in [appDir / name, appDir / ".." / name, name]:
     if dirExists(candidate):
       return candidate
-  "client"
-
-proc dataDir(): string =
-  let appDir = getAppDir()
-  for candidate in [appDir / "data", appDir / ".." / "data", "data"]:
-    if dirExists(candidate):
-      return candidate
-  "data"
+  name
 
 proc policyNamesJson(gs: GameState): JsonNode =
   ## Seats play under anonymous table names; the policy names ride alongside
@@ -747,7 +740,7 @@ proc serveFile(request: Request, path, contentType: string) =
 proc clientFileHandler(name, contentType: string): RequestHandler =
   proc handler(request: Request) {.gcsafe.} =
     {.gcsafe.}:
-      serveFile(request, clientDir() / name, contentType)
+      serveFile(request, assetDir("client") / name, contentType)
   handler
 
 proc assetHandler(request: Request) {.gcsafe.} =
@@ -760,7 +753,7 @@ proc assetHandler(request: Request) {.gcsafe.} =
       if name.endsWith(".png"): "image/png"
       elif name.endsWith(".ttf"): "font/ttf"
       else: "application/octet-stream"
-    serveFile(request, dataDir() / name, contentType)
+    serveFile(request, assetDir("data") / name, contentType)
 
 proc healthzHandler(request: Request) {.gcsafe.} =
   var headers: HttpHeaders

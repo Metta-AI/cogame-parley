@@ -233,17 +233,14 @@ proc shotInstruction(sim: Sim, seat: int): string =
     "Choose your AIM: \"head\" hits 5 in 6; \"hip\" misses 2 in 3 but " &
     "the target takes the gun either way, and nobody learns which you " &
     "chose.\n"
-  let aimField = ", \"aim\": <\"head\" or \"hip\">"
   result.add(sim.extrasInstruction(seat))
   if passes > 0:
     result.add("You may instead PASS: hold your fire and let the table " &
       "keep talking (" & $passes &
-      (if passes == 1: " pass" else: " passes") & " left this round).\n" &
-      "Respond with JSON: {\"say\": \"...\", \"shoot\": <one of " &
-      names.join(", ") & ", or \"pass\">" & aimField & "}")
-  else:
-    result.add("Respond with JSON: {\"say\": \"...\", \"shoot\": <one of " &
-      names.join(", ") & ">" & aimField & "}")
+      (if passes == 1: " pass" else: " passes") & " left this round).\n")
+  result.add("Respond with JSON: {\"say\": \"...\", \"shoot\": <one of " &
+    names.join(", ") & (if passes > 0: ", or \"pass\"" else: "") &
+    ">, \"aim\": <\"head\" or \"hip\">}")
 
 proc reactionInstruction(sim: Sim, seat: int): string =
   (if sim.seats[seat].alive: "You are not IT right now. "

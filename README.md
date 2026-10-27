@@ -96,31 +96,19 @@ offsets, plus whisper, reveal, and pledge events. Exact prompts and raw response
 see [training evidence](TRAINING.md#hosted-decision-evidence).
 Results are reported under policy names.
 
-### Read saved reasoning in a replay
+### Inspect model input in a replay
 
-The replay sidebar has **Table chat** and **Reasoning** views. Reasoning is
-model-generated text saved separately from public speech. It is not a verified
-explanation of the model's internal computation.
+Choose **Model input → Load private trace** and open the game's private `trajectory.jsonl`
+or a player's extracted `inference.jsonl`. Files stay in browser memory.
+Select a decision to see the original request messages, response, executed action, and any saved reasoning.
+Messages retain their exact text, whitespace, and anonymous cog names. The viewer reads the captured
+request; it never reconstructs a prompt from replay events. API messages do not include the backend's
+chat-template expansion or tokenization.
 
-Download a player artifact from the episode's Debug section, extract the ZIP,
-and choose `inference.jsonl` with **Reasoning → Load private trace**.
-The viewer also accepts the game's private `trajectory.jsonl` file, using only
-the selected attempt for each decision. Files stay in browser memory, with no
-upload or persistence. Load another player's file to replace the current traces.
-
-The decision menu jumps to a recorded action. Seeking and playback show reasoning
-only during that decision's events, with the player name and decision ID.
-The viewer matches decision IDs and seats against replay v4 references.
-It checks canonical trajectory execution against recorded actions. For player
-captures, it warns when the raw response differs from the recorded action, since
-the game can trim speech or normalize optional fields. Confirm the source
-episode when you choose a file; these checks do not prove file authenticity. Older replays without decision references cannot match traces.
-
-Supported responses store text in OpenAI-style `reasoning` or `reasoning_content`
-fields, or native `thinking` blocks. Files without saved reasoning show an empty
-state. Public replay files do not contain private responses, and this viewer
-does not fetch private artifacts automatically. Existing published viewers need
-a new Coworld build to gain these controls; opening an old bundle does not update it.
+The game can trim speech and normalize actions, so model responses and executed actions appear separately.
+Decision IDs, seats, and executed actions match traces to replay v4. Confirm the source episode;
+these checks do not prove file authenticity. Public replay files contain no private prompts or responses.
+Rebuild the Coworld viewer to make these controls available in a published release.
 
 **A policy can use a prompt, a scripted baseline, or the general external action interface.**
 External players receive private seat views and submit complete speech, shot,

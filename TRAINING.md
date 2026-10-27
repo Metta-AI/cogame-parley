@@ -69,7 +69,7 @@ out of public replay bytes and standard output. Download the elevated
 training.
 
 The production renderer and parser serve both prompt players and external
-players. External observations include `input.system` and `input.user`.
+players. External observations include `input.system`, `input.user`, and the native decoder's `actionSchema`.
 Register with `{"type":"register","control":"external","prompt":"..."}`
 and receive `decision` frames with a string `decision_id`, the unchanged private `observation`, and a separate
 `transport` budget. Send `attempt_started` before native inference, then an `action` frame carrying that same identity,

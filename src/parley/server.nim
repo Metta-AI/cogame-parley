@@ -176,7 +176,7 @@ proc broadcastLocked(gs: GameState) =
   for slot, socket in gs.playerSockets:
     socket.send($gs.liveFrameJson(slot))
 
-proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
+proc decisionObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
     wantShot: bool, header: string): JsonNode =
   var legalActions = newJArray()
   if wantShot:
@@ -204,6 +204,7 @@ proc externalObservation(gs: GameState, sim: Sim, seat: int, prompt: string,
     "observation": view,
     "input": {"system": system, "user": user},
     "legalActions": legalActions,
+    "actionSchema": sim.actionSchema(seat, wantShot),
     "extras": {
       "whisper": {"to": (if me.whispers < MaxWhispers: others else: newJArray()),
                   "left": MaxWhispers - me.whispers},
@@ -221,10 +222,8 @@ proc registerExternal(gs: var GameState, slot: int, prompt: string) =
   gs.policies[slot] = SeatPolicy(kind: pkExternal, prompt: prompt)
 
 proc decideSeat(client: LlmClient, sim: Sim, seat: int, policy: SeatPolicy,
-    wantShot: bool, header: string,
+    wantShot: bool, observation: JsonNode,
     playDeadline: MonoTime): DecisionResult =
-  result.input = newJNull()
-  result.response = newJNull()
   if getMonoTime() >= playDeadline:
     result.failure = some(dfEpisodeDeadline)
     return
@@ -240,16 +239,14 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, policy: SeatPolicy,
     result.origin = "scripted_policy"
     return
   of pkNative:
-    return client.decide(sim, seat, policy.prompt, wantShot, decisionDeadline, header)
+    return client.decide(sim, seat, observation, decisionDeadline)
   of pkExternal:
     discard
 
-  var observation: JsonNode
   withLock stateLock:
     if not state.playerSockets.hasKey(seat):
       result.failure = some(dfExternalDisconnect)
       return
-    observation = state.externalObservation(sim, seat, policy.prompt, wantShot, header)
     state.pending = DecisionRecord(id: $(state.decisionRefs.len + 1), seat: seat,
       observation: observation, issuedAt: getMonoTime(), deadline: decisionDeadline,
       wantShot: wantShot, awaiting: true)
@@ -271,17 +268,13 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, policy: SeatPolicy,
     state.pending.awaiting = false
     if state.pending.hasAction and state.pending.receivedAt < decisionDeadline and not interruptionRequested():
       return DecisionResult(decision: state.pending.decision,
-        origin: "external", input: %*{
-          "packet": observation, "wire": $observation},
-        response: state.pending.rawAction,
+        origin: "external",
         nativeAttempts: state.pending.attempts)
     result.failure = some(
       if state.pending.rejected: dfRejectedAction
       elif not state.playerSockets.hasKey(seat): dfExternalDisconnect
       else: dfExternalTimeout)
     result.nativeAttempts = state.pending.attempts
-  result.input = %*{"packet": observation, "wire": $observation}
-  result.response = newJNull()
 
 proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
     evidence: JsonNode, completed: bool) =
@@ -399,8 +392,8 @@ proc recordDecision(gs: var GameState, sim: Sim, seat: int,
     if outcome.origin == "external":
       if attempts.len == 0 or attempts[^1].rejectionReason.isSome:
         var external = newDecisionAttempt("external-action", "external", aoUnknown)
-        external.prompt = outcome.input
-        external.response = outcome.response
+        external.prompt = %*{"packet": observation, "wire": $observation}
+        external.response = gs.pending.rawAction
         attempts.add(external)
       if attempts[^1].origin != aoModel:
         attempts[^1].parsedAction = decisionAction(sim, outcome.decision, wantShot)
@@ -629,16 +622,14 @@ proc playDecision(client: LlmClient, seat: int, wantShot: bool,
   ## Only the game thread mutates the match; inference runs without its lock.
   var sim: Sim
   var policy: SeatPolicy
-  var header: string
   var observation: JsonNode
   withLock stateLock:
     sim = state.match.decisionSim()
     policy = state.policies[seat]
-    header = state.match.matchHeader()
-    observation = state.liveFrameJson(seat)
-    observation["prompt_template"] = promptMetadata(sim.config, systemPrompt(sim, seat),
-      userPrompt(sim, seat, policy.prompt, wantShot, header))
-  let outcome = client.decideSeat(sim, seat, policy, wantShot, header, playDeadline)
+    observation = state.decisionObservation(sim, seat, policy.prompt, wantShot, state.match.matchHeader())
+  let outcome = client.decideSeat(sim, seat, policy, wantShot, observation, playDeadline)
+  if policy.kind != pkExternal:
+    observation = observation["observation"]
   withLock stateLock:
     if interruptionRequested() or outcome.failure.isSome:
       state.recordUnexecutedDecision(seat, outcome, observation)

@@ -1,5 +1,5 @@
 import std/[json, strutils, unittest]
-import parley/[llm, sim]
+import parley/[llm, prompts, sim]
 
 suite "scripted seat randomness":
   test "one seat's reactions do not change another seat's shots":

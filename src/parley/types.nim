@@ -2,6 +2,8 @@ import std/[json, options, strutils]
 
 export options
 
+const MaxSayLen* = 160
+
 type
   ParleyError* = object of CatchableError
 
@@ -155,7 +157,9 @@ proc update*(config: var GameConfig, configJson: string) =
   if config.promptVariant == pvMixed and not node.hasKey("promptSeed"):
     raise newException(ParleyError, "mixed prompts require an explicit promptSeed")
 
+const TrainingPromptVariants = [pvCanonical, pvPlain, pvNumbered, pvQuestions, pvReordered]
+
 proc selectedPromptVariant*(config: GameConfig): PromptVariant =
   ## Balanced scheduling over consecutive prompt seeds, without consuming game RNG.
-  if config.promptVariant == pvMixed: PromptVariant(config.promptSeed mod 5)
+  if config.promptVariant == pvMixed: TrainingPromptVariants[config.promptSeed mod TrainingPromptVariants.len]
   else: config.promptVariant

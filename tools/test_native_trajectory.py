@@ -4,6 +4,7 @@ Arguments: compiled game binary, fresh private output directory, source commit.
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -339,6 +340,12 @@ for mode in ["accepted", "invalid-response", "truncated-response", "inference-un
         for attempt in decision["attempts"]:
             archive = calls[attempt["platform_call_id"]]
             assert attempt["request"] == archive["caller_request"]
+            assert attempt["prompt"] == attempt["request"]["messages"]
+            metadata = decision["observation"]["prompt_template"]
+            for message in attempt["prompt"]:
+                assert metadata[message["role"] + "_sha256"].lower() == hashlib.sha256(
+                    message["content"].encode()
+                ).hexdigest()
             assert attempt["raw_response"] == archive["provider_response"]
             assert base64.b64decode(attempt["response_body_b64"], validate=True).decode() == archive["provider_response"]
             assert attempt["response_complete"] is True

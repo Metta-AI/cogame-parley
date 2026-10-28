@@ -215,3 +215,18 @@ real scripted socket players. It checks unchanged state, scoring, private
 visibility, and legal side actions across all seven templates and one mixed
 selection, using two scenario seeds. Games run sequentially. This proves the
 protocol and game invariants, not improved model play.
+
+## Coordinated XP cohorts
+
+`parley.lockstep.v1` permits a platform-owned static cohort to wait at start and
+next-decision barriers. Game and seat capabilities are separate. The engine sends
+its own decision identity and acting seat; players cannot select the next turn.
+Completed and failed games leave the cohort. Each game retains its ordinary
+sampled five-seat rules, manifest settings, decision acceptance and private evidence.
+
+Barrier waiting counts against the existing episode wall-clock budget. It does
+not pause clocks or extend decision deadlines. Cohort size can therefore affect
+how many rounds fit. Pin it with the game release, model images, tokenizer and
+decoding settings for a comparison. Certification fixtures and CPU transport
+probes establish infrastructure behavior only; qualify actual model gameplay and
+ordinary manifest budgets before training-data collection.

@@ -36,6 +36,7 @@ import
   webby/httpheaders,
   mummy,
   mummy/routers,
+  batch,
   llm,
   prompts,
   sim
@@ -591,6 +592,8 @@ proc playDecision(client: LlmClient, seat: int, wantShot: bool,
   var sim: Sim
   var policy: SeatPolicy
   var observation: JsonNode
+  batchControl("turn", int((playDeadline - getMonoTime()).inMilliseconds),
+    $(state.decisionRefs.len + 1), seat)
   withLock stateLock:
     sim = state.match.decisionSim()
     policy = state.policies[seat]
@@ -622,6 +625,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     defer:
       if not state.finished:
         finishEpisode(runtimeConfig, esFailed)
+      batchControl("finish", 5000)
     let config = state.config
     let gameStart = state.episodeStart
     let timeoutSeconds = state.episodeTimeoutSeconds
@@ -650,6 +654,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           state.policyFailure = some(PolicyFailure(seat: seat, reason: dfMissingPolicy))
           return
 
+    batchControl("start", int((playDeadline - getMonoTime()).inMilliseconds))
     let client = newLlmClient(config)
 
     echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",

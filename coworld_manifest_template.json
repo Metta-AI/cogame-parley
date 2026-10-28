@@ -17,6 +17,7 @@
     "owner": "daveey@gmail.com",
     "runnable": {
       "type": "game",
+      "env": {"PARLEY_BATCH_PROTOCOL": "parley.lockstep.v1"},
       "image": "{{PARLEY_IMAGE}}",
       "run": [
         "/bin/parley"

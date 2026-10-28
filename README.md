@@ -182,3 +182,25 @@ advertised as an offline-certified bundled player.
 Native prompt seats request strict structured output for the currently legal action schema, with a default
 1024-token output budget. This prevents explanatory prose and the former 300-token cutoff from corrupting action JSON.
 External action players still own generation and must submit a legal action; model failures remain explicit failures.
+
+## Lockstep XP collection
+
+A compatible Metta XP request can coordinate a fixed cohort through
+`parley.lockstep.v1`. The manifest advertises support with
+`PARLEY_BATCH_PROTOCOL`. The platform supplies `COWORLD_XP_BATCH_URL`,
+`COWORLD_XP_BATCH_GAME_ID` and a game-scoped `COWORLD_XP_BATCH_KEY`.
+Ordinary games without that endpoint keep their existing execution.
+
+After player registration, the game posts `start` to `/control`. Before each
+engine-owned decision it posts `turn`, including the next `decision_id` and
+acting `seat`. When every active game reaches that boundary, the coordinator
+releases the wave and batches model requests by policy. Game termination posts
+`finish`, so completed or failed games leave the cohort without replacement.
+Control calls use `Authorization: Bearer <game-scoped key>`; seat clients use
+separate capabilities and cannot drive game barriers.
+
+The game remains the parser and rule owner. Barrier waits consume its existing
+episode wall-clock budget; decision timeouts and cleanup acknowledgements remain
+unchanged. Coordinator failure fails the episode rather than supplying an action.
+The platform owns GPU workers and per-game artifacts. Publish and qualify a new
+immutable release before using this capability for ordinary `table5` collection.

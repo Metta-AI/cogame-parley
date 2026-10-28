@@ -675,11 +675,14 @@
 
   // The agents only ever hear anonymous table names ("Tinker", "Gasket");
   // the payload carries the policy names separately, spectator-side only.
-  // A name map swaps them in wherever a name is RENDERED — seat labels and
-  // the spoken lines both — while the underlying events keep the aliases.
+  // A name map decides what is RENDERED — seat labels and the spoken lines
+  // both — while the underlying events keep the aliases. Spectators see the
+  // alias first, then the policy ("Gasket · Base GPT-6 Astra"): the spoken
+  // lines address cogs by alias, so a reader needs the alias next to every
+  // speaker to follow who is talking to whom.
   // The platform fills empty seats with "Baseline" / "Baseline (N)" policies.
   // Mapping those seats back to their policy name tells a spectator nothing,
-  // so they keep their table alias instead — already a cute robot name.
+  // so they keep their table alias alone — already a cute robot name.
   function isBaselineFiller(name) {
     return /^baseline(\s*\(\d+\))?$/i.test(name);
   }
@@ -688,7 +691,7 @@
     var table = tableNames || [];
     var display = table.map(function (name, i) {
       var policy = policyNames && policyNames[i];
-      return (policy && !isBaselineFiller(policy)) ? policy : name;
+      return (policy && !isBaselineFiller(policy)) ? name + " \u00b7 " + policy : name;
     });
     return { seat: function (i) { return display[i] || ("Seat " + i); } };
   }

@@ -183,27 +183,22 @@ Native prompt seats request strict structured output for the currently legal act
 1024-token output budget. This prevents explanatory prose and the former 300-token cutoff from corrupting action JSON.
 External action players still own generation and must submit a legal action; model failures remain explicit failures.
 
-## Lockstep XP collection
+## Shared-GPU XP collection
 
-A compatible Metta XP request can coordinate a fixed cohort through
-`parley.lockstep.v1`. The manifest advertises support with
-`PARLEY_BATCH_PROTOCOL`. The platform supplies `COWORLD_XP_BATCH_URL`,
-`COWORLD_XP_BATCH_GAME_ID` and a game-scoped `COWORLD_XP_BATCH_KEY`.
-Ordinary games without that endpoint keep their existing execution.
+A compatible Metta XP request uses `parley.xp.v1`, advertised through `PARLEY_BATCH_PROTOCOL`.
+The platform supplies `COWORLD_XP_BATCH_URL`, `COWORLD_XP_BATCH_GAME_ID` and a game-scoped `COWORLD_XP_BATCH_KEY`.
+Games without that endpoint keep their ordinary execution.
 
-After player registration, the game posts `start` to `/control`. Before each
-engine-owned decision it posts `turn`, including the next `decision_id` and
-acting `seat`. When every active game reaches that boundary, the coordinator
-releases the wave and batches model requests by policy. Game termination posts
-`finish`, so completed or failed games leave the cohort without replacement.
-This notification precedes stop acknowledgements and artifact publication, so
-cleanup does not hold the cohort barrier. Artifact cleanup still runs if the
-terminal notification fails.
-Control calls use `Authorization: Bearer <game-scoped key>`; seat clients use
-separate capabilities and cannot drive game barriers.
+After registration, the game posts `start` to `/control` for the cohort's startup gate.
+Before each decision, it posts `turn` with its next `decision_id` and acting `seat`.
+This authorizes the decision immediately; games do not wait for peers between turns.
+The model server batches concurrent inference requests internally.
+Termination posts `finish` before stop acknowledgements and artifact publication; cleanup runs even if notification fails.
+Control calls use a game-scoped bearer capability; seat clients cannot drive game control.
 
-The game remains the parser and rule owner. Barrier waits consume its existing
-episode wall-clock budget; decision timeouts and cleanup acknowledgements remain
-unchanged. Coordinator failure fails the episode rather than supplying an action.
-The platform owns GPU workers and per-game artifacts. Publish and qualify a new
-immutable release before using this capability for ordinary `table5` collection.
+With `COWORLD_XP_FULL_MATCH=true`, the game attempts all sampled rounds instead of applying the ordinary round-cost forecast.
+Its hosted `COWORLD_TIMEOUT_SECONDS` is a hard limit, with ten seconds reserved for cleanup.
+Expiration produces incomplete evidence without scores. Sampled rules and per-decision limits are unchanged.
+Without this explicit mode, the ordinary 60% play budget and round-boundary forecast remain in effect.
+The platform owns worker allocation, bounded lifetime and artifact collection.
+Publish and qualify compatible game and checkpoint images before production collection.

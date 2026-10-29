@@ -459,6 +459,8 @@ proc waitUntil(deadline: MonoTime) =
 
 proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
   let cleanupDeadline = min(state.episodeDeadline, getMonoTime() + initDuration(seconds = 10))
+  let execution = %*{"full_match": getEnv("COWORLD_XP_FULL_MATCH") == "true",
+    "episode_timeout_seconds": state.episodeTimeoutSeconds}
   var targets: seq[int]
   withLock stateLock:
     if state.finished: return
@@ -557,12 +559,13 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, status: EpisodeStatus) =
             elif unresolved: "unresolved-player-cleanup" else: "runtime-failure"),
           "policy_failure": (if state.policyFailure.isSome: %state.policyFailure.get() else: newJNull()),
           "partial_results": results, "input_config": state.inputConfig,
-          "selected_seed": state.config.seed}, newJNull())
+          "selected_seed": state.config.seed, "execution": execution}, newJNull())
     else:
       trajectory.finish(
         status,
         %*{"protocol": "parley.native-outcome.v1", "results": results,
-           "player_cleanup": cleanup, "input_config": state.inputConfig, "selected_seed": state.config.seed},
+           "player_cleanup": cleanup, "input_config": state.inputConfig, "selected_seed": state.config.seed,
+           "execution": execution},
         results["scores"])
     writeTrajectoryArtifact(trajectory, getEnv(CogameSaveTrajectoryUriEnv), cleanupDeadline,
       parseEnum[ArtifactHttpMethod](getEnv("COGAME_SAVE_TRAJECTORY_METHOD", "PUT").toUpperAscii()))
@@ -634,8 +637,10 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     let config = state.config
     let gameStart = state.episodeStart
     let timeoutSeconds = state.episodeTimeoutSeconds
+    let fullMatch = getEnv("COWORLD_XP_FULL_MATCH") == "true"
     let episodeDeadline = gameStart + initDuration(nanoseconds = int64(timeoutSeconds * 1_000_000_000))
-    let playDeadline = gameStart + initDuration(nanoseconds = int64(timeoutSeconds * PlayBudgetFraction * 1_000_000_000))
+    let playSeconds = if fullMatch: timeoutSeconds - 10.0 else: timeoutSeconds * PlayBudgetFraction
+    let playDeadline = gameStart + initDuration(nanoseconds = int64(playSeconds * 1_000_000_000))
     let deadline = min(playDeadline, gameStart + initDuration(nanoseconds = int64(config.playerConnectTimeoutSeconds * 1_000_000_000)))
 
     while getMonoTime() < deadline and not interruptionRequested():
@@ -664,7 +669,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     let client = newLlmClient(config)
 
     echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",
-      (timeoutSeconds * PlayBudgetFraction).int, "s"
+      playSeconds.int, "s; full match=", fullMatch
     ## Rounds are dealt only while the longest round so far would still fit,
     ## so the episode budget normally ends play at a completed-round boundary.
     var roundStartedAt = getMonoTime()
@@ -687,7 +692,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         longestRound = max(longestRound, roundEndedAt - roundStartedAt)
         roundStartedAt = roundEndedAt
         withLock stateLock:
-          let timedOut = roundEndedAt + longestRound >= playDeadline
+          let timedOut = not fullMatch and roundEndedAt + longestRound >= playDeadline
           state.match.finishRound(endMatch = timedOut)
           if timedOut and state.match.roundsPlayed < config.rounds:
             echo "parley: episode deadline reached after ",

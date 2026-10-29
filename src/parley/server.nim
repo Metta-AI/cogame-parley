@@ -243,6 +243,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, policy: SeatPolicy,
     result.failure = some(
       if state.pending.rejected: dfRejectedAction
       elif not state.playerSockets.hasKey(seat): dfExternalDisconnect
+      elif decisionDeadline == playDeadline: dfEpisodeDeadline
       else: dfExternalTimeout)
     result.nativeAttempts = state.pending.attempts
 
@@ -586,14 +587,15 @@ const PlayBudgetFraction* = 0.6
   ## that must never be the thing that runs out of time.
 
 proc playDecision(client: LlmClient, seat: int, wantShot: bool,
-    playDeadline: MonoTime): bool =
+    playDeadline, episodeDeadline: MonoTime): bool =
   ## One engine-owned lifecycle for native, external, and scripted policies.
   ## Only the game thread mutates the match; inference runs without its lock.
   var sim: Sim
   var policy: SeatPolicy
   var observation: JsonNode
-  batchControl("turn", int((playDeadline - getMonoTime()).inMilliseconds),
-    $(state.decisionRefs.len + 1), seat)
+  if getMonoTime() < playDeadline:
+    batchControl("turn", int((episodeDeadline - getMonoTime()).inMilliseconds),
+      $(state.decisionRefs.len + 1), seat)
   withLock stateLock:
     sim = state.match.decisionSim()
     policy = state.policies[seat]
@@ -629,6 +631,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     let config = state.config
     let gameStart = state.episodeStart
     let timeoutSeconds = state.episodeTimeoutSeconds
+    let episodeDeadline = gameStart + initDuration(nanoseconds = int64(timeoutSeconds * 1_000_000_000))
     let playDeadline = gameStart + initDuration(nanoseconds = int64(timeoutSeconds * PlayBudgetFraction * 1_000_000_000))
     let deadline = min(playDeadline, gameStart + initDuration(nanoseconds = int64(config.playerConnectTimeoutSeconds * 1_000_000_000)))
 
@@ -654,7 +657,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           state.policyFailure = some(PolicyFailure(seat: seat, reason: dfMissingPolicy))
           return
 
-    batchControl("start", int((playDeadline - getMonoTime()).inMilliseconds))
+    batchControl("start", int((episodeDeadline - getMonoTime()).inMilliseconds))
     let client = newLlmClient(config)
 
     echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",
@@ -669,7 +672,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       withLock stateLock:
         if state.match.done: break
         shooter = state.match.sim.itSeat
-      if not client.playDecision(shooter, wantShot = true, playDeadline):
+      if not client.playDecision(shooter, wantShot = true, playDeadline, episodeDeadline):
         return
 
       var roundEnded: bool
@@ -695,7 +698,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           speakers = state.match.sim.reactionSpeakers()
         for seat in speakers:
           if getMonoTime() >= playDeadline or interruptionRequested(): break
-          if not client.playDecision(seat, wantShot = false, playDeadline):
+          if not client.playDecision(seat, wantShot = false, playDeadline, episodeDeadline):
             return
 
     finishEpisode(runtimeConfig, esCompleted)

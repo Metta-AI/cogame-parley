@@ -196,6 +196,9 @@ engine-owned decision it posts `turn`, including the next `decision_id` and
 acting `seat`. When every active game reaches that boundary, the coordinator
 releases the wave and batches model requests by policy. Game termination posts
 `finish`, so completed or failed games leave the cohort without replacement.
+This notification precedes stop acknowledgements and artifact publication, so
+cleanup does not hold the cohort barrier. Artifact cleanup still runs if the
+terminal notification fails.
 Control calls use `Authorization: Bearer <game-scoped key>`; seat clients use
 separate capabilities and cannot drive game barriers.
 

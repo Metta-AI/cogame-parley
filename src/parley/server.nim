@@ -624,10 +624,13 @@ proc playDecision(client: LlmClient, seat: int, wantShot: bool,
 
 proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
   {.gcsafe.}:
+    var status = esFailed
     defer:
-      if not state.finished:
-        finishEpisode(runtimeConfig, esFailed)
-      batchControl("finish", 5000)
+      # Leave the cohort before stop acknowledgements and artifact publication.
+      try:
+        batchControl("finish", 5000)
+      finally:
+        finishEpisode(runtimeConfig, status)
     let config = state.config
     let gameStart = state.episodeStart
     let timeoutSeconds = state.episodeTimeoutSeconds
@@ -701,7 +704,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           if not client.playDecision(seat, wantShot = false, playDeadline, episodeDeadline):
             return
 
-    finishEpisode(runtimeConfig, esCompleted)
+    status = esCompleted
 
 var
   gameThread: Thread[RuntimeConfig]

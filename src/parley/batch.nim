@@ -1,7 +1,8 @@
 ## Request-scoped XP startup and decision authorization; turns advance independently.
 import std/[httpclient, json, os, strutils]
 
-proc batchControl*(kind: string, timeoutMs: int, decisionId = "", seat = -1) =
+proc batchControl*(kind: string, timeoutMs: int, decisionId = "", seat = -1,
+    decisionBudgetMs = 45000) =
   let endpoint = getEnv("COWORLD_XP_BATCH_URL")
   if endpoint.len == 0: return
   if timeoutMs <= 0:
@@ -15,6 +16,7 @@ proc batchControl*(kind: string, timeoutMs: int, decisionId = "", seat = -1) =
   if kind == "turn":
     body["decision_id"] = %decisionId
     body["seat"] = %seat
+    body["budget_ms"] = %decisionBudgetMs
   let response = client.request(endpoint.strip(chars = {'/'}, leading = false) & "/control",
     httpMethod = HttpPost, body = $body)
   if response.code != Http200:

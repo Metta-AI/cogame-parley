@@ -598,7 +598,9 @@ proc playDecision(client: LlmClient, seat: int, wantShot: bool,
   var observation: JsonNode
   if getMonoTime() < playDeadline:
     batchControl("turn", int((episodeDeadline - getMonoTime()).inMilliseconds),
-      $(state.decisionRefs.len + 1), seat)
+      $(state.decisionRefs.len + 1), seat,
+      max(1, min(state.config.llmTimeoutSeconds * 1000,
+        int((playDeadline - getMonoTime()).inMilliseconds))))
   withLock stateLock:
     sim = state.match.decisionSim()
     policy = state.policies[seat]

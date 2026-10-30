@@ -190,7 +190,9 @@ The platform supplies `COWORLD_XP_BATCH_URL`, `COWORLD_XP_BATCH_GAME_ID` and a g
 Games without that endpoint keep their ordinary execution.
 
 After registration, the game posts `start` to `/control` for the cohort's startup gate.
-Before each decision, it posts `turn` with its next `decision_id` and acting `seat`.
+Before each decision, it posts `turn` with its next `decision_id`, acting `seat`, and remaining `budget_ms`.
+The budget is bounded by the configured per-decision limit and remaining play time.
+The coordinator forwards that deadline through the shared gateway to native inference.
 This authorizes the decision immediately; games do not wait for peers between turns.
 The model server batches concurrent inference requests internally.
 Termination posts `finish` before stop acknowledgements and artifact publication; cleanup runs even if notification fails.
@@ -200,5 +202,6 @@ With `COWORLD_XP_FULL_MATCH=true`, the game attempts all sampled rounds instead 
 Its hosted `COWORLD_TIMEOUT_SECONDS` is a hard limit, with ten seconds reserved for cleanup.
 Expiration produces incomplete evidence without scores. Sampled rules and per-decision limits are unchanged.
 Without this explicit mode, the ordinary 60% play budget and round-boundary forecast remain in effect.
-The platform owns worker allocation, bounded lifetime and artifact collection.
+The platform owns cross-user model leases, worker allocation, cancellation, bounded lifetime, and artifact collection.
+Each XP keeps its own coordinator. A failed game leaves the startup cohort; healthy games continue independently.
 Publish and qualify compatible game and checkpoint images before production collection.

@@ -205,3 +205,9 @@ Without this explicit mode, the ordinary 60% play budget and round-boundary fore
 The platform owns cross-user model leases, worker allocation, cancellation, bounded lifetime, and artifact collection.
 Each XP keeps its own coordinator. A failed game leaves the startup cohort; healthy games continue independently.
 Publish and qualify compatible game and checkpoint images before production collection.
+
+External Qwen players keep model-only JSON decoding unless their policy explicitly sets `PARLEY_DECODING=legal-actions`.
+The constrained variant sends this game's per-decision `actionSchema` to inference, excluding self and eliminated targets.
+Register and compare it as a distinct policy variant; preserve the schema in private captures.
+Metta's model-only training importer rejects constrained captures, so enabling this mode does not qualify them for that importer.
+Neither mode repairs or substitutes a model response after generation. Invalid actions remain explicit policy failures.

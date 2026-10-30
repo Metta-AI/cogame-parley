@@ -212,3 +212,9 @@ The constrained variant sends this game's per-decision `actionSchema` to inferen
 Register and compare it as a distinct policy variant; preserve the schema in private captures.
 Metta's model-only training importer rejects constrained captures, so enabling this mode does not qualify them for that importer.
 Neither mode repairs or substitutes a model response after generation. Invalid actions remain explicit policy failures.
+
+Qualify the complete cohort after changing serving code. For each completed game, verify
+`replay.config.rounds == replay.config.plannedRounds`, five scores, and exact trajectory/private-capture joins.
+Report completed and attempted game counts together. Divide completions by the entire cohort's elapsed time,
+including request startup and the last game's tail; also report provisioning-through-completion time.
+Retain every terminal trajectory, replay, private capture archive, and tested source revision.

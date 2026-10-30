@@ -195,6 +195,7 @@ The budget is bounded by the configured per-decision limit and remaining play ti
 The coordinator forwards that deadline through the shared gateway to native inference.
 This authorizes the decision immediately; games do not wait for peers between turns.
 The model server batches concurrent inference requests internally.
+Batched XP also skips spectator pacing between accepted decisions. Sampled rules, round counts, and action budgets stay the same.
 Termination posts `finish` before stop acknowledgements and artifact publication; cleanup runs even if notification fails.
 Control calls use a game-scoped bearer capability; seat clients cannot drive game control.
 

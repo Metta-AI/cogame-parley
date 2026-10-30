@@ -622,9 +622,10 @@ proc playDecision(client: LlmClient, seat: int, wantShot: bool,
         state.match.sim.applyShot(seat, outcome.decision.target, outcome.decision.aim)
     state.recordDecision(sim, seat, wantShot, outcome, beforeEvent, observation)
     state.broadcastLocked()
-  let delay = if wantShot: state.config.turnDelayMs else: state.config.turnDelayMs div 2
-  if delay > 0:
-    waitUntil(min(playDeadline, getMonoTime() + initDuration(milliseconds = delay)))
+  if getEnv("COWORLD_XP_BATCH_URL").len == 0:
+    let delay = if wantShot: state.config.turnDelayMs else: state.config.turnDelayMs div 2
+    if delay > 0:
+      waitUntil(min(playDeadline, getMonoTime() + initDuration(milliseconds = delay)))
   true
 
 proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =

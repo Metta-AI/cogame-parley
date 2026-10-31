@@ -174,8 +174,8 @@ and the next decision. Keep raw private prompts, logs, receipts, and checkpoint 
 
 The game owns seven reviewed rule templates under `src/parley/prompts/`:
 `canonical`, `plain`, `numbered`, `questions`, `reordered`,
-`heldout-briefing`, and `heldout-reference`. The canonical template preserves
-existing message bytes. The other templates paraphrase the same mechanics,
+`heldout-briefing`, and `heldout-reference`. The canonical system template preserves
+its existing bytes. The other templates paraphrase the same mechanics,
 including aim probabilities, eliminated-seat scoring, side actions, and
 existing strategic hints. Sampled table rules are inserted by the same
 renderer; hidden round and survivor counts remain hidden. Player guidance,
@@ -199,6 +199,14 @@ SHA-256 hashes of the exact system and user messages. External decisions carry
 this inside the extensible private `observation` object, retaining the player
 protocol shape. Native trajectory evidence retains it alongside exact prompts.
 The public spectator view and public replay do not gain prompt metadata.
+
+The user message places the seat's visible history before changing standings and seat
+status. Every information block, private visibility rule, and action instruction
+is retained. The growing transcript can therefore reuse an inference prefix
+within a round. Round transitions still rebuild past-round summaries. This changes
+prompt order and model behavior; pin the game release, source revision, and exact
+message hashes for comparisons. The reviewed system templates retain their rules
+bank identifier. Existing captures keep their original exact messages and hashes.
 
 Collect new responses under the actual selected wording. Never rewrite the
 prompt attached to an old response. Group all prompt versions of a scenario

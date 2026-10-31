@@ -218,6 +218,14 @@ Action counts changed from 635 to 620 while generated tokens increased from
 policy behavior as well as cache reuse. This constrained evaluation comparison
 does not establish learning or model-only training admission.
 
+[A subsequent serving comparison](https://softmax.nexus/artifacts/e483a7e0-4f48-43b5-9772-3e79d36988ee)
+kept Parley source `e7902d6` and the prompt code fixed, changing native prefill chunks from 1,024 to 4,096 tokens.
+Each configuration completed four games and all 17 sampled rounds; all 1,243 accepted decisions across both cohorts joined private captures and native usage.
+Generated-token throughput rose from 51.28 to 67.13 tokens/second (+30.9%); complete-game throughput rose from 15.31 to 20.94 games/GPU-hour (+36.8%).
+Both cohorts had zero inference errors or disconnects. Automatic server seeds and candidate prewarming differed; responses, histories, and token counts can diverge.
+This single-checkpoint, four-seed constrained evaluation does not establish playing strength, model-only training admission, or production networking qualification.
+The preceding prompt-layout comparison remains separate evidence; do not multiply the measurements into an unsupported cumulative claim.
+
 Collect new responses under the actual selected wording. Never rewrite the
 prompt attached to an old response. Group all prompt versions of a scenario
 into the same training/validation family. Freeze game/source/model identities,

@@ -208,6 +208,16 @@ prompt order and model behavior; pin the game release, source revision, and exac
 message hashes for comparisons. The reviewed system templates retain their rules
 bank identifier. Existing captures keep their original exact messages and hashes.
 
+[Matched full-game evidence](https://softmax.nexus/artifacts/44060cc7-f126-4618-bc5c-515c6a5616ce)
+compares this layout at source `377f7d2` with `a3ed49a2`, paired with Metta's
+prefill/decode batching changes. Each configuration completed all 17 sampled
+rounds across four ordinary games on one A10G. Generated-token throughput rose
+24.5% and complete-game throughput rose 22.0%; a 5–10× gain was not established.
+Action counts changed from 635 to 620 while generated tokens increased from
+47,599 to 48,594. Report token and game rates separately: the layout changes
+policy behavior as well as cache reuse. This constrained evaluation comparison
+does not establish learning or model-only training admission.
+
 Collect new responses under the actual selected wording. Never rewrite the
 prompt attached to an old response. Group all prompt versions of a scenario
 into the same training/validation family. Freeze game/source/model identities,

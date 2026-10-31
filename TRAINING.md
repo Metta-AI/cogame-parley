@@ -174,8 +174,8 @@ and the next decision. Keep raw private prompts, logs, receipts, and checkpoint 
 
 The game owns seven reviewed rule templates under `src/parley/prompts/`:
 `canonical`, `plain`, `numbered`, `questions`, `reordered`,
-`heldout-briefing`, and `heldout-reference`. The canonical template preserves
-existing message bytes. The other templates paraphrase the same mechanics,
+`heldout-briefing`, and `heldout-reference`. The canonical system template preserves
+its existing bytes. The other templates paraphrase the same mechanics,
 including aim probabilities, eliminated-seat scoring, side actions, and
 existing strategic hints. Sampled table rules are inserted by the same
 renderer; hidden round and survivor counts remain hidden. Player guidance,
@@ -200,6 +200,32 @@ this inside the extensible private `observation` object, retaining the player
 protocol shape. Native trajectory evidence retains it alongside exact prompts.
 The public spectator view and public replay do not gain prompt metadata.
 
+The user message places the seat's visible history before changing standings and seat
+status. Every information block, private visibility rule, and action instruction
+is retained. The growing transcript can therefore reuse an inference prefix
+within a round. Round transitions still rebuild past-round summaries. This changes
+prompt order and model behavior; pin the game release, source revision, and exact
+message hashes for comparisons. The reviewed system templates retain their rules
+bank identifier. Existing captures keep their original exact messages and hashes.
+
+[Matched full-game evidence](https://softmax.nexus/artifacts/44060cc7-f126-4618-bc5c-515c6a5616ce)
+compares this layout at source `377f7d2` with `a3ed49a2`, paired with Metta's
+prefill/decode batching changes. Each configuration completed all 17 sampled
+rounds across four ordinary games on one A10G. Generated-token throughput rose
+24.5% and complete-game throughput rose 22.0%; a 5–10× gain was not established.
+Action counts changed from 635 to 620 while generated tokens increased from
+47,599 to 48,594. Report token and game rates separately: the layout changes
+policy behavior as well as cache reuse. This constrained evaluation comparison
+does not establish learning or model-only training admission.
+
+[A subsequent serving comparison](https://softmax.nexus/artifacts/e483a7e0-4f48-43b5-9772-3e79d36988ee)
+kept Parley source `e7902d6` and the prompt code fixed, changing native prefill chunks from 1,024 to 4,096 tokens.
+Each configuration completed four games and all 17 sampled rounds; all 1,243 accepted decisions across both cohorts joined private captures and native usage.
+Generated-token throughput rose from 51.28 to 67.13 tokens/second (+30.9%); complete-game throughput rose from 15.31 to 20.94 games/GPU-hour (+36.8%).
+Both cohorts had zero inference errors or disconnects. Automatic server seeds and candidate prewarming differed; responses, histories, and token counts can diverge.
+This single-checkpoint, four-seed constrained evaluation does not establish playing strength, model-only training admission, or production networking qualification.
+The preceding prompt-layout comparison remains separate evidence; do not multiply the measurements into an unsupported cumulative claim.
+
 Collect new responses under the actual selected wording. Never rewrite the
 prompt attached to an old response. Group all prompt versions of a scenario
 into the same training/validation family. Freeze game/source/model identities,
@@ -215,3 +241,18 @@ real scripted socket players. It checks unchanged state, scoring, private
 visibility, and legal side actions across all seven templates and one mixed
 selection, using two scenario seeds. Games run sequentially. This proves the
 protocol and game invariants, not improved model play.
+
+## Coordinated XP cohorts
+
+`parley.lockstep.v1` permits a platform-owned static cohort to wait at start and
+next-decision barriers. Game and seat capabilities are separate. The engine sends
+its own decision identity and acting seat; players cannot select the next turn.
+Completed and failed games leave the cohort. Each game retains its ordinary
+sampled five-seat rules, manifest settings, decision acceptance and private evidence.
+
+Barrier waiting counts against the existing episode wall-clock budget. It does
+not pause clocks or extend decision deadlines. Cohort size can therefore affect
+how many rounds fit. Pin it with the game release, model images, tokenizer and
+decoding settings for a comparison. Certification fixtures and CPU transport
+probes establish infrastructure behavior only; qualify actual model gameplay and
+ordinary manifest budgets before training-data collection.

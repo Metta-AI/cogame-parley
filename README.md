@@ -182,3 +182,39 @@ advertised as an offline-certified bundled player.
 Native prompt seats request strict structured output for the currently legal action schema, with a default
 1024-token output budget. This prevents explanatory prose and the former 300-token cutoff from corrupting action JSON.
 External action players still own generation and must submit a legal action; model failures remain explicit failures.
+
+## Shared-GPU XP collection
+
+A compatible Metta XP request uses `parley.xp.v1`, advertised through `PARLEY_BATCH_PROTOCOL`.
+The platform supplies `COWORLD_XP_BATCH_URL`, `COWORLD_XP_BATCH_GAME_ID` and a game-scoped `COWORLD_XP_BATCH_KEY`.
+Games without that endpoint keep their ordinary execution.
+
+After registration, the game posts `start` to `/control` for the cohort's startup gate.
+Before each decision, it posts `turn` with its next `decision_id`, acting `seat`, and remaining `budget_ms`.
+The budget is bounded by the configured per-decision limit and remaining play time.
+The coordinator forwards that deadline through the shared gateway to native inference.
+This authorizes the decision immediately; games do not wait for peers between turns.
+The model server batches concurrent inference requests internally.
+Batched XP also skips spectator pacing between accepted decisions. Sampled rules, round counts, and action budgets stay the same.
+Termination posts `finish` before stop acknowledgements and artifact publication; cleanup runs even if notification fails.
+Control calls use a game-scoped bearer capability; seat clients cannot drive game control.
+
+With `COWORLD_XP_FULL_MATCH=true`, the game attempts all sampled rounds instead of applying the ordinary round-cost forecast.
+Its hosted `COWORLD_TIMEOUT_SECONDS` is a hard limit, with ten seconds reserved for cleanup.
+Expiration produces incomplete evidence without scores. Sampled rules and per-decision limits are unchanged.
+Without this explicit mode, the ordinary 60% play budget and round-boundary forecast remain in effect.
+The platform owns cross-user model leases, worker allocation, cancellation, bounded lifetime, and artifact collection.
+Each XP keeps its own coordinator. A failed game leaves the startup cohort; healthy games continue independently.
+Publish and qualify compatible game and checkpoint images before production collection.
+
+External Qwen players keep model-only JSON decoding unless their policy explicitly sets `PARLEY_DECODING=legal-actions`.
+The constrained variant sends this game's per-decision `actionSchema` to inference, excluding self and eliminated targets.
+Register and compare it as a distinct policy variant; preserve the schema in private captures.
+Metta's model-only training importer rejects constrained captures, so enabling this mode does not qualify them for that importer.
+Neither mode repairs or substitutes a model response after generation. Invalid actions remain explicit policy failures.
+
+Qualify the complete cohort after changing serving code. For each completed game, verify
+`replay.config.rounds == replay.config.plannedRounds`, five scores, and exact trajectory/private-capture joins.
+Report completed and attempted game counts together. Divide completions by the entire cohort's elapsed time,
+including request startup and the last game's tail; also report provisioning-through-completion time.
+Retain every terminal trajectory, replay, private capture archive, and tested source revision.

@@ -226,6 +226,15 @@ Both cohorts had zero inference errors or disconnects. Automatic server seeds an
 This single-checkpoint, four-seed constrained evaluation does not establish playing strength, model-only training admission, or production networking qualification.
 The preceding prompt-layout comparison remains separate evidence; do not multiply the measurements into an unsupported cumulative claim.
 
+[Full-game adapter qualification](https://softmax.nexus/artifacts/f4f36d8f-19ba-4ba6-bf44-16bd313362ed)
+kept Parley `06088f5`, the checkpoint, five seats, ordinary rules, budgets, and 4,096-token mixed prefill fixed.
+Metta `a4aecda50d` reduced mean adapter/routing overhead from 61 to 35 ms, but established no end-to-end throughput gain.
+Tokens/second measured 67.58 versus 66.93; complete games/GPU-hour measured 20.79 versus 19.79.
+All eight games completed 34 sampled rounds, joining 1,264 accepted decisions to private captures and native usage without inference errors or disconnects.
+Responses and decision counts differed; this one-cohort comparison has no confidence interval or batch-invariant output guarantee.
+The optional post-cohort GPU trace failed because of diagnostic container-port addressing; corrected transport passed a CPU fixture only.
+Keep that failure separate from successful game inference. A 5–10× gain and model-only training admission remain unqualified.
+
 Collect new responses under the actual selected wording. Never rewrite the
 prompt attached to an old response. Group all prompt versions of a scenario
 into the same training/validation family. Freeze game/source/model identities,

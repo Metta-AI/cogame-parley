@@ -189,8 +189,8 @@ A compatible Metta XP request uses `parley.xp.v1`, advertised through `PARLEY_BA
 The platform supplies `COWORLD_XP_BATCH_URL`, `COWORLD_XP_BATCH_GAME_ID` and a game-scoped `COWORLD_XP_BATCH_KEY`.
 Games without that endpoint keep their ordinary execution.
 
-After registration, the game posts `start` to `/control` for the cohort's startup gate.
-Before each decision, it posts `turn` with its next `decision_id`, acting `seat`, and remaining `budget_ms`.
+Each game starts after its own players register, without waiting for other games.
+Before each decision, it posts `turn` to `/control` with its next `decision_id`, acting `seat`, and remaining `budget_ms`.
 The budget is bounded by the configured per-decision limit and remaining play time.
 The coordinator forwards that deadline through the shared gateway to native inference.
 This authorizes the decision immediately; games do not wait for peers between turns.
@@ -204,7 +204,7 @@ Its hosted `COWORLD_TIMEOUT_SECONDS` is a hard limit, with ten seconds reserved 
 Expiration produces incomplete evidence without scores. Sampled rules and per-decision limits are unchanged.
 Without this explicit mode, the ordinary 60% play budget and round-boundary forecast remain in effect.
 The platform owns cross-user model leases, worker allocation, cancellation, bounded lifetime, and artifact collection.
-Each XP keeps its own coordinator. A failed game leaves the startup cohort; healthy games continue independently.
+Each XP keeps its own coordinator. A slow, unstarted, or failed game never blocks a ready peer's inference.
 Publish and qualify compatible game and checkpoint images before production collection.
 
 External Qwen players keep model-only JSON decoding unless their policy explicitly sets `PARLEY_DECODING=legal-actions`.

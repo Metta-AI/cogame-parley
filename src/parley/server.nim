@@ -668,7 +668,6 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           state.policyFailure = some(PolicyFailure(seat: seat, reason: dfMissingPolicy))
           return
 
-    batchControl("start", int((episodeDeadline - getMonoTime()).inMilliseconds))
     let client = newLlmClient(config)
 
     echo "parley: episode timeout ", timeoutSeconds.int, "s; playing until ",

@@ -1,4 +1,4 @@
-## Request-scoped XP startup and decision authorization; turns advance independently.
+## Request-scoped XP decision authorization; games advance independently.
 import std/[httpclient, json, os, strutils]
 
 proc batchControl*(kind: string, timeoutMs: int, decisionId = "", seat = -1,

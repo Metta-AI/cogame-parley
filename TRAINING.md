@@ -174,8 +174,8 @@ and the next decision. Keep raw private prompts, logs, receipts, and checkpoint 
 
 The game owns seven reviewed rule templates under `src/parley/prompts/`:
 `canonical`, `plain`, `numbered`, `questions`, `reordered`,
-`heldout-briefing`, and `heldout-reference`. The canonical template preserves
-existing message bytes. The other templates paraphrase the same mechanics,
+`heldout-briefing`, and `heldout-reference`. The canonical system template preserves
+its existing bytes. The other templates paraphrase the same mechanics,
 including aim probabilities, eliminated-seat scoring, side actions, and
 existing strategic hints. Sampled table rules are inserted by the same
 renderer; hidden round and survivor counts remain hidden. Player guidance,
@@ -200,6 +200,50 @@ this inside the extensible private `observation` object, retaining the player
 protocol shape. Native trajectory evidence retains it alongside exact prompts.
 The public spectator view and public replay do not gain prompt metadata.
 
+The user message places the seat's visible history before changing standings and seat
+status. Every information block, private visibility rule, and action instruction
+is retained. The growing transcript can therefore reuse an inference prefix
+within a round. Round transitions still rebuild past-round summaries. This changes
+prompt order and model behavior; pin the game release, source revision, and exact
+message hashes for comparisons. The reviewed system templates retain their rules
+bank identifier. Existing captures keep their original exact messages and hashes.
+
+[Matched full-game evidence](https://softmax.nexus/artifacts/44060cc7-f126-4618-bc5c-515c6a5616ce)
+compares this layout at source `377f7d2` with `a3ed49a2`, paired with Metta's
+prefill/decode batching changes. Each configuration completed all 17 sampled
+rounds across four ordinary games on one A10G. Generated-token throughput rose
+24.5% and complete-game throughput rose 22.0%; a 5–10× gain was not established.
+Action counts changed from 635 to 620 while generated tokens increased from
+47,599 to 48,594. Report token and game rates separately: the layout changes
+policy behavior as well as cache reuse. This constrained evaluation comparison
+does not establish learning or model-only training admission.
+
+[A subsequent serving comparison](https://softmax.nexus/artifacts/e483a7e0-4f48-43b5-9772-3e79d36988ee)
+kept Parley source `e7902d6` and the prompt code fixed, changing native prefill chunks from 1,024 to 4,096 tokens.
+Each configuration completed four games and all 17 sampled rounds; all 1,243 accepted decisions across both cohorts joined private captures and native usage.
+Generated-token throughput rose from 51.28 to 67.13 tokens/second (+30.9%); complete-game throughput rose from 15.31 to 20.94 games/GPU-hour (+36.8%).
+Both cohorts had zero inference errors or disconnects. Automatic server seeds and candidate prewarming differed; responses, histories, and token counts can diverge.
+This single-checkpoint, four-seed constrained evaluation does not establish playing strength, model-only training admission, or production networking qualification.
+The preceding prompt-layout comparison remains separate evidence; do not multiply the measurements into an unsupported cumulative claim.
+
+[Full-game adapter qualification](https://softmax.nexus/artifacts/f4f36d8f-19ba-4ba6-bf44-16bd313362ed)
+kept Parley `06088f5`, the checkpoint, five seats, ordinary rules, budgets, and 4,096-token mixed prefill fixed.
+Metta `a4aecda50d` reduced mean adapter/routing overhead from 61 to 35 ms, but established no end-to-end throughput gain.
+Tokens/second measured 67.58 versus 66.93; complete games/GPU-hour measured 20.79 versus 19.79.
+All eight games completed 34 sampled rounds, joining 1,264 accepted decisions to private captures and native usage without inference errors or disconnects.
+Responses and decision counts differed; this one-cohort comparison has no confidence interval or batch-invariant output guarantee.
+The optional post-cohort GPU trace failed because of diagnostic container-port addressing; corrected transport passed a CPU fixture only.
+Keep that failure separate from successful game inference. A 5–10× gain and model-only training admission remain unqualified.
+
+[Retained-token CPU screening](https://softmax.nexus/artifacts/49fd98f1-bfd9-4e82-9510-0ff53a6596b1)
+identified native inference as the next optimization target without collecting more games.
+Native requests were in flight for 98.3% of the current-adapter cohort; the longest game's inter-request gaps totalled 15.0 seconds.
+Four causal recorded game queues shared SGLang's pinned native n-gram corpus, using all 95,526 output tokens across the two cohorts.
+A recorded-token oracle consumed 2.52–2.55 tokens per four-token verification window and 4.18–4.29 per eight-token window.
+These are CPU reuse counts, not GPU throughput, live acceptance rates, or fresh training samples.
+Target verification, grammar state, GPU memory, cancellation, and complete-game performance remain untested; NGRAM also disables mixed prefill.
+Speculative decoding remains disabled. Game rules, prompt contents, horizons, budgets, and training admission are unchanged.
+
 Collect new responses under the actual selected wording. Never rewrite the
 prompt attached to an old response. Group all prompt versions of a scenario
 into the same training/validation family. Freeze game/source/model identities,
@@ -215,3 +259,19 @@ real scripted socket players. It checks unchanged state, scoring, private
 visibility, and legal side actions across all seven templates and one mixed
 selection, using two scenario seeds. Games run sequentially. This proves the
 protocol and game invariants, not improved model play.
+
+## Independent shared-GPU XP games
+
+`parley.xp.v1` authorizes each game's decisions independently. There are no
+cross-game startup or next-decision barriers. A game starts after its own players
+register; the model server batches available inference requests internally.
+Game and seat capabilities remain separate. The engine sends its own decision
+identity, acting seat, and remaining action budget; players cannot select the next turn.
+Completed and failed games leave independently. Each game retains its ordinary
+sampled five-seat rules, manifest settings, decision acceptance and private evidence.
+
+Pin concurrency with the game release, model images, tokenizer and decoding
+settings for a comparison. Request startup, model loading, and inference still
+consume their existing wall-clock budgets. Certification fixtures and CPU
+transport probes establish infrastructure behavior only; qualify actual model
+gameplay and ordinary manifest budgets before training-data collection.

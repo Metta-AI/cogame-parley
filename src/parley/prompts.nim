@@ -264,10 +264,12 @@ proc matchHeader*(match: Match): string =
 proc userPrompt*(
   sim: Sim, seat: int, prompt: string, options: JsonNode, header: string
 ): string =
+  # Keep the growing private transcript before changing status so inference
+  # can reuse its prefix. Round transitions still rebuild historical summaries.
+  result.add("What has happened at the table:\n" & sim.renderHistory(seat) & "\n\n")
   if header.len > 0:
     result.add(header & "\n\n")
-  result.add("Seats at the table:\n" & sim.renderSeats() &
-    "\n\nWhat has happened at the table:\n" & sim.renderHistory(seat) & "\n\n")
+  result.add("Seats at the table:\n" & sim.renderSeats() & "\n\n")
   let me = sim.seats[seat]
   if me.friend >= 0 and me.enemy >= 0:
     result.add("Your SECRET cards this round: FRIEND = " &

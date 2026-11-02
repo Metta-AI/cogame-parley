@@ -235,6 +235,15 @@ Responses and decision counts differed; this one-cohort comparison has no confid
 The optional post-cohort GPU trace failed because of diagnostic container-port addressing; corrected transport passed a CPU fixture only.
 Keep that failure separate from successful game inference. A 5–10× gain and model-only training admission remain unqualified.
 
+[Retained-token CPU screening](https://softmax.nexus/artifacts/49fd98f1-bfd9-4e82-9510-0ff53a6596b1)
+identified native inference as the next optimization target without collecting more games.
+Native requests were in flight for 98.3% of the current-adapter cohort; the longest game's inter-request gaps totalled 15.0 seconds.
+Four causal recorded game queues shared SGLang's pinned native n-gram corpus, using all 95,526 output tokens across the two cohorts.
+A recorded-token oracle consumed 2.52–2.55 tokens per four-token verification window and 4.18–4.29 per eight-token window.
+These are CPU reuse counts, not GPU throughput, live acceptance rates, or fresh training samples.
+Target verification, grammar state, GPU memory, cancellation, and complete-game performance remain untested; NGRAM also disables mixed prefill.
+Speculative decoding remains disabled. Game rules, prompt contents, horizons, budgets, and training admission are unchanged.
+
 Collect new responses under the actual selected wording. Never rewrite the
 prompt attached to an old response. Group all prompt versions of a scenario
 into the same training/validation family. Freeze game/source/model identities,

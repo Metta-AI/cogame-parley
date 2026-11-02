@@ -242,6 +242,7 @@ proc decideSeat(client: LlmClient, sim: Sim, seat: int, policy: SeatPolicy,
     result.failure = some(
       if state.pending.rejected: dfRejectedAction
       elif not state.playerSockets.hasKey(seat): dfExternalDisconnect
+      elif decisionDeadline == playDeadline: dfEpisodeDeadline
       else: dfExternalTimeout)
     result.nativeAttempts = state.pending.attempts
 

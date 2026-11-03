@@ -17,10 +17,23 @@ operator prompt, model identities, tokenizer, and decoding settings. Move collec
 when qualifying another release. Base and trained players share the same settings and rotate through all five seats;
 freeze the remaining four opponents. Different opponent panels are separate cohorts in this same environment.
 
-The [Metta five-seat guide](https://github.com/Metta-AI/metta/blob/main/packages/metta-training/docs/parley.md)
+The [shared five-seat guide](https://github.com/Metta-AI/posttraining-research/blob/main/packages/metta-posttraining/docs/parley.md)
 owns Qwen3.5-4B training commands, upstream SLIME pins, review, dataset splits, and promotion gates.
 Bound complete-game count and optimizer updates instead of changing game rules. Report invalid responses, rejected
 attempts, fallback origins, terminal scores, latency, tokens, and cost alongside paired game-family uncertainty.
+
+## Learning scale and model retention
+
+Plan substantive training for tens of thousands of optimizer/gradient steps, normally across many hours or days.
+Freeze the exact dose, fresh/consumed training exposure, diverse data supply, measured throughput, finite runtime and cost before launch.
+A one- or two-update check is a runtime smoke; retain its metrics, source identities, traces and failure evidence without durable model tensors.
+Keep at most one final model artifact from a long learning run, normally inference-ready weights from the final scheduled update.
+Do not archive intermediate optimizer states, duplicate native/export copies or multiple snapshots bundled into one archive.
+Optimizer, scheduler and random state are temporary recovery state during active work, not additional final artifacts.
+During active work, recovery saves are temporary, sparse and byte-bounded; keep the latest verified state plus a save in progress.
+Keep intermediate evaluation metrics rather than intermediate weights. Existing archives, traces and agent histories remain protected.
+Use the [shared policy](https://github.com/Metta-AI/posttraining-research/blob/bed180d2d5770b1dbf5ceeca67dde31a493750e8/docs/CHECKPOINT_REPORTING.md#default-learning-scale-and-model-retention) for configuration and lifecycle details.
+Frozen historical update counts, comparisons and excluded slots remain unchanged; this guidance launches no compute.
 
 ## Player and model boundary
 

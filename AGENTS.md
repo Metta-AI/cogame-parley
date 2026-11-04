@@ -4,6 +4,12 @@ Before repository work, run `git fetch origin`. Do not implicitly merge or
 rebase dirty or feature checkouts. Use a clean task worktree based on the
 current remote default branch; keep the original checkout unchanged.
 
+## Training scale and model retention
+
+Follow [TRAINING.md](TRAINING.md#learning-scale-and-model-retention) for learning runs.
+Substantive training normally targets tens of thousands of gradient steps across many hours or days and retains at most one final model artifact.
+Smoke tests retain diagnostics without model archives. Keep recovery state temporary and bounded; preserve existing evidence and other owners' data.
+
 ## Disposable QA Storage
 
 This guidance applies only to this repository's first-party diagnostics, not

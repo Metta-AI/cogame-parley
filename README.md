@@ -124,7 +124,7 @@ pass, reaction, and side actions. The game validates each action and owns result
 - `client/` — shared canvas renderer + global/player/replay pages
 - `replay-viewer/` — CTF-style static JavaScript replay viewer (`?replay=<url>`)
 - `tools/build_replay_viewer.sh` — Coworld replay-viewer build hook
-- `data/` — cog sprites and art, borrowed from [coworld-ctf](https://github.com/Metta-AI/coworld-ctf) (MIT)
+- `data/` — cog sprites and art, borrowed from [coworld-ctf](https://github.com/softmax-universe/coworld-ctf) (MIT)
 
 ## Local loop
 

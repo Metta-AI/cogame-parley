@@ -1,6 +1,6 @@
 # Deploy the parley Coworld: coworld build -> coworld certify -> (optional) coworld upload-coworld.
 #
-# Destination: Metta-AI/cogame-parley/.github/workflows/deploy.yml
+# Destination: softmax-universe/cogame-parley/.github/workflows/deploy.yml
 #
 # Required repository secret:
 #   SOFTMAX_TOKEN  Softmax platform bearer token. Only read when dry_run is false; a dry run needs

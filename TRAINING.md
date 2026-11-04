@@ -17,7 +17,7 @@ operator prompt, model identities, tokenizer, and decoding settings. Move collec
 when qualifying another release. Base and trained players share the same settings and rotate through all five seats;
 freeze the remaining four opponents. Different opponent panels are separate cohorts in this same environment.
 
-The [shared five-seat guide](https://github.com/Metta-AI/posttraining-research/blob/main/packages/metta-posttraining/docs/parley.md)
+The [shared five-seat guide](https://github.com/softmax-universe/posttraining-research/blob/main/packages/metta-posttraining/docs/parley.md)
 owns Qwen3.5-4B training commands, upstream SLIME pins, review, dataset splits, and promotion gates.
 Bound complete-game count and optimizer updates instead of changing game rules. Report invalid responses, rejected
 attempts, fallback origins, terminal scores, latency, tokens, and cost alongside paired game-family uncertainty.
@@ -32,7 +32,7 @@ Do not archive intermediate optimizer states, duplicate native/export copies or 
 Optimizer, scheduler and random state are temporary recovery state during active work, not additional final artifacts.
 During active work, recovery saves are temporary, sparse and byte-bounded; keep the latest verified state plus a save in progress.
 Keep intermediate evaluation metrics rather than intermediate weights. Existing archives, traces and agent histories remain protected.
-Use the [shared policy](https://github.com/Metta-AI/posttraining-research/blob/bed180d2d5770b1dbf5ceeca67dde31a493750e8/docs/CHECKPOINT_REPORTING.md#default-learning-scale-and-model-retention) for configuration and lifecycle details.
+Use the [shared policy](https://github.com/softmax-universe/posttraining-research/blob/bed180d2d5770b1dbf5ceeca67dde31a493750e8/docs/CHECKPOINT_REPORTING.md#default-learning-scale-and-model-retention) for configuration and lifecycle details.
 Frozen historical update counts, comparisons and excluded slots remain unchanged; this guidance launches no compute.
 
 ## Player and model boundary
@@ -150,7 +150,7 @@ exports as historical evidence; they do not qualify current training labels.
 
 ### Comparing supervised and reward-based learning
 
-The [game-learning study](https://github.com/Metta-AI/posttraining-research/tree/relh/game-learning-roadmap/users/relh/game-learning-roadmap)
+The [game-learning study](https://github.com/softmax-universe/posttraining-research/tree/relh/game-learning-roadmap/users/relh/game-learning-roadmap)
 compares a frozen supervised parent, continued imitation, and native-reward learning.
 Freeze one published release for each comparison. Source changes to completion, prompts, or private outcome records require a newly qualified cohort.
 Do not combine newly rebuilt main with historical 0.4.5 training or evaluation records.
